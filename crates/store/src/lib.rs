@@ -16,6 +16,11 @@ pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const SCHEMA_VERSION: u32 = 1;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
 
+/// SQLite-backed local store.
+///
+/// `rusqlite::Connection` is single-connection state, so callers that use a
+/// store from multiple threads should wrap a `Store` in a mutex or open one
+/// `Store` per worker/task.
 pub struct Store {
     conn: Connection,
     app_root: PathBuf,
@@ -63,6 +68,8 @@ impl Store {
 
     pub fn migrate(&self) -> StoreResult<()> {
         let _existing_version = self.schema_version()?;
+        // v0/v1 migrations below are idempotent. Branch on this value when
+        // adding non-idempotent v2+ migrations.
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS meetings (
@@ -1629,13 +1636,13 @@ pub struct TranscriptSegmentEditExport {
     pub corrected_text: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WriteStatus {
     Writing,
     Complete,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepairStatus {
     NotNeeded,
     Recoverable,
@@ -1838,6 +1845,44 @@ fn enum_name<T: StoreEnum>(value: T) -> &'static str {
     value.as_store_str()
 }
 
+impl Serialize for WriteStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(enum_name(*self))
+    }
+}
+
+impl<'de> Deserialize<'de> for WriteStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse_write_status_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for RepairStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(enum_name(*self))
+    }
+}
+
+impl<'de> Deserialize<'de> for RepairStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse_repair_status_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
     if !is_safe_meeting_id(meeting_id) {
         return Err(format!("meeting id is not a safe export filename: {meeting_id}").into());
@@ -1846,6 +1891,9 @@ fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
 }
 
 fn is_pending_sha256(sha256: &str) -> bool {
+    // Bare `sha256:pending` is tolerated for manifests/DB rows written before
+    // pending hashes became artifact-scoped. New app writes use the prefixed
+    // `sha256:pending:<artifact-id>` form.
     sha256 == PENDING_SHA_PREFIX || sha256.starts_with("sha256:pending:")
 }
 
@@ -1954,11 +2002,23 @@ fn repair_conflict(
 }
 
 fn parse_repair_status(status: &str) -> StoreResult<RepairStatus> {
+    parse_repair_status_value(status).map_err(Into::into)
+}
+
+fn parse_write_status_value(status: &str) -> Result<WriteStatus, String> {
+    match status {
+        "Writing" => Ok(WriteStatus::Writing),
+        "Complete" => Ok(WriteStatus::Complete),
+        other => Err(format!("unknown write status: {other}")),
+    }
+}
+
+fn parse_repair_status_value(status: &str) -> Result<RepairStatus, String> {
     match status {
         "NotNeeded" => Ok(RepairStatus::NotNeeded),
         "Recoverable" => Ok(RepairStatus::Recoverable),
         "Recovered" => Ok(RepairStatus::Recovered),
-        other => Err(format!("unknown repair status: {other}").into()),
+        other => Err(format!("unknown repair status: {other}")),
     }
 }
 

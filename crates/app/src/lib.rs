@@ -983,6 +983,9 @@ fn storage_location(meeting_id: &str) -> String {
 }
 
 fn pending_artifact_hash(meeting_id: &str) -> String {
+    // The store import identity also keys by recording_session_id, so this
+    // per-meeting placeholder stays unique for the current manual session while
+    // still being recognizable as a pending hash.
     format!("sha256:pending:artifact-{meeting_id}")
 }
 

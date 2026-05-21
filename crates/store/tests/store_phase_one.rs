@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, RecordingSession, RecordingSource,
 };
-use curiosity_store::{ArtifactManifest, DeleteReport, RepairConflict, RepairStatus, Store};
+use curiosity_store::{
+    ArtifactManifest, DeleteReport, RepairConflict, RepairStatus, Store, WriteStatus,
+};
 use rusqlite::Connection;
 
 fn test_root(name: &str) -> PathBuf {
@@ -121,10 +123,35 @@ fn pending_artifact_hashes_fail_loud_instead_of_deduping_to_first_row() {
         store.insert_audio_artifact(&first).expect("first pending insert"),
         "artifact-1"
     );
+    let err = store
+        .insert_audio_artifact(&second)
+        .expect_err("same pending sentinel should not silently return the first artifact id");
     assert!(
-        store.insert_audio_artifact(&second).is_err(),
-        "same pending sentinel should not silently return the first artifact id"
+        err.to_string()
+            .to_ascii_lowercase()
+            .contains("unique"),
+        "unexpected pending sentinel failure: {err}"
     );
+}
+
+#[test]
+fn artifact_manifest_json_uses_explicit_stable_status_strings() {
+    let manifest = ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable();
+
+    let json = serde_json::to_string(&manifest).expect("serialize manifest");
+
+    assert!(json.contains(r#""write_status":"Writing""#));
+    assert!(json.contains(r#""recovery_status":"Recoverable""#));
+    let parsed: ArtifactManifest = serde_json::from_str(&json).expect("parse manifest");
+    assert_eq!(parsed.write_status, WriteStatus::Writing);
+    assert_eq!(parsed.recovery_status, RepairStatus::Recoverable);
 }
 
 #[test]
