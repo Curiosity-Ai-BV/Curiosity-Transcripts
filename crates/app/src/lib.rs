@@ -652,7 +652,7 @@ where
             &recording_id,
             ArtifactKind::Mixed,
             &setup.artifact_path,
-            "sha256:pending",
+            pending_artifact_hash(meeting_id),
         );
 
         self.store
@@ -748,6 +748,14 @@ where
         recording_id: &str,
         _recovered_at_ms: u64,
     ) -> AppResult<CommandRecordingDto> {
+        if self.active.is_some() {
+            return Err(simple_error(
+                RecordingErrorKind::AlreadyRecording,
+                meeting_id,
+                CommandRecordingState::Recording,
+                "Stop the current recording before recovering another one",
+            ));
+        }
         let interrupted = self.interrupted.as_ref().ok_or_else(|| {
             no_recoverable_recording_error(meeting_id, recording_id)
         })?;
@@ -828,7 +836,7 @@ where
                         &recording_id,
                         &format!("artifact-{meeting_id}"),
                         &interrupted.setup.artifact_path,
-                        "sha256:pending",
+                        &pending_artifact_hash(&meeting_id),
                     )
                     .map_err(|err| store_error(&meeting_id, err.to_string()))?;
                 self.interrupted = Some(InterruptedRecording {
@@ -974,6 +982,10 @@ fn storage_location(meeting_id: &str) -> String {
     format!("meetings/{meeting_id}/audio")
 }
 
+fn pending_artifact_hash(meeting_id: &str) -> String {
+    format!("sha256:pending:artifact-{meeting_id}")
+}
+
 fn permission_error(
     meeting_id: &str,
     storage_location: &str,
@@ -1116,11 +1128,7 @@ fn no_recoverable_recording_error(meeting_id: &str, recording_id: &str) -> Recor
 
 fn relative_to_meetings_root(meetings_root: &Path, artifact_path: &str) -> Option<PathBuf> {
     let prefix = "meetings/";
-    let relative_path = if let Some(path) = artifact_path.strip_prefix(prefix) {
-        Path::new(path)
-    } else {
-        Path::new(artifact_path)
-    };
+    let relative_path = Path::new(artifact_path.strip_prefix(prefix)?);
     if is_safe_relative_path(relative_path) {
         Some(meetings_root.join(relative_path))
     } else {

@@ -55,6 +55,24 @@ fn stop_marks_written_chunks_complete_and_manifest_not_recoverable() {
 }
 
 #[test]
+fn manifest_file_uses_explicit_stable_status_strings() {
+    let root = test_dir("manifest-stable-strings");
+    let mut writer = ChunkWriter::create(&root, RecordingMetadata::new("session-strings", 1_000))
+        .expect("writer");
+
+    writer.write_frame(&mic_frame()).expect("write frame");
+    writer
+        .cancel(1_010, "user canceled recording")
+        .expect("cancel");
+
+    let manifest_text =
+        fs::read_to_string(root.join("session-strings").join("manifest.txt")).expect("manifest");
+    assert!(manifest_text.contains("status=Canceled"));
+    assert!(manifest_text.contains("chunk=Microphone,Interrupted,RecoverableInterrupted,"));
+    assert!(!manifest_text.contains("status=ManifestStatus"));
+}
+
+#[test]
 fn chunk_end_time_tracks_written_audio_duration_across_frames() {
     let root = test_dir("chunk-end-time");
     let mut writer = ChunkWriter::create(&root, RecordingMetadata::new("session-end-time", 1_000))

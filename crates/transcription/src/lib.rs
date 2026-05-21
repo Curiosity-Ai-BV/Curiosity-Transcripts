@@ -1,6 +1,6 @@
 use curiosity_domain::{SourceChannel, TranscriptSegment};
 
-pub type TranscriptionResult<T> = Result<T, Box<dyn std::error::Error>>;
+pub type TranscriptionResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ModelState {

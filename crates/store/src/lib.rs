@@ -1,18 +1,25 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
+    ArtifactKind,
     AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun, ProcessingJob,
-    RecordingSession, RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
+    RecordingSession, RecordingSource, RecordingStatus, SourceChannel, TranscriptSegment,
+    TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-pub type StoreResult<T> = Result<T, Box<dyn std::error::Error>>;
+pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+const SCHEMA_VERSION: u32 = 1;
+const PENDING_SHA_PREFIX: &str = "sha256:pending";
 
 pub struct Store {
     conn: Connection,
     app_root: PathBuf,
+    canonical_app_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,13 +44,25 @@ impl Store {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let app_root = app_root.into();
+        fs::create_dir_all(&app_root)?;
+        let canonical_app_root = app_root.canonicalize()?;
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA busy_timeout = 5000;
+            ",
+        )?;
         Ok(Self {
-            conn: Connection::open(db_path)?,
-            app_root: app_root.into(),
+            conn,
+            app_root,
+            canonical_app_root,
         })
     }
 
     pub fn migrate(&self) -> StoreResult<()> {
+        let _existing_version = self.schema_version()?;
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS meetings (
@@ -157,7 +176,48 @@ impl Store {
             USING fts5(meeting_id UNINDEXED, title, transcript_text);
             ",
         )?;
+        self.ensure_column(
+            "audio_artifacts",
+            "write_status",
+            "TEXT NOT NULL DEFAULT 'Writing'",
+        )?;
+        self.ensure_column(
+            "audio_artifacts",
+            "recovery_status",
+            "TEXT NOT NULL DEFAULT 'NotNeeded'",
+        )?;
+        self.ensure_column(
+            "audio_artifacts",
+            "tombstoned",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.conn
+            .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         Ok(())
+    }
+
+    pub fn schema_version(&self) -> StoreResult<u32> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?)
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> StoreResult<()> {
+        if self.table_has_column(table, column)? {
+            return Ok(());
+        }
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+        self.conn.execute_batch(&sql)?;
+        Ok(())
+    }
+
+    fn table_has_column(&self, table: &str, column: &str) -> StoreResult<bool> {
+        let sql = format!("PRAGMA table_info({table})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(columns.iter().any(|name| name == column))
     }
 
     pub fn insert_meeting(&self, meeting: &Meeting) -> StoreResult<()> {
@@ -204,12 +264,14 @@ impl Store {
 
     pub fn insert_audio_artifact(&self, artifact: &AudioArtifact) -> StoreResult<String> {
         let kind = enum_name(artifact.kind);
-        if let Some(existing_id) = self.audio_artifact_id_by_import_identity(
-            &artifact.recording_session_id,
-            &kind,
-            &artifact.sha256,
-        )? {
-            return Ok(existing_id);
+        if !is_pending_sha256(&artifact.sha256) {
+            if let Some(existing_id) = self.audio_artifact_id_by_import_identity(
+                &artifact.recording_session_id,
+                kind,
+                &artifact.sha256,
+            )? {
+                return Ok(existing_id);
+            }
         }
         self.conn.execute(
             "
@@ -514,7 +576,7 @@ impl Store {
         if self.conn.changes() == 0 {
             return Err(format!("meeting not found or deleted: {meeting_id}").into());
         }
-        self.rebuild_search_index()?;
+        self.refresh_search_index_for_meeting(meeting_id)?;
         Ok(())
     }
 
@@ -1225,8 +1287,7 @@ impl Store {
     }
 
     fn update_manifest_title(&self, meeting_id: &str, title: &str) -> StoreResult<()> {
-        let mut staged = Vec::new();
-        let mut originals = Vec::new();
+        let mut staged: Vec<(PathBuf, PathBuf, Vec<u8>)> = Vec::new();
         for manifest_path in manifest_paths(&self.app_root)? {
             let original_bytes = fs::read(&manifest_path).map_err(|err| {
                 format!(
@@ -1248,7 +1309,7 @@ impl Store {
             let temp_path = manifest_update_temp_path(&manifest_path);
             let stage_result = fs::write(&temp_path, serde_json::to_vec_pretty(&manifest)?);
             if let Err(err) = stage_result {
-                for (_, temp_path) in staged {
+                for (_, temp_path, _) in staged {
                     let _ = fs::remove_file(temp_path);
                 }
                 return Err(format!(
@@ -1257,12 +1318,11 @@ impl Store {
                 )
                 .into());
             }
-            originals.push((manifest_path.clone(), original_bytes));
-            staged.push((manifest_path, temp_path));
+            staged.push((manifest_path, temp_path, original_bytes));
         }
 
-        let mut replaced = Vec::new();
-        for (manifest_path, temp_path) in staged {
+        let mut replaced: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        for (manifest_path, temp_path, original_bytes) in staged {
             if let Err(err) = fs::rename(&temp_path, &manifest_path) {
                 let _ = fs::remove_file(&temp_path);
                 for (replaced_path, original_bytes) in replaced {
@@ -1274,12 +1334,7 @@ impl Store {
                 )
                 .into());
             }
-            if let Some((_, original_bytes)) = originals
-                .iter()
-                .find(|(original_path, _)| original_path == &manifest_path)
-            {
-                replaced.push((manifest_path, original_bytes.clone()));
-            }
+            replaced.push((manifest_path, original_bytes));
         }
         Ok(())
     }
@@ -1303,7 +1358,7 @@ impl Store {
                 end_ms: segment.end_ms,
                 text: segment.text,
                 original_text: segment.original_text,
-                source_channel: enum_name(segment.source_channel),
+                source_channel: enum_name(segment.source_channel).to_string(),
                 model_run_id: segment.model_run_id,
                 transcript_version_id: segment.transcript_version_id,
                 edits,
@@ -1462,10 +1517,9 @@ impl Store {
             return None;
         }
         let candidate = self.app_root.join(path);
-        let app_root = self.app_root.canonicalize().ok()?;
         let canonical_check_path = nearest_existing_path(&candidate)?;
         let canonical_check_path = canonical_check_path.canonicalize().ok()?;
-        if canonical_check_path.starts_with(app_root) {
+        if canonical_check_path.starts_with(&self.canonical_app_root) {
             Some(candidate)
         } else {
             None
@@ -1658,8 +1712,130 @@ fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn enum_name<T: std::fmt::Debug>(value: T) -> String {
-    format!("{value:?}")
+trait StoreEnum {
+    fn as_store_str(self) -> &'static str;
+}
+
+impl StoreEnum for MeetingStatus {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            MeetingStatus::Created => "Created",
+            MeetingStatus::Recording => "Recording",
+            MeetingStatus::Paused => "Paused",
+            MeetingStatus::Stopping => "Stopping",
+            MeetingStatus::Interrupted => "Interrupted",
+            MeetingStatus::Recovered => "Recovered",
+            MeetingStatus::Transcribing => "Transcribing",
+            MeetingStatus::Complete => "Complete",
+            MeetingStatus::Failed => "Failed",
+            MeetingStatus::Deleted => "Deleted",
+        }
+    }
+}
+
+impl StoreEnum for TranscriptState {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            TranscriptState::NotStarted => "NotStarted",
+            TranscriptState::Transcribing => "Transcribing",
+            TranscriptState::Complete => "Complete",
+        }
+    }
+}
+
+impl StoreEnum for RecordingSource {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            RecordingSource::Microphone => "Microphone",
+            RecordingSource::System => "System",
+            RecordingSource::Mixed => "Mixed",
+            RecordingSource::Imported => "Imported",
+        }
+    }
+}
+
+impl StoreEnum for RecordingStatus {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            RecordingStatus::Recording => "Recording",
+            RecordingStatus::Paused => "Paused",
+            RecordingStatus::Stopping => "Stopping",
+            RecordingStatus::Interrupted => "Interrupted",
+            RecordingStatus::Recovered => "Recovered",
+            RecordingStatus::Complete => "Complete",
+            RecordingStatus::Failed => "Failed",
+        }
+    }
+}
+
+impl StoreEnum for ArtifactKind {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            ArtifactKind::RawMic => "RawMic",
+            ArtifactKind::RawSystem => "RawSystem",
+            ArtifactKind::Mixed => "Mixed",
+            ArtifactKind::Imported => "Imported",
+        }
+    }
+}
+
+impl StoreEnum for SourceChannel {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            SourceChannel::Microphone => "Microphone",
+            SourceChannel::System => "System",
+            SourceChannel::Mixed => "Mixed",
+            SourceChannel::Imported => "Imported",
+        }
+    }
+}
+
+impl StoreEnum for curiosity_domain::JobKind {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            curiosity_domain::JobKind::Transcribe => "Transcribe",
+            curiosity_domain::JobKind::Summarize => "Summarize",
+            curiosity_domain::JobKind::Export => "Export",
+            curiosity_domain::JobKind::Index => "Index",
+        }
+    }
+}
+
+impl StoreEnum for JobStatus {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            JobStatus::Queued => "Queued",
+            JobStatus::Running => "Running",
+            JobStatus::Succeeded => "Succeeded",
+            JobStatus::Failed => "Failed",
+            JobStatus::Canceled => "Canceled",
+            JobStatus::Retry => "Retry",
+            JobStatus::Recovery => "Recovery",
+        }
+    }
+}
+
+impl StoreEnum for WriteStatus {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            WriteStatus::Writing => "Writing",
+            WriteStatus::Complete => "Complete",
+        }
+    }
+}
+
+impl StoreEnum for RepairStatus {
+    fn as_store_str(self) -> &'static str {
+        match self {
+            RepairStatus::NotNeeded => "NotNeeded",
+            RepairStatus::Recoverable => "Recoverable",
+            RepairStatus::Recovered => "Recovered",
+        }
+    }
+}
+
+fn enum_name<T: StoreEnum>(value: T) -> &'static str {
+    value.as_store_str()
 }
 
 fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
@@ -1667,6 +1843,10 @@ fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
         return Err(format!("meeting id is not a safe export filename: {meeting_id}").into());
     }
     Ok(format!("{meeting_id}.json"))
+}
+
+fn is_pending_sha256(sha256: &str) -> bool {
+    sha256 == PENDING_SHA_PREFIX || sha256.starts_with("sha256:pending:")
 }
 
 fn is_safe_meeting_id(meeting_id: &str) -> bool {
@@ -1681,9 +1861,13 @@ fn is_safe_meeting_id(meeting_id: &str) -> bool {
 }
 
 fn manifest_update_temp_path(path: &Path) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
     path.with_extension(format!(
-        "json.rename-tmp-{}",
-        std::process::id()
+        "json.rename-tmp-{}-{nonce}",
+        std::process::id(),
     ))
 }
 
@@ -1754,7 +1938,7 @@ fn repair_conflict(
     if manifest_write_status != db_artifact.write_status {
         return Some(RepairConflict::MismatchedWriteStatus {
             artifact_id: manifest.artifact_id.clone(),
-            manifest_status: manifest_write_status,
+            manifest_status: manifest_write_status.to_string(),
             db_status: db_artifact.write_status.clone(),
         });
     }
@@ -1762,7 +1946,7 @@ fn repair_conflict(
     if db_artifact.recovery_status != "NotNeeded" && manifest_recovery_status != db_artifact.recovery_status {
         return Some(RepairConflict::MismatchedRecoveryStatus {
             artifact_id: manifest.artifact_id.clone(),
-            manifest_status: manifest_recovery_status,
+            manifest_status: manifest_recovery_status.to_string(),
             db_status: db_artifact.recovery_status.clone(),
         });
     }

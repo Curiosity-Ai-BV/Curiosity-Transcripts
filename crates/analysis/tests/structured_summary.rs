@@ -65,6 +65,21 @@ fn fake_analyzer_returns_structured_summary_with_citations() {
 }
 
 #[test]
+fn generated_analysis_ids_keep_punctuation_distinct() {
+    let first = FakeMeetingAnalyzer::new("model.a", "summary-v1").analyze(input());
+    let second = FakeMeetingAnalyzer::new("model-a", "summary-v1").analyze(input());
+
+    let AnalysisOutcome::Completed(first) = first else {
+        panic!("first analysis should complete");
+    };
+    let AnalysisOutcome::Completed(second) = second else {
+        panic!("second analysis should complete");
+    };
+
+    assert_ne!(first.id, second.id);
+}
+
+#[test]
 fn malformed_model_output_returns_visible_failure_state() {
     let client = StaticClient::success("{not json");
     let outcome = OllamaAnalyzer::new(client, "llama3.2", "summary-v1").analyze(input());

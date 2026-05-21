@@ -529,15 +529,16 @@ fn trim_sentence(text: &str) -> String {
 fn analysis_id(meeting_id: &str, provider: &str, model_name: &str, prompt_version: &str) -> String {
     format!(
         "analysis-{}-{}-{}-{}",
-        safe_id_part(meeting_id),
-        safe_id_part(provider),
-        safe_id_part(model_name),
-        safe_id_part(prompt_version)
+        stable_id_part(meeting_id),
+        stable_id_part(provider),
+        stable_id_part(model_name),
+        stable_id_part(prompt_version)
     )
 }
 
-fn safe_id_part(part: &str) -> String {
-    part.chars()
+fn stable_id_part(part: &str) -> String {
+    let safe = part
+        .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
                 ch
@@ -545,5 +546,15 @@ fn safe_id_part(part: &str) -> String {
                 '-'
             }
         })
-        .collect()
+        .collect::<String>();
+    format!("{safe}-{:016x}", stable_hash(part))
+}
+
+fn stable_hash(part: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in part.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

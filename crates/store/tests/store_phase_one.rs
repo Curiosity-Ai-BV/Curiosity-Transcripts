@@ -5,6 +5,7 @@ use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, RecordingSession, RecordingSource,
 };
 use curiosity_store::{ArtifactManifest, DeleteReport, RepairConflict, RepairStatus, Store};
+use rusqlite::Connection;
 
 fn test_root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -53,6 +54,77 @@ fn migrate_creates_local_sqlite_db_and_persists_core_loop_rows() {
     assert_eq!(store.count("recording_sessions").expect("sessions"), 1);
     assert_eq!(store.count("audio_artifacts").expect("artifacts"), 1);
     assert_eq!(store.count("processing_jobs").expect("jobs"), 1);
+}
+
+#[test]
+fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
+    let root = test_root("legacy-migrate");
+    let db_path = root.join("app.db");
+    {
+        let conn = Connection::open(&db_path).expect("legacy db");
+        conn.execute_batch(
+            "
+            CREATE TABLE audio_artifacts (
+                id TEXT PRIMARY KEY,
+                recording_session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                retained INTEGER NOT NULL
+            );
+            PRAGMA user_version = 0;
+            ",
+        )
+        .expect("legacy schema");
+    }
+
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate legacy schema");
+
+    assert_eq!(store.schema_version().expect("schema version"), 1);
+    let conn = Connection::open(&db_path).expect("read migrated db");
+    let columns = conn
+        .prepare("PRAGMA table_info(audio_artifacts)")
+        .expect("table info")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("column names");
+    assert!(columns.contains(&"write_status".to_string()));
+    assert!(columns.contains(&"recovery_status".to_string()));
+    assert!(columns.contains(&"tombstoned".to_string()));
+}
+
+#[test]
+fn pending_artifact_hashes_fail_loud_instead_of_deduping_to_first_row() {
+    let root = test_root("pending-hash-dedupe");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+
+    let first = AudioArtifact::new_private(
+        "artifact-1",
+        "session-1",
+        ArtifactKind::Mixed,
+        "meetings/meeting-1/audio/mixed-1.pcm",
+        "sha256:pending",
+    );
+    let second = AudioArtifact::new_private(
+        "artifact-2",
+        "session-1",
+        ArtifactKind::Mixed,
+        "meetings/meeting-1/audio/mixed-2.pcm",
+        "sha256:pending",
+    );
+
+    assert_eq!(
+        store.insert_audio_artifact(&first).expect("first pending insert"),
+        "artifact-1"
+    );
+    assert!(
+        store.insert_audio_artifact(&second).is_err(),
+        "same pending sentinel should not silently return the first artifact id"
+    );
 }
 
 #[test]

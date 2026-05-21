@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_app::{
-    dedupe_selected_segments, AppPermissionState, CommandRecordingState, FakeArtifactSink,
-    ManualRecordingService, RawAudioRetentionPolicy, RecordingErrorKind, SpeechSegment,
-    SpeechSource, StorageSetupError,
+    dedupe_selected_segments, AppPermissionState, ArtifactSink, CommandRecordingState,
+    FakeArtifactSink, ManualRecordingService, RawAudioRetentionPolicy, RecordingErrorKind,
+    SpeechSegment, SpeechSource, StorageSetup, StorageSetupError,
 };
 use curiosity_audio::{
     AudioCapture, AudioFrame, CapturePermission, CapturePermissionError, DeviceSnapshot,
@@ -58,6 +58,30 @@ fn start_rejects_meeting_ids_that_escape_private_meeting_storage() {
             escaped_path.display()
         );
     }
+}
+
+#[test]
+fn fake_artifact_sink_requires_meetings_prefixed_artifact_paths() {
+    let root = test_root("artifact-path-prefix");
+    let sink = FakeArtifactSink::new(root.join("meetings"));
+    let setup = StorageSetup {
+        relative_audio_dir: "meeting-1/audio".to_string(),
+        artifact_path: "meeting-1/audio/mixed.pcm".to_string(),
+    };
+    let frame = AudioFrame {
+        stream: curiosity_audio::StreamKind::Microphone,
+        start_time_ms: 1_000,
+        sample_rate_hz: 48_000,
+        channel_count: 1,
+        pcm_i16: vec![1, 2, 3],
+    };
+
+    let err = sink
+        .write_frames(&setup, &[frame])
+        .expect_err("artifact path without meetings/ prefix should be rejected");
+
+    assert_eq!(err.kind, RecordingErrorKind::StorageUnavailable);
+    assert!(!root.join("meetings/meeting-1/audio/mixed.pcm").exists());
 }
 
 #[test]
@@ -336,6 +360,36 @@ fn recovery_requires_the_same_interrupted_meeting_and_recording() {
             .expect("recording status"),
         "Recovered"
     );
+}
+
+#[test]
+fn recovery_refuses_to_replace_an_active_recording() {
+    let root = test_root("recover-while-active");
+    let store = Store::open(root.join("app.db"), root.to_path_buf()).expect("open store");
+    store.migrate().expect("migrate");
+    let capture = FakeAudioCapture::new_deterministic(48_000, 2, 1_000);
+    let sink = FakeArtifactSink::fail_after_writing_bytes(
+        root.join("meetings"),
+        StorageSetupError::disk_full("disk filled while writing chunks"),
+    );
+    let mut service = ManualRecordingService::new(store, capture, sink);
+
+    service
+        .start_manual_recording("meeting-1", "Planning", 1_000)
+        .expect("start first");
+    service
+        .write_fake_audio_chunk()
+        .expect_err("first recording should become recoverable");
+    service
+        .start_manual_recording("meeting-2", "Another", 2_000)
+        .expect("start another active recording");
+
+    let err = service
+        .recover_interrupted_recording("meeting-1", "recording-meeting-1", 3_000)
+        .expect_err("active recording should block recovery");
+
+    assert_eq!(err.kind, RecordingErrorKind::AlreadyRecording);
+    assert_eq!(service.active_recording(), Some("recording-meeting-2"));
 }
 
 #[test]

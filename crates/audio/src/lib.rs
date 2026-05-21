@@ -8,6 +8,15 @@ pub enum StreamKind {
     SystemAudio,
 }
 
+impl StreamKind {
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            StreamKind::Microphone => "Microphone",
+            StreamKind::SystemAudio => "SystemAudio",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceIdentity {
     pub identity: String,
@@ -241,6 +250,17 @@ pub enum ManifestStatus {
     Failed,
 }
 
+impl ManifestStatus {
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            ManifestStatus::Recording => "Recording",
+            ManifestStatus::Complete => "Complete",
+            ManifestStatus::Canceled => "Canceled",
+            ManifestStatus::Failed => "Failed",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChunkStatus {
     Writing,
@@ -248,11 +268,31 @@ pub enum ChunkStatus {
     Interrupted,
 }
 
+impl ChunkStatus {
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            ChunkStatus::Writing => "Writing",
+            ChunkStatus::Complete => "Complete",
+            ChunkStatus::Interrupted => "Interrupted",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChunkRecoveryState {
     NotNeeded,
     RecoverableInterrupted,
     NotRecoverable,
+}
+
+impl ChunkRecoveryState {
+    pub fn as_manifest_str(self) -> &'static str {
+        match self {
+            ChunkRecoveryState::NotNeeded => "NotNeeded",
+            ChunkRecoveryState::RecoverableInterrupted => "RecoverableInterrupted",
+            ChunkRecoveryState::NotRecoverable => "NotRecoverable",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -396,7 +436,7 @@ impl ChunkWriter {
         let path = self.session_dir.join("manifest.txt");
         let mut file = File::create(path)?;
         writeln!(file, "session_id={}", self.manifest.recording.session_id)?;
-        writeln!(file, "status={:?}", self.manifest.status)?;
+        writeln!(file, "status={}", self.manifest.status.as_manifest_str())?;
         writeln!(file, "started_at_ms={}", self.manifest.recording.started_at_ms)?;
         writeln!(file, "ended_at_ms={:?}", self.manifest.ended_at_ms)?;
         if let Some(recovery) = &self.manifest.recovery {
@@ -406,8 +446,11 @@ impl ChunkWriter {
         for chunk in &self.manifest.chunks {
             writeln!(
                 file,
-                "chunk={:?},{:?},{:?},{}",
-                chunk.stream, chunk.status, chunk.recovery, chunk.bytes_written
+                "chunk={},{},{},{}",
+                chunk.stream.as_manifest_str(),
+                chunk.status.as_manifest_str(),
+                chunk.recovery.as_manifest_str(),
+                chunk.bytes_written
             )?;
         }
         file.sync_data()
