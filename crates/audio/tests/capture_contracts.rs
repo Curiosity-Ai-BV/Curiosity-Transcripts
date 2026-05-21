@@ -4,6 +4,7 @@ use curiosity_audio::{
     ManualSmokeStatus, StreamKind,
 };
 use std::process::Command;
+#[cfg(not(feature = "system-audio-screencapturekit"))]
 use std::time::Duration;
 
 #[test]

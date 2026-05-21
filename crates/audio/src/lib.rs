@@ -988,6 +988,22 @@ enum SystemAudioSampleEncoding {
     all(target_os = "macos", feature = "system-audio-screencapturekit")
 ))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SystemAudioPcmFormat {
+    sample_rate_hz: u32,
+    channel_count: u16,
+    bits_per_channel: u32,
+    bytes_per_frame: u32,
+    is_pcm: bool,
+    is_float: bool,
+    is_big_endian: bool,
+    is_non_interleaved: bool,
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "system-audio-screencapturekit")
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SystemAudioRawBuffer<'a> {
     channel_count: u16,
     data: &'a [u8],
@@ -1012,9 +1028,15 @@ enum SystemAudioWriterMessage {
 fn system_audio_buffers_to_i16(
     buffers: &[SystemAudioRawBuffer<'_>],
     encoding: SystemAudioSampleEncoding,
+    expected_channel_count: u16,
 ) -> Result<Vec<i16>, CaptureError> {
     if buffers.is_empty() {
         return Ok(Vec::new());
+    }
+    if expected_channel_count == 0 {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio expected channel count was zero",
+        )));
     }
     if buffers.iter().any(|buffer| buffer.channel_count == 0) {
         return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
@@ -1022,7 +1044,28 @@ fn system_audio_buffers_to_i16(
         )));
     }
 
-    if buffers.len() > 1 && buffers.iter().all(|buffer| buffer.channel_count == 1) {
+    if buffers.len() == 1 {
+        let buffer = buffers[0];
+        if buffer.channel_count != expected_channel_count {
+            return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "system audio buffer layout did not match the negotiated channel count",
+            )));
+        }
+        let samples = decode_system_audio_buffer(buffer.data, encoding)?;
+        if samples.len() % usize::from(expected_channel_count) != 0 {
+            return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "system audio interleaved buffer layout is not frame-aligned",
+            )));
+        }
+        return Ok(samples);
+    }
+
+    if buffers.iter().all(|buffer| buffer.channel_count == 1) {
+        if buffers.len() != usize::from(expected_channel_count) {
+            return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "system audio planar buffer layout did not match the negotiated channel count",
+            )));
+        }
         let planes = buffers
             .iter()
             .map(|buffer| decode_system_audio_buffer(buffer.data, encoding))
@@ -1042,11 +1085,53 @@ fn system_audio_buffers_to_i16(
         return Ok(samples);
     }
 
-    let mut samples = Vec::new();
-    for buffer in buffers {
-        samples.extend(decode_system_audio_buffer(buffer.data, encoding)?);
+    Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+        "system audio buffer layout is unsupported",
+    )))
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "system-audio-screencapturekit")
+))]
+fn validate_system_audio_pcm_format(
+    format: SystemAudioPcmFormat,
+    expected_sample_rate_hz: u32,
+    expected_channel_count: u16,
+) -> Result<SystemAudioSampleEncoding, CaptureError> {
+    if !format.is_pcm {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer was not linear PCM",
+        )));
     }
-    Ok(samples)
+    if format.sample_rate_hz != expected_sample_rate_hz {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample rate did not match the negotiated capture rate",
+        )));
+    }
+    if format.channel_count != expected_channel_count {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio format channel count did not match the negotiated capture channel count",
+        )));
+    }
+    if !format.is_float || format.is_big_endian || format.bits_per_channel != 32 {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio capture currently requires 32-bit little-endian float PCM",
+        )));
+    }
+
+    let expected_bytes_per_frame = if format.is_non_interleaved {
+        4
+    } else {
+        u32::from(expected_channel_count) * 4
+    };
+    if format.bytes_per_frame != expected_bytes_per_frame {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio PCM frame layout did not match the negotiated capture format",
+        )));
+    }
+
+    Ok(SystemAudioSampleEncoding::Float32Le)
 }
 
 #[cfg(any(
@@ -1087,6 +1172,19 @@ fn send_system_audio_samples(
         if let Ok(mut errors) = errors.lock() {
             errors.push(format!("system audio writer backpressure: {error}"));
         }
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "system-audio-screencapturekit")
+))]
+fn record_system_audio_stream_error(
+    errors: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    message: impl Into<String>,
+) {
+    if let Ok(mut errors) = errors.lock() {
+        errors.push(message.into());
     }
 }
 
@@ -1136,6 +1234,69 @@ fn system_audio_error_from_message(message: String) -> CaptureError {
 ))]
 fn pcm_f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+fn system_audio_pcm_format_from_sample(
+    sample: &screencapturekit::prelude::CMSampleBuffer,
+) -> Result<SystemAudioPcmFormat, CaptureError> {
+    let description = sample.format_description().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include a format description",
+        ))
+    })?;
+    let sample_rate_hz = description.audio_sample_rate().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include a sample rate",
+        ))
+    })?;
+    let channel_count = description.audio_channel_count().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include a channel count",
+        ))
+    })?;
+    let bits_per_channel = description.audio_bits_per_channel().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include a bit depth",
+        ))
+    })?;
+    let bytes_per_frame = description.audio_bytes_per_frame().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include bytes-per-frame metadata",
+        ))
+    })?;
+    let flags = description.audio_format_flags().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "system audio sample buffer did not include format flags",
+        ))
+    })?;
+    Ok(SystemAudioPcmFormat {
+        sample_rate_hz: sample_rate_hz.round() as u32,
+        channel_count: u16::try_from(channel_count).map_err(|_| {
+            CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "system audio channel count exceeded WAV output limits",
+            ))
+        })?,
+        bits_per_channel,
+        bytes_per_frame,
+        is_pcm: description.is_pcm(),
+        is_float: description.audio_is_float(),
+        is_big_endian: description.audio_is_big_endian(),
+        is_non_interleaved: flags & (1 << 5) != 0,
+    })
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+fn system_audio_sample_encoding(
+    sample: &screencapturekit::prelude::CMSampleBuffer,
+    expected_sample_rate_hz: u32,
+    expected_channel_count: u16,
+) -> Result<SystemAudioSampleEncoding, CaptureError> {
+    validate_system_audio_pcm_format(
+        system_audio_pcm_format_from_sample(sample)?,
+        expected_sample_rate_hz,
+        expected_channel_count,
+    )
 }
 
 #[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
@@ -1214,19 +1375,40 @@ impl MacosSystemAudioWavRecording {
 
         let handler_tx = sample_tx.clone();
         let handler_errors = Arc::clone(&stream_errors);
-        let mut stream = SCStream::new(&filter, &config);
+        let delegate_errors = Arc::clone(&stream_errors);
+        let delegate_stop_errors = Arc::clone(&stream_errors);
+        let delegate = screencapturekit::stream::delegate_trait::StreamCallbacks::new()
+            .on_error(move |error| {
+                record_system_audio_stream_error(&delegate_errors, error.to_string());
+            })
+            .on_stop(move |error| {
+                if let Some(error) = error {
+                    record_system_audio_stream_error(&delegate_stop_errors, error);
+                }
+            });
+        let mut stream = SCStream::new_with_delegate(&filter, &config, delegate);
         if stream
             .add_output_handler(
                 move |sample: CMSampleBuffer, of_type: SCStreamOutputType| {
                     if of_type != SCStreamOutputType::Audio {
                         return;
                     }
-                    let Some(audio_buffers) = sample.audio_buffer_list() else {
-                        if let Ok(mut errors) = handler_errors.lock() {
-                            errors.push(
-                                "system audio sample did not include audio buffers".to_string(),
-                            );
+                    let encoding = match system_audio_sample_encoding(
+                        &sample,
+                        sample_rate_hz,
+                        channel_count,
+                    ) {
+                        Ok(encoding) => encoding,
+                        Err(error) => {
+                            record_system_audio_stream_error(&handler_errors, error.to_string());
+                            return;
                         }
+                    };
+                    let Some(audio_buffers) = sample.audio_buffer_list() else {
+                        record_system_audio_stream_error(
+                            &handler_errors,
+                            "system audio sample did not include audio buffers",
+                        );
                         return;
                     };
                     let raw_buffers = audio_buffers
@@ -1236,19 +1418,14 @@ impl MacosSystemAudioWavRecording {
                             data: buffer.data(),
                         })
                         .collect::<Vec<_>>();
-                    match system_audio_buffers_to_i16(
-                        &raw_buffers,
-                        SystemAudioSampleEncoding::Float32Le,
-                    ) {
+                    match system_audio_buffers_to_i16(&raw_buffers, encoding, channel_count) {
                         Ok(samples) => {
                             if !samples.is_empty() {
                                 send_system_audio_samples(&handler_tx, &handler_errors, samples);
                             }
                         }
                         Err(error) => {
-                            if let Ok(mut errors) = handler_errors.lock() {
-                                errors.push(error.to_string());
-                            }
+                            record_system_audio_stream_error(&handler_errors, error.to_string());
                         }
                     }
                 },
@@ -1929,8 +2106,9 @@ mod tests {
             data: &bytes,
         }];
 
-        let samples = system_audio_buffers_to_i16(&buffers, SystemAudioSampleEncoding::Float32Le)
-            .expect("convert samples");
+        let samples =
+            system_audio_buffers_to_i16(&buffers, SystemAudioSampleEncoding::Float32Le, 2)
+                .expect("convert samples");
 
         assert_eq!(samples, vec![0, 32767, -32767, 16383]);
     }
@@ -1950,10 +2128,85 @@ mod tests {
             },
         ];
 
-        let samples = system_audio_buffers_to_i16(&buffers, SystemAudioSampleEncoding::Float32Le)
-            .expect("convert planar samples");
+        let samples =
+            system_audio_buffers_to_i16(&buffers, SystemAudioSampleEncoding::Float32Le, 2)
+                .expect("convert planar samples");
 
         assert_eq!(samples, vec![8191, -8191, 16383, -16383]);
+    }
+
+    #[test]
+    fn system_audio_mixed_buffer_layout_fails_instead_of_concatenating() {
+        let stereo = [0.25f32.to_le_bytes(), 0.5f32.to_le_bytes()].concat();
+        let mono = [(-0.25f32).to_le_bytes()].concat();
+        let buffers = [
+            SystemAudioRawBuffer {
+                channel_count: 2,
+                data: &stereo,
+            },
+            SystemAudioRawBuffer {
+                channel_count: 1,
+                data: &mono,
+            },
+        ];
+
+        let result = system_audio_buffers_to_i16(&buffers, SystemAudioSampleEncoding::Float32Le, 2);
+
+        assert!(
+            matches!(result, Err(CaptureError::Unavailable(error)) if error.reason.contains("layout"))
+        );
+    }
+
+    #[test]
+    fn system_audio_format_validation_rejects_non_float_pcm() {
+        let format = SystemAudioPcmFormat {
+            sample_rate_hz: 48_000,
+            channel_count: 2,
+            bits_per_channel: 16,
+            bytes_per_frame: 4,
+            is_pcm: true,
+            is_float: false,
+            is_big_endian: false,
+            is_non_interleaved: false,
+        };
+
+        let result = validate_system_audio_pcm_format(format, 48_000, 2);
+
+        assert!(
+            matches!(result, Err(CaptureError::Unavailable(error)) if error.reason.contains("32-bit little-endian float"))
+        );
+    }
+
+    #[test]
+    fn system_audio_format_validation_accepts_expected_interleaved_f32_pcm() {
+        let format = SystemAudioPcmFormat {
+            sample_rate_hz: 48_000,
+            channel_count: 2,
+            bits_per_channel: 32,
+            bytes_per_frame: 8,
+            is_pcm: true,
+            is_float: true,
+            is_big_endian: false,
+            is_non_interleaved: false,
+        };
+
+        let encoding =
+            validate_system_audio_pcm_format(format, 48_000, 2).expect("supported format");
+
+        assert_eq!(encoding, SystemAudioSampleEncoding::Float32Le);
+    }
+
+    #[test]
+    fn system_audio_recorded_stream_error_prevents_success_after_samples() {
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        record_system_audio_stream_error(&errors, "ScreenCaptureKit stopped after start");
+        let errors = errors.lock().expect("errors").clone();
+        let result = system_audio_capture_stream_result(true, &errors);
+
+        assert!(
+            matches!(result, Err(CaptureError::Unavailable(error)) if error.reason.contains("ScreenCaptureKit"))
+        );
     }
 
     #[test]
