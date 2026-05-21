@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use curiosity_domain::{
-    AudioArtifact, JobStatus, Meeting, ProcessingJob, RecordingSession,
+    AudioArtifact, JobStatus, Meeting, MeetingStatus, ProcessingJob, RecordingSession,
+    RecordingStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -173,6 +174,71 @@ impl Store {
         }
         let sql = format!("SELECT COUNT(*) FROM {table}");
         Ok(self.conn.query_row(&sql, [], |row| row.get(0))?)
+    }
+
+    pub fn update_meeting_status(
+        &self,
+        meeting_id: &str,
+        status: MeetingStatus,
+        ended_at_ms: Option<u64>,
+    ) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE meetings
+            SET status = ?2,
+                ended_at_ms = COALESCE(?3, ended_at_ms)
+            WHERE id = ?1
+            ",
+            params![meeting_id, enum_name(status), ended_at_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_recording_session_status(
+        &self,
+        recording_id: &str,
+        status: RecordingStatus,
+        ended_at_ms: Option<u64>,
+        recovery_note: Option<&str>,
+    ) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE recording_sessions
+            SET status = ?2,
+                ended_at_ms = COALESCE(?3, ended_at_ms),
+                recovery_note = COALESCE(?4, recovery_note)
+            WHERE id = ?1
+            ",
+            params![recording_id, enum_name(status), ended_at_ms, recovery_note],
+        )?;
+        Ok(())
+    }
+
+    pub fn meeting_status(&self, meeting_id: &str) -> StoreResult<String> {
+        Ok(self.conn.query_row(
+            "SELECT status FROM meetings WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn recording_session_status(&self, recording_id: &str) -> StoreResult<String> {
+        Ok(self.conn.query_row(
+            "SELECT status FROM recording_sessions WHERE id = ?1",
+            params![recording_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn recording_session_ended_at_ms(
+        &self,
+        recording_id: &str,
+    ) -> StoreResult<Option<u64>> {
+        Ok(self.conn.query_row(
+            "SELECT ended_at_ms FROM recording_sessions WHERE id = ?1",
+            params![recording_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn repair_startup(&self) -> StoreResult<RepairReport> {

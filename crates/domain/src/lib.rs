@@ -2,10 +2,13 @@
 pub enum MeetingStatus {
     Created,
     Recording,
+    Paused,
+    Stopping,
     Interrupted,
     Recovered,
     Transcribing,
     Complete,
+    Failed,
     Deleted,
 }
 
@@ -89,8 +92,12 @@ pub enum RecordingSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordingStatus {
     Recording,
+    Paused,
+    Stopping,
     Interrupted,
     Recovered,
+    Complete,
+    Failed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,9 +139,33 @@ impl RecordingSession {
         self
     }
 
+    pub fn pause(mut self) -> Self {
+        self.status = RecordingStatus::Paused;
+        self
+    }
+
+    pub fn stop(mut self, ended_at_ms: u64) -> Self {
+        self.status = RecordingStatus::Stopping;
+        self.ended_at_ms = Some(ended_at_ms);
+        self
+    }
+
+    pub fn complete(mut self, ended_at_ms: u64) -> Self {
+        self.status = RecordingStatus::Complete;
+        self.ended_at_ms = Some(ended_at_ms);
+        self
+    }
+
     pub fn recover(mut self, recovered_at_ms: u64) -> Self {
         self.status = RecordingStatus::Recovered;
         self.recovery_note = Some(format!("recovered at {recovered_at_ms}"));
+        self
+    }
+
+    pub fn fail(mut self, ended_at_ms: u64, note: impl Into<String>) -> Self {
+        self.status = RecordingStatus::Failed;
+        self.ended_at_ms = Some(ended_at_ms);
+        self.recovery_note = Some(note.into());
         self
     }
 }

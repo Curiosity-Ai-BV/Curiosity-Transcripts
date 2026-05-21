@@ -20,6 +20,12 @@ fn meeting_recording_lifecycle_preserves_recovery_before_completion_and_delete()
     assert_eq!(meeting.status, MeetingStatus::Recording);
     assert_eq!(session.status, RecordingStatus::Recording);
 
+    let paused = session.clone().pause();
+    assert_eq!(paused.status, RecordingStatus::Paused);
+    let stopping = paused.stop(1_250);
+    assert_eq!(stopping.status, RecordingStatus::Stopping);
+    assert_eq!(stopping.ended_at_ms, Some(1_250));
+
     let interrupted = session.interrupt(1_500, "process exited while audio was open");
     meeting.mark_interrupted(&interrupted);
     assert_eq!(meeting.status, MeetingStatus::Interrupted);
