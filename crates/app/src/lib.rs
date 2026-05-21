@@ -2,8 +2,10 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use curiosity_audio::{AudioCapture, AudioFrame, CapturePermission, CapturePermissionError};
+use curiosity_analysis::{AnalysisInput, AnalysisOutcome, MeetingAnalyzer};
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, Meeting, MeetingStatus, RecordingSession, RecordingSource,
+    AnalysisActionItem, AnalysisCitation, AnalysisDecision, AnalysisQuestion, ArtifactKind,
+    AudioArtifact, Meeting, MeetingAnalysis, MeetingStatus, RecordingSession, RecordingSource,
     RecordingStatus,
 };
 use curiosity_store::Store;
@@ -100,6 +102,70 @@ pub struct DeletedMeetingDto {
     pub remaining_exports: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum AnalysisCommandState {
+    Complete,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisFailureDto {
+    pub code: String,
+    pub message: String,
+    pub setup_guidance: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisCommandDto {
+    pub meeting_id: String,
+    pub state: AnalysisCommandState,
+    pub analysis: Option<MeetingAnalysisDto>,
+    pub failure: Option<AnalysisFailureDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingAnalysisDto {
+    pub id: String,
+    pub meeting_id: String,
+    pub provider: String,
+    pub model_name: String,
+    pub network_used: bool,
+    pub created_at_ms: u64,
+    pub prompt_template_version: String,
+    pub summary: String,
+    pub decisions: Vec<AnalysisDecisionDto>,
+    pub action_items: Vec<AnalysisActionItemDto>,
+    pub questions: Vec<AnalysisQuestionDto>,
+    pub citations: Vec<AnalysisCitationDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisDecisionDto {
+    pub text: String,
+    pub citations: Vec<AnalysisCitationDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisActionItemDto {
+    pub text: String,
+    pub owner: Option<String>,
+    pub due_date: Option<String>,
+    pub citations: Vec<AnalysisCitationDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisQuestionDto {
+    pub text: String,
+    pub citations: Vec<AnalysisCitationDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisCitationDto {
+    pub segment_id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
 pub fn meeting_detail_dto(
     store: &Store,
     meeting_id: &str,
@@ -193,6 +259,53 @@ pub fn delete_meeting_command(
     })
 }
 
+pub fn generate_summary_command(
+    store: &Store,
+    analyzer: &impl MeetingAnalyzer,
+    meeting_id: &str,
+    created_at_ms: u64,
+) -> curiosity_store::StoreResult<AnalysisCommandDto> {
+    let transcript_segments = store.transcript_segments(meeting_id)?;
+    if transcript_segments.is_empty() {
+        return Ok(AnalysisCommandDto {
+            meeting_id: meeting_id.to_string(),
+            state: AnalysisCommandState::Failed,
+            analysis: None,
+            failure: Some(AnalysisFailureDto {
+                code: "no_transcript_segments".to_string(),
+                message: "Generate a transcript before requesting a summary.".to_string(),
+                setup_guidance: String::new(),
+            }),
+        });
+    }
+    let outcome = analyzer.analyze(AnalysisInput {
+        meeting_id: meeting_id.to_string(),
+        created_at_ms,
+        transcript_segments,
+    });
+    match outcome {
+        AnalysisOutcome::Completed(analysis) => {
+            store.persist_analysis_result(&analysis)?;
+            Ok(AnalysisCommandDto {
+                meeting_id: meeting_id.to_string(),
+                state: AnalysisCommandState::Complete,
+                analysis: Some(meeting_analysis_dto(analysis)),
+                failure: None,
+            })
+        }
+        AnalysisOutcome::Failed(failure) => Ok(AnalysisCommandDto {
+            meeting_id: meeting_id.to_string(),
+            state: AnalysisCommandState::Failed,
+            analysis: None,
+            failure: Some(AnalysisFailureDto {
+                code: failure.code,
+                message: failure.message,
+                setup_guidance: failure.setup_guidance,
+            }),
+        }),
+    }
+}
+
 fn meeting_summary_dto(summary: curiosity_store::MeetingSummary) -> MeetingSummaryDto {
     MeetingSummaryDto {
         meeting_id: summary.meeting_id,
@@ -201,6 +314,70 @@ fn meeting_summary_dto(summary: curiosity_store::MeetingSummary) -> MeetingSumma
         ended_at_ms: summary.ended_at_ms,
         status: summary.status,
         transcript_state: summary.transcript_state,
+    }
+}
+
+fn meeting_analysis_dto(analysis: MeetingAnalysis) -> MeetingAnalysisDto {
+    MeetingAnalysisDto {
+        id: analysis.id,
+        meeting_id: analysis.meeting_id,
+        provider: analysis.provider,
+        model_name: analysis.model_name,
+        network_used: analysis.network_used,
+        created_at_ms: analysis.created_at_ms,
+        prompt_template_version: analysis.prompt_template_version,
+        summary: analysis.summary,
+        decisions: analysis.decisions.into_iter().map(analysis_decision_dto).collect(),
+        action_items: analysis
+            .action_items
+            .into_iter()
+            .map(analysis_action_item_dto)
+            .collect(),
+        questions: analysis.questions.into_iter().map(analysis_question_dto).collect(),
+        citations: analysis.citations.into_iter().map(analysis_citation_dto).collect(),
+    }
+}
+
+fn analysis_decision_dto(decision: AnalysisDecision) -> AnalysisDecisionDto {
+    AnalysisDecisionDto {
+        text: decision.text,
+        citations: decision
+            .citations
+            .into_iter()
+            .map(analysis_citation_dto)
+            .collect(),
+    }
+}
+
+fn analysis_action_item_dto(action_item: AnalysisActionItem) -> AnalysisActionItemDto {
+    AnalysisActionItemDto {
+        text: action_item.text,
+        owner: action_item.owner,
+        due_date: action_item.due_date,
+        citations: action_item
+            .citations
+            .into_iter()
+            .map(analysis_citation_dto)
+            .collect(),
+    }
+}
+
+fn analysis_question_dto(question: AnalysisQuestion) -> AnalysisQuestionDto {
+    AnalysisQuestionDto {
+        text: question.text,
+        citations: question
+            .citations
+            .into_iter()
+            .map(analysis_citation_dto)
+            .collect(),
+    }
+}
+
+fn analysis_citation_dto(citation: AnalysisCitation) -> AnalysisCitationDto {
+    AnalysisCitationDto {
+        segment_id: citation.segment_id,
+        start_ms: citation.start_ms,
+        end_ms: citation.end_ms,
     }
 }
 

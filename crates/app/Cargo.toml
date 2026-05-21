@@ -8,6 +8,7 @@ name = "curiosity_app"
 path = "src/lib.rs"
 
 [dependencies]
+curiosity-analysis = { path = "../analysis" }
 curiosity-audio = { path = "../audio" }
 curiosity-domain = { path = "../domain" }
 curiosity-store = { path = "../store" }

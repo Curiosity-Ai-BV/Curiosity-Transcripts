@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use curiosity_domain::{
-    AudioArtifact, JobStatus, Meeting, MeetingStatus, ModelRun, ProcessingJob, RecordingSession,
-    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
+    AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun, ProcessingJob,
+    RecordingSession, RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -141,6 +141,18 @@ impl Store {
                 corrected_text TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_results (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                network_used INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                prompt_template_version TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                UNIQUE(meeting_id, provider, model_name, prompt_template_version)
+            );
+
             CREATE VIRTUAL TABLE IF NOT EXISTS meeting_search
             USING fts5(meeting_id UNINDEXED, title, transcript_text);
             ",
@@ -247,6 +259,7 @@ impl Store {
             "transcript_versions",
             "transcript_segments",
             "transcript_segment_edits",
+            "analysis_results",
         ];
         if !allowed.contains(&table) {
             return Err(format!("unsupported count table: {table}").into());
@@ -891,6 +904,106 @@ impl Store {
         Ok(edits)
     }
 
+    pub fn persist_analysis_result(&self, analysis: &MeetingAnalysis) -> StoreResult<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.persist_analysis_result_in_transaction(analysis);
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn persist_analysis_result_in_transaction(&self, analysis: &MeetingAnalysis) -> StoreResult<()> {
+        self.ensure_active_meeting_exists(&analysis.meeting_id)?;
+        if let Some(existing) = self.analysis_result_by_identity(analysis)? {
+            if existing == *analysis {
+                return Ok(());
+            }
+            return Err("analysis replay conflict: result changed".into());
+        }
+        let result_json = serde_json::to_string(analysis)?;
+        self.conn.execute(
+            "
+            INSERT INTO analysis_results (
+                id, meeting_id, provider, model_name, network_used,
+                created_at_ms, prompt_template_version, result_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ",
+            params![
+                analysis.id,
+                analysis.meeting_id,
+                analysis.provider,
+                analysis.model_name,
+                analysis.network_used,
+                analysis.created_at_ms,
+                analysis.prompt_template_version,
+                result_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn analysis_result_by_identity(
+        &self,
+        analysis: &MeetingAnalysis,
+    ) -> StoreResult<Option<MeetingAnalysis>> {
+        let result_json = self
+            .conn
+            .query_row(
+                "
+                SELECT result_json
+                FROM analysis_results
+                WHERE meeting_id = ?1
+                  AND provider = ?2
+                  AND model_name = ?3
+                  AND prompt_template_version = ?4
+                ",
+                params![
+                    analysis.meeting_id,
+                    analysis.provider,
+                    analysis.model_name,
+                    analysis.prompt_template_version,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        result_json
+            .map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn current_analysis_result(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<MeetingAnalysis>> {
+        let result_json = self
+            .conn
+            .query_row(
+                "
+                SELECT result_json
+                FROM analysis_results
+                WHERE meeting_id = ?1
+                ORDER BY created_at_ms DESC, id DESC
+                LIMIT 1
+                ",
+                params![meeting_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        result_json
+            .map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
+    }
+
     pub fn correct_transcript_segment(
         &self,
         segment_id: &str,
@@ -1258,6 +1371,10 @@ impl Store {
                 SELECT id FROM transcript_versions WHERE meeting_id = ?1
             )
             ",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM analysis_results WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
         self.conn.execute(

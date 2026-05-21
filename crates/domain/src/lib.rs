@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MeetingStatus {
     Created,
@@ -380,4 +382,47 @@ impl TranscriptSegment {
             original_text: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisCitation {
+    pub segment_id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisDecision {
+    pub text: String,
+    pub citations: Vec<AnalysisCitation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisActionItem {
+    pub text: String,
+    pub owner: Option<String>,
+    pub due_date: Option<String>,
+    pub citations: Vec<AnalysisCitation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AnalysisQuestion {
+    pub text: String,
+    pub citations: Vec<AnalysisCitation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingAnalysis {
+    pub id: String,
+    pub meeting_id: String,
+    pub provider: String,
+    pub model_name: String,
+    pub network_used: bool,
+    pub created_at_ms: u64,
+    pub prompt_template_version: String,
+    pub summary: String,
+    pub decisions: Vec<AnalysisDecision>,
+    pub action_items: Vec<AnalysisActionItem>,
+    pub questions: Vec<AnalysisQuestion>,
+    pub citations: Vec<AnalysisCitation>,
 }
