@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use curiosity_audio::{AudioCapture, AudioFrame, CapturePermission, CapturePermissionError};
 use curiosity_domain::{
@@ -310,6 +310,12 @@ impl ArtifactSink for FakeArtifactSink {
         if let Some(error) = &self.setup_error {
             return Err(error.clone());
         }
+        if !is_safe_meeting_id(meeting_id) {
+            return Err(StorageSetupError {
+                kind: RecordingErrorKind::StorageUnavailable,
+                message: format!("meeting id is not safe for private storage: {meeting_id}"),
+            });
+        }
         let audio_dir = self.meetings_root.join(meeting_id).join("audio");
         fs::create_dir_all(&audio_dir).map_err(|err| StorageSetupError {
             kind: RecordingErrorKind::StorageUnavailable,
@@ -329,7 +335,16 @@ impl ArtifactSink for FakeArtifactSink {
         if let Some(FakeWriteFailure::BeforeBytes(error)) = &self.write_failure {
             return Err(error.clone());
         }
-        let artifact_path = relative_to_meetings_root(&self.meetings_root, &setup.artifact_path);
+        let artifact_path =
+            relative_to_meetings_root(&self.meetings_root, &setup.artifact_path).ok_or_else(|| {
+                StorageSetupError {
+                    kind: RecordingErrorKind::StorageUnavailable,
+                    message: format!(
+                        "artifact path is not safe for private storage: {}",
+                        setup.artifact_path
+                    ),
+                }
+            })?;
         if let Some(parent) = artifact_path.parent() {
             fs::create_dir_all(parent).map_err(|err| StorageSetupError {
                 kind: RecordingErrorKind::StorageUnavailable,
@@ -353,7 +368,11 @@ impl ArtifactSink for FakeArtifactSink {
     }
 
     fn has_recovery_evidence(&self, setup: &StorageSetup) -> bool {
-        let artifact_path = relative_to_meetings_root(&self.meetings_root, &setup.artifact_path);
+        let Some(artifact_path) =
+            relative_to_meetings_root(&self.meetings_root, &setup.artifact_path)
+        else {
+            return false;
+        };
         artifact_path
             .metadata()
             .map(|metadata| metadata.len() > 0)
@@ -409,6 +428,17 @@ where
         title: &str,
         started_at_ms: u64,
     ) -> AppResult<CommandRecordingDto> {
+        if !is_safe_meeting_id(meeting_id) {
+            return Err(storage_error(
+                meeting_id,
+                CommandRecordingState::Interrupted,
+                false,
+                StorageSetupError {
+                    kind: RecordingErrorKind::StorageUnavailable,
+                    message: format!("meeting id is not safe for private storage: {meeting_id}"),
+                },
+            ));
+        }
         if self.active.is_some() {
             return Err(simple_error(
                 RecordingErrorKind::AlreadyRecording,
@@ -613,6 +643,15 @@ where
                         RecordingStatus::Interrupted,
                         None,
                         Some("fake audio write failed after recoverable evidence"),
+                    )
+                    .map_err(|err| store_error(&meeting_id, err.to_string()))?;
+                self.store
+                    .write_recoverable_artifact_manifest(
+                        &meeting_id,
+                        &recording_id,
+                        &format!("artifact-{meeting_id}"),
+                        &interrupted.setup.artifact_path,
+                        "sha256:pending",
                     )
                     .map_err(|err| store_error(&meeting_id, err.to_string()))?;
                 self.interrupted = Some(InterruptedRecording {
@@ -898,13 +937,36 @@ fn no_recoverable_recording_error(meeting_id: &str, recording_id: &str) -> Recor
     }
 }
 
-fn relative_to_meetings_root(meetings_root: &std::path::Path, artifact_path: &str) -> PathBuf {
+fn relative_to_meetings_root(meetings_root: &Path, artifact_path: &str) -> Option<PathBuf> {
     let prefix = "meetings/";
-    if let Some(path) = artifact_path.strip_prefix(prefix) {
-        meetings_root.join(path)
+    let relative_path = if let Some(path) = artifact_path.strip_prefix(prefix) {
+        Path::new(path)
     } else {
-        meetings_root.join(artifact_path)
+        Path::new(artifact_path)
+    };
+    if is_safe_relative_path(relative_path) {
+        Some(meetings_root.join(relative_path))
+    } else {
+        None
     }
+}
+
+fn is_safe_meeting_id(meeting_id: &str) -> bool {
+    let mut components = Path::new(meeting_id).components();
+    !meeting_id.is_empty()
+        && !meeting_id.contains('/')
+        && !meeting_id.contains('\\')
+        && !meeting_id.contains("..")
+        && !Path::new(meeting_id).is_absolute()
+        && matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn is_safe_relative_path(path: &Path) -> bool {
+    !path.is_absolute()
+        && path.components().all(|component| {
+            matches!(component, Component::Normal(_) | Component::CurDir)
+        })
 }
 
 fn normalized_text(text: &str) -> String {

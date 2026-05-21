@@ -57,6 +57,44 @@ fn search_finds_newly_persisted_transcript_text_without_manual_rebuild() {
 }
 
 #[test]
+fn insert_meeting_indexes_title_before_transcription_exists() {
+    let root = test_root("search-title-only");
+    let store = migrated_store(&root);
+    let meeting = Meeting::new_manual("meeting-1", "Standalone Planning", 1_000);
+
+    store.insert_meeting(&meeting).expect("insert meeting");
+
+    assert_eq!(
+        ids(&store.search_meetings("Standalone").expect("title search")),
+        vec!["meeting-1"]
+    );
+}
+
+#[test]
+fn search_ignores_obsolete_transcript_versions_after_retranscription() {
+    let root = test_root("search-current-version");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "obsolete phrase");
+    persist_transcript_version(
+        &store,
+        "meeting-1",
+        2,
+        "replacement phrase",
+        "sha256:meeting-1-v2",
+        3_000,
+    );
+
+    assert!(store
+        .search_meetings("obsolete")
+        .expect("obsolete search")
+        .is_empty());
+    assert_eq!(
+        ids(&store.search_meetings("replacement").expect("current search")),
+        vec!["meeting-1"]
+    );
+}
+
+#[test]
 fn search_finds_corrected_text_without_manual_rebuild_after_edit() {
     let root = test_root("search-auto-edit");
     let store = migrated_store(&root);
@@ -343,6 +381,49 @@ fn delete_meeting_removes_private_manifest_for_deleted_meeting_only() {
     assert!(kept_manifest_path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn delete_meeting_retry_succeeds_after_file_removal_failure_marks_delete_intent() {
+    let root = test_root("delete-retry-after-file-failure");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+    let artifact_path = root.join("meetings/meeting-1/audio/imported.wav");
+    fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
+    fs::write(&artifact_path, b"private audio").expect("artifact file");
+    fs::set_permissions(
+        artifact_path.parent().expect("artifact parent"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .expect("readonly artifact dir");
+
+    let err = store
+        .delete_meeting("meeting-1")
+        .expect_err("readonly artifact dir should fail file removal");
+
+    assert!(err.to_string().contains("Permission") || err.to_string().contains("permission"));
+    assert!(store.meeting_deleted("meeting-1").expect("meeting deleted intent"));
+    assert!(store
+        .artifact_tombstoned("meeting-1-artifact-1")
+        .expect("artifact tombstoned intent"));
+    assert!(artifact_path.exists());
+
+    fs::set_permissions(
+        artifact_path.parent().expect("artifact parent"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("restore artifact dir");
+    let report = store.delete_meeting("meeting-1").expect("retry delete");
+
+    assert_eq!(report.deleted_private_artifacts, vec![artifact_path.clone()]);
+    assert!(!artifact_path.exists());
+    assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 0);
+    assert_eq!(
+        store.count("recording_sessions").expect("recording sessions"),
+        0
+    );
+    assert!(store.search_meetings("delete").expect("search").is_empty());
+}
+
 fn migrated_store(root: &Path) -> Store {
     let store = Store::open(root.join("app.db"), root.to_path_buf()).expect("open store");
     store.migrate().expect("migrate");
@@ -404,6 +485,48 @@ fn seed_meeting_with_transcript(store: &Store, meeting_id: &str, title: &str, te
             )],
         )
         .expect("persist transcript");
+}
+
+fn persist_transcript_version(
+    store: &Store,
+    meeting_id: &str,
+    version_number: u32,
+    text: &str,
+    sha256: &str,
+    created_at_ms: u64,
+) {
+    let run = ModelRun::new(
+        format!("{meeting_id}-run-{version_number}"),
+        meeting_id,
+        sha256,
+        "fake-local",
+        "fixture-whisper",
+        false,
+        created_at_ms,
+    );
+    let version = TranscriptVersion::new(
+        format!("{meeting_id}-version-{version_number}"),
+        meeting_id,
+        run.id.clone(),
+        version_number,
+        created_at_ms + 10,
+    );
+    store
+        .persist_transcript(
+            &run,
+            &version,
+            &[TranscriptSegment::with_metadata(
+                format!("{meeting_id}-segment-{version_number}"),
+                meeting_id,
+                0,
+                1_200,
+                text,
+                SourceChannel::Imported,
+                &run.id,
+                &version.id,
+            )],
+        )
+        .expect("persist transcript version");
 }
 
 fn ids(results: &[curiosity_store::MeetingSearchResult]) -> Vec<&str> {

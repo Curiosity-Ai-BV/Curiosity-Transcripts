@@ -33,6 +33,34 @@ fn service(root: &Path) -> ManualRecordingService<FakeAudioCapture, FakeArtifact
 }
 
 #[test]
+fn start_rejects_meeting_ids_that_escape_private_meeting_storage() {
+    let root = test_root("unsafe-meeting-id");
+    let unsafe_absolute = root.join("absolute-escape").to_string_lossy().to_string();
+    let cases = vec![
+        ("../escape", root.join("escape")),
+        ("nested/id", root.join("meetings/nested")),
+        (unsafe_absolute.as_str(), root.join("absolute-escape")),
+    ];
+
+    for (meeting_id, escaped_path) in cases {
+        let mut service = service(&root);
+
+        let err = service
+            .start_manual_recording(meeting_id, "Unsafe", 1_000)
+            .expect_err("unsafe meeting id should be rejected before storage setup");
+
+        assert_eq!(err.kind, RecordingErrorKind::StorageUnavailable);
+        assert!(service.active_recording().is_none());
+        assert_eq!(service.store().count("meetings").expect("meetings"), 0);
+        assert!(
+            !escaped_path.exists(),
+            "unsafe id {meeting_id} should not create {}",
+            escaped_path.display()
+        );
+    }
+}
+
+#[test]
 fn start_creates_recording_and_artifacts_before_reporting_active() {
     let root = test_root("start");
     let mut service = service(&root);
@@ -107,6 +135,39 @@ fn permission_denied_failure_has_actionable_trust_state_without_requiring_hardwa
     );
     assert!(err.trust_state.recovery_action.contains("Microphone"));
     assert!(service.active_recording().is_none());
+}
+
+#[test]
+fn recoverable_fake_interruption_persists_manifest_for_startup_repair() {
+    let root = test_root("recoverable-manifest");
+    let store = Store::open(root.join("app.db"), root.to_path_buf()).expect("open store");
+    store.migrate().expect("migrate");
+    let capture = FakeAudioCapture::new_deterministic(48_000, 2, 1_000);
+    let sink = FakeArtifactSink::fail_after_writing_bytes(
+        root.join("meetings"),
+        StorageSetupError::disk_full("disk filled while writing chunks"),
+    );
+    let mut service = ManualRecordingService::new(store, capture, sink);
+
+    service
+        .start_manual_recording("meeting-1", "Planning", 1_000)
+        .expect("start");
+    service
+        .write_fake_audio_chunk()
+        .expect_err("chunk write should fail after writing recoverable evidence");
+    drop(service);
+
+    let fresh_store = Store::open(root.join("app.db"), root.to_path_buf()).expect("reopen store");
+    fresh_store.migrate().expect("migrate reopened store");
+    let report = fresh_store.repair_startup().expect("startup repair");
+
+    assert_eq!(report.recovered_artifacts, vec!["artifact-meeting-1"]);
+    assert_eq!(
+        fresh_store
+            .artifact_recovery_status("artifact-meeting-1")
+            .expect("artifact recovery status"),
+        curiosity_store::RepairStatus::Recovered
+    );
 }
 
 #[test]

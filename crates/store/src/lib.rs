@@ -165,6 +165,7 @@ impl Store {
                 enum_name(meeting.transcript_state)
             ],
         )?;
+        self.refresh_search_index_for_meeting(&meeting.id)?;
         Ok(())
     }
 
@@ -420,6 +421,34 @@ impl Store {
         Ok(files)
     }
 
+    pub fn write_recoverable_artifact_manifest(
+        &self,
+        meeting_id: &str,
+        session_id: &str,
+        artifact_id: &str,
+        artifact_path: &str,
+        sha256: &str,
+    ) -> StoreResult<()> {
+        if !is_safe_meeting_id(meeting_id) {
+            return Err(
+                format!("meeting id is not safe for private storage: {meeting_id}").into(),
+            );
+        }
+        if self.private_app_path(artifact_path).is_none() {
+            return Err(
+                format!("artifact path is not safe for private storage: {artifact_path}").into(),
+            );
+        }
+        let manifest_path = self
+            .app_root
+            .join("meetings")
+            .join(meeting_id)
+            .join("manifest.json");
+        ArtifactManifest::new(meeting_id, session_id, artifact_id, artifact_path, sha256)
+            .mark_interrupted_recoverable()
+            .write(manifest_path)
+    }
+
     pub fn list_meetings(&self) -> StoreResult<Vec<MeetingSummary>> {
         let mut stmt = self.conn.prepare(
             "
@@ -573,31 +602,6 @@ impl Store {
 
     pub fn delete_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
         let mut report = DeleteReport::default();
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT audio_artifacts.id, audio_artifacts.path
-            FROM audio_artifacts
-            JOIN recording_sessions
-              ON recording_sessions.id = audio_artifacts.recording_session_id
-            WHERE recording_sessions.meeting_id = ?1
-              AND audio_artifacts.tombstoned = 0
-            ",
-        )?;
-        let artifacts = stmt
-            .query_map(params![meeting_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        for (_artifact_id, artifact_path) in artifacts {
-            let Some(path) = self.private_app_path(&artifact_path) else {
-                report.skipped_private_artifacts.push(self.reported_path(&artifact_path));
-                continue;
-            };
-            if path.exists() {
-                fs::remove_file(&path)?;
-                report.deleted_private_artifacts.push(path);
-            }
-        }
 
         let mut exports = self
             .conn
@@ -607,6 +611,33 @@ impl Store {
                 Ok(PathBuf::from(row.get::<_, String>(0)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        drop(exports);
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.mark_meeting_delete_intent_in_transaction(meeting_id);
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+
+        for artifact_path in self.private_artifacts_for_delete(meeting_id)? {
+            let Some(path) = self.private_app_path(&artifact_path) else {
+                report.skipped_private_artifacts.push(self.reported_path(&artifact_path));
+                continue;
+            };
+            if path.exists() {
+                fs::remove_file(&path)?;
+                report.deleted_private_artifacts.push(path);
+            }
+        }
 
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let result = self.delete_meeting_db_rows_in_transaction(meeting_id);
@@ -1043,16 +1074,19 @@ impl Store {
 
     fn searchable_transcript_text(&self, meeting_id: &str) -> StoreResult<String> {
         let mut parts = Vec::new();
+        let Some(version_id) = self.current_transcript_version_id(meeting_id)? else {
+            return Ok(String::new());
+        };
         let mut stmt = self.conn.prepare(
             "
             SELECT text, original_text
             FROM transcript_segments
-            WHERE meeting_id = ?1
+            WHERE transcript_version_id = ?1
             ORDER BY start_ms, end_ms, ordinal
             ",
         )?;
         let segments = stmt
-            .query_map(params![meeting_id], |row| {
+            .query_map(params![version_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1066,13 +1100,12 @@ impl Store {
             "
             SELECT corrected_text
             FROM transcript_segment_edits
-            WHERE transcript_version_id IN (
-                SELECT id FROM transcript_versions WHERE meeting_id = ?1
-            )
+            WHERE transcript_version_id = ?1
             ORDER BY edited_at_ms, id
             ",
         )?;
-        for corrected_text in edits.query_map(params![meeting_id], |row| row.get::<_, String>(0))? {
+        for corrected_text in edits.query_map(params![version_id], |row| row.get::<_, String>(0))?
+        {
             parts.push(corrected_text?);
         }
         Ok(parts.join("\n"))
@@ -1173,16 +1206,48 @@ impl Store {
     }
 
     fn delete_meeting_db_rows_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
+        self.delete_private_meeting_rows(meeting_id)?;
+        Ok(())
+    }
+
+    fn mark_meeting_delete_intent_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
         self.conn.execute(
             "UPDATE meetings SET status = 'Deleted', deleted_at_ms = COALESCE(deleted_at_ms, 0) WHERE id = ?1",
             params![meeting_id],
         )?;
-        self.delete_private_meeting_rows(meeting_id)?;
+        self.conn.execute(
+            "
+            UPDATE audio_artifacts
+            SET retained = 0,
+                tombstoned = 1
+            WHERE recording_session_id IN (
+                SELECT id FROM recording_sessions WHERE meeting_id = ?1
+            )
+            ",
+            params![meeting_id],
+        )?;
         self.conn.execute(
             "DELETE FROM meeting_search WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
         Ok(())
+    }
+
+    fn private_artifacts_for_delete(&self, meeting_id: &str) -> StoreResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT audio_artifacts.path
+            FROM audio_artifacts
+            JOIN recording_sessions
+              ON recording_sessions.id = audio_artifacts.recording_session_id
+            WHERE recording_sessions.meeting_id = ?1
+            ORDER BY audio_artifacts.path
+            ",
+        )?;
+        let artifacts = stmt
+            .query_map(params![meeting_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(artifacts)
     }
 
     fn delete_private_meeting_rows(&self, meeting_id: &str) -> StoreResult<()> {
@@ -1481,14 +1546,21 @@ fn enum_name<T: std::fmt::Debug>(value: T) -> String {
 }
 
 fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
-    if meeting_id.is_empty()
-        || meeting_id.contains('/')
-        || meeting_id.contains('\\')
-        || meeting_id.contains("..")
-    {
+    if !is_safe_meeting_id(meeting_id) {
         return Err(format!("meeting id is not a safe export filename: {meeting_id}").into());
     }
     Ok(format!("{meeting_id}.json"))
+}
+
+fn is_safe_meeting_id(meeting_id: &str) -> bool {
+    let mut components = Path::new(meeting_id).components();
+    !meeting_id.is_empty()
+        && !meeting_id.contains('/')
+        && !meeting_id.contains('\\')
+        && !meeting_id.contains("..")
+        && !Path::new(meeting_id).is_absolute()
+        && matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
 }
 
 fn manifest_update_temp_path(path: &Path) -> PathBuf {
