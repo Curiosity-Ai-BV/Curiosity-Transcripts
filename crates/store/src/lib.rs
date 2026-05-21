@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use curiosity_domain::{
-    AudioArtifact, JobStatus, Meeting, MeetingStatus, ProcessingJob, RecordingSession,
-    RecordingStatus,
+    AudioArtifact, JobStatus, Meeting, MeetingStatus, ModelRun, ProcessingJob, RecordingSession,
+    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,9 @@ impl Store {
                 tombstoned INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE UNIQUE INDEX IF NOT EXISTS audio_artifacts_import_identity_idx
+            ON audio_artifacts(recording_session_id, kind, sha256);
+
             CREATE TABLE IF NOT EXISTS processing_jobs (
                 id TEXT PRIMARY KEY,
                 meeting_id TEXT NOT NULL,
@@ -76,6 +79,50 @@ impl Store {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 meeting_id TEXT NOT NULL,
                 path TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS model_runs (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                source_artifact_sha256 TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                network_used INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                UNIQUE(meeting_id, source_artifact_sha256, provider, model_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS transcript_versions (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                model_run_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                edited_at_ms INTEGER,
+                UNIQUE(meeting_id, model_run_id, version)
+            );
+
+            CREATE TABLE IF NOT EXISTS transcript_segments (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                transcript_version_id TEXT NOT NULL,
+                model_run_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                original_text TEXT,
+                source_channel TEXT NOT NULL,
+                UNIQUE(transcript_version_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS transcript_segment_edits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                segment_id TEXT NOT NULL,
+                transcript_version_id TEXT NOT NULL,
+                edited_at_ms INTEGER NOT NULL,
+                previous_text TEXT NOT NULL,
+                corrected_text TEXT NOT NULL
             );
             ",
         )?;
@@ -123,7 +170,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn insert_audio_artifact(&self, artifact: &AudioArtifact) -> StoreResult<()> {
+    pub fn insert_audio_artifact(&self, artifact: &AudioArtifact) -> StoreResult<String> {
+        let kind = enum_name(artifact.kind);
+        if let Some(existing_id) = self.audio_artifact_id_by_import_identity(
+            &artifact.recording_session_id,
+            &kind,
+            &artifact.sha256,
+        )? {
+            return Ok(existing_id);
+        }
         self.conn.execute(
             "
             INSERT INTO audio_artifacts (
@@ -133,13 +188,13 @@ impl Store {
             params![
                 artifact.id,
                 artifact.recording_session_id,
-                enum_name(artifact.kind),
+                kind,
                 artifact.path,
                 artifact.sha256,
                 artifact.retained
             ],
         )?;
-        Ok(())
+        Ok(artifact.id.clone())
     }
 
     pub fn insert_processing_job(&self, job: &ProcessingJob) -> StoreResult<()> {
@@ -168,6 +223,10 @@ impl Store {
             "audio_artifacts",
             "processing_jobs",
             "exported_files",
+            "model_runs",
+            "transcript_versions",
+            "transcript_segments",
+            "transcript_segment_edits",
         ];
         if !allowed.contains(&table) {
             return Err(format!("unsupported count table: {table}").into());
@@ -401,6 +460,347 @@ impl Store {
         Ok(retained == 0 && tombstoned == 1)
     }
 
+    fn audio_artifact_id_by_import_identity(
+        &self,
+        recording_session_id: &str,
+        kind: &str,
+        sha256: &str,
+    ) -> StoreResult<Option<String>> {
+        self.conn
+            .query_row(
+                "
+                SELECT id FROM audio_artifacts
+                WHERE recording_session_id = ?1
+                  AND kind = ?2
+                  AND sha256 = ?3
+                ",
+                params![recording_session_id, kind, sha256],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn persist_transcript(
+        &self,
+        model_run: &ModelRun,
+        version: &TranscriptVersion,
+        segments: &[TranscriptSegment],
+    ) -> StoreResult<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.persist_transcript_in_transaction(model_run, version, segments);
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn persist_transcript_in_transaction(
+        &self,
+        model_run: &ModelRun,
+        version: &TranscriptVersion,
+        segments: &[TranscriptSegment],
+    ) -> StoreResult<()> {
+        let model_run_id = match self.model_run_by_transcript_identity(model_run)? {
+            Some((existing_id, network_used)) => {
+                if network_used != model_run.network_used {
+                    return Err("transcript replay conflict: model metadata changed".into());
+                }
+                existing_id
+            }
+            None => {
+                self.conn.execute(
+                    "
+                    INSERT INTO model_runs (
+                        id, meeting_id, source_artifact_sha256, provider, model_name, network_used, created_at_ms
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    ",
+                    params![
+                        model_run.id,
+                        model_run.meeting_id,
+                        model_run.source_artifact_sha256,
+                        model_run.provider,
+                        model_run.model_name,
+                        model_run.network_used,
+                        model_run.created_at_ms,
+                    ],
+                )?;
+                model_run.id.clone()
+            }
+        };
+        let transcript_version_id =
+            match self.transcript_version_by_identity(&version.meeting_id, &model_run_id, version.version)? {
+                Some(existing_id) => {
+                    self.ensure_transcript_replay_matches(&existing_id, segments)?;
+                    existing_id
+                }
+                None => {
+                    self.conn.execute(
+                        "
+                        INSERT INTO transcript_versions (
+                            id, meeting_id, model_run_id, version, created_at_ms, edited_at_ms
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                        ",
+                        params![
+                            version.id,
+                            version.meeting_id,
+                            model_run_id,
+                            version.version,
+                            version.created_at_ms,
+                            version.edited_at_ms,
+                        ],
+                    )?;
+                    version.id.clone()
+                }
+            };
+        if self.transcript_segment_count_for_version(&transcript_version_id)? > 0 {
+            self.conn.execute(
+                "UPDATE meetings SET transcript_state = 'Complete' WHERE id = ?1",
+                params![model_run.meeting_id],
+            )?;
+            return Ok(());
+        }
+        for (ordinal, segment) in segments.iter().enumerate() {
+            self.conn.execute(
+                "
+                INSERT INTO transcript_segments (
+                    id, meeting_id, transcript_version_id, model_run_id, ordinal,
+                    start_ms, end_ms, text, original_text, source_channel
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ",
+                params![
+                    segment.id,
+                    segment.meeting_id,
+                    transcript_version_id,
+                    model_run_id,
+                    ordinal as u32,
+                    segment.start_ms,
+                    segment.end_ms,
+                    segment.text,
+                    segment.original_text,
+                    enum_name(segment.source_channel),
+                ],
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE meetings SET transcript_state = 'Complete' WHERE id = ?1",
+            params![model_run.meeting_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn transcript_segments(&self, meeting_id: &str) -> StoreResult<Vec<TranscriptSegment>> {
+        let Some(version_id) = self.current_transcript_version_id(meeting_id)? else {
+            return Ok(Vec::new());
+        };
+        self.transcript_segments_for_version(&version_id)
+    }
+
+    fn transcript_segments_for_version(&self, version_id: &str) -> StoreResult<Vec<TranscriptSegment>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT
+                id, meeting_id, start_ms, end_ms, text, source_channel,
+                model_run_id, transcript_version_id, original_text
+            FROM transcript_segments
+            WHERE transcript_version_id = ?1
+            ORDER BY start_ms, end_ms, ordinal
+            ",
+        )?;
+        let segments = stmt
+            .query_map(params![version_id], |row| {
+                let source_channel: String = row.get(5)?;
+                Ok(TranscriptSegment {
+                    id: row.get(0)?,
+                    meeting_id: row.get(1)?,
+                    start_ms: row.get(2)?,
+                    end_ms: row.get(3)?,
+                    text: row.get(4)?,
+                    source_channel: parse_source_channel(&source_channel).map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            err.into(),
+                        )
+                    })?,
+                    model_run_id: row.get(6)?,
+                    transcript_version_id: row.get(7)?,
+                    original_text: row.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(segments)
+    }
+
+    pub fn transcript_segment_edits(&self, segment_id: &str) -> StoreResult<Vec<TranscriptSegmentEdit>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT segment_id, transcript_version_id, edited_at_ms, previous_text, corrected_text
+            FROM transcript_segment_edits
+            WHERE segment_id = ?1
+            ORDER BY edited_at_ms, id
+            ",
+        )?;
+        let edits = stmt
+            .query_map(params![segment_id], |row| {
+                Ok(TranscriptSegmentEdit {
+                    segment_id: row.get(0)?,
+                    transcript_version_id: row.get(1)?,
+                    edited_at_ms: row.get(2)?,
+                    previous_text: row.get(3)?,
+                    corrected_text: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(edits)
+    }
+
+    pub fn correct_transcript_segment(
+        &self,
+        segment_id: &str,
+        corrected_text: &str,
+        edited_at_ms: u64,
+    ) -> StoreResult<()> {
+        let (version_id, previous_text): (String, String) = self.conn.query_row(
+            "SELECT transcript_version_id, text FROM transcript_segments WHERE id = ?1",
+            params![segment_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        self.conn.execute(
+            "
+            INSERT INTO transcript_segment_edits (
+                segment_id, transcript_version_id, edited_at_ms, previous_text, corrected_text
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ",
+            params![segment_id, version_id, edited_at_ms, previous_text, corrected_text],
+        )?;
+        self.conn.execute(
+            "
+            UPDATE transcript_segments
+            SET original_text = COALESCE(original_text, text),
+                text = ?2
+            WHERE id = ?1
+            ",
+            params![segment_id, corrected_text],
+        )?;
+        self.conn.execute(
+            "UPDATE transcript_versions SET edited_at_ms = ?2 WHERE id = ?1",
+            params![version_id, edited_at_ms],
+        )?;
+        Ok(())
+    }
+
+    fn model_run_by_transcript_identity(
+        &self,
+        model_run: &ModelRun,
+    ) -> StoreResult<Option<(String, bool)>> {
+        self.conn
+            .query_row(
+                "
+                SELECT id, network_used FROM model_runs
+                WHERE meeting_id = ?1
+                  AND source_artifact_sha256 = ?2
+                  AND provider = ?3
+                  AND model_name = ?4
+                ",
+                params![
+                    model_run.meeting_id,
+                    model_run.source_artifact_sha256,
+                    model_run.provider,
+                    model_run.model_name,
+                ],
+                |row| {
+                    let network_used: u8 = row.get(1)?;
+                    Ok((row.get(0)?, network_used != 0))
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn transcript_version_by_identity(
+        &self,
+        meeting_id: &str,
+        model_run_id: &str,
+        version: u32,
+    ) -> StoreResult<Option<String>> {
+        self.conn
+            .query_row(
+                "
+                SELECT id FROM transcript_versions
+                WHERE meeting_id = ?1
+                  AND model_run_id = ?2
+                  AND version = ?3
+                ",
+                params![meeting_id, model_run_id, version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn current_transcript_version_id(&self, meeting_id: &str) -> StoreResult<Option<String>> {
+        self.conn
+            .query_row(
+                "
+                SELECT id FROM transcript_versions
+                WHERE meeting_id = ?1
+                ORDER BY created_at_ms DESC, id DESC
+                LIMIT 1
+                ",
+                params![meeting_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn transcript_segment_count_for_version(&self, version_id: &str) -> StoreResult<u64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM transcript_segments WHERE transcript_version_id = ?1",
+            params![version_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn ensure_transcript_replay_matches(
+        &self,
+        version_id: &str,
+        segments: &[TranscriptSegment],
+    ) -> StoreResult<()> {
+        let existing = self.transcript_segments_for_version(version_id)?;
+        if existing.len() != segments.len() {
+            return Err("transcript replay conflict: segment count changed".into());
+        }
+        for (existing, incoming) in existing.iter().zip(segments) {
+            if existing.start_ms != incoming.start_ms
+                || existing.end_ms != incoming.end_ms
+                || existing.text != incoming.text
+                || existing.source_channel != incoming.source_channel
+            {
+                return Err("transcript replay conflict: segment content changed".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn meeting_title(&self, meeting_id: &str) -> StoreResult<String> {
+        Ok(self.conn.query_row(
+            "SELECT title FROM meetings WHERE id = ?1",
+            params![meeting_id],
+            |row| row.get(0),
+        )?)
+    }
+
     fn db_artifact_for_repair(&self, artifact_id: &str) -> StoreResult<Option<DbArtifactForRepair>> {
         self.conn
             .query_row(
@@ -513,6 +913,15 @@ pub struct DeleteReport {
     pub deleted_private_artifacts: Vec<PathBuf>,
     pub skipped_private_artifacts: Vec<PathBuf>,
     pub exported_files_outside_app_control: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptSegmentEdit {
+    pub segment_id: String,
+    pub transcript_version_id: String,
+    pub edited_at_ms: u64,
+    pub previous_text: String,
+    pub corrected_text: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -689,5 +1098,15 @@ fn parse_job_status(status: &str) -> StoreResult<JobStatus> {
         "Retry" => Ok(JobStatus::Retry),
         "Recovery" => Ok(JobStatus::Recovery),
         other => Err(format!("unknown job status: {other}").into()),
+    }
+}
+
+fn parse_source_channel(channel: &str) -> Result<SourceChannel, String> {
+    match channel {
+        "Microphone" => Ok(SourceChannel::Microphone),
+        "System" => Ok(SourceChannel::System),
+        "Mixed" => Ok(SourceChannel::Mixed),
+        "Imported" => Ok(SourceChannel::Imported),
+        other => Err(format!("unknown source channel: {other}")),
     }
 }

@@ -90,6 +90,14 @@ pub enum RecordingSource {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceChannel {
+    Microphone,
+    System,
+    Mixed,
+    Imported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordingStatus {
     Recording,
     Paused,
@@ -255,12 +263,78 @@ impl ProcessingJob {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelRun {
+    pub id: String,
+    pub meeting_id: String,
+    pub source_artifact_sha256: String,
+    pub provider: String,
+    pub model_name: String,
+    pub network_used: bool,
+    pub created_at_ms: u64,
+}
+
+impl ModelRun {
+    pub fn new(
+        id: impl ToString,
+        meeting_id: impl ToString,
+        source_artifact_sha256: impl ToString,
+        provider: impl ToString,
+        model_name: impl ToString,
+        network_used: bool,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            meeting_id: meeting_id.to_string(),
+            source_artifact_sha256: source_artifact_sha256.to_string(),
+            provider: provider.to_string(),
+            model_name: model_name.to_string(),
+            network_used,
+            created_at_ms,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptVersion {
+    pub id: String,
+    pub meeting_id: String,
+    pub model_run_id: String,
+    pub version: u32,
+    pub created_at_ms: u64,
+    pub edited_at_ms: Option<u64>,
+}
+
+impl TranscriptVersion {
+    pub fn new(
+        id: impl ToString,
+        meeting_id: impl ToString,
+        model_run_id: impl ToString,
+        version: u32,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            meeting_id: meeting_id.to_string(),
+            model_run_id: model_run_id.to_string(),
+            version,
+            created_at_ms,
+            edited_at_ms: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptSegment {
     pub id: String,
     pub meeting_id: String,
     pub start_ms: u64,
     pub end_ms: u64,
     pub text: String,
+    pub source_channel: SourceChannel,
+    pub model_run_id: String,
+    pub transcript_version_id: String,
+    pub original_text: Option<String>,
 }
 
 impl TranscriptSegment {
@@ -277,6 +351,33 @@ impl TranscriptSegment {
             start_ms,
             end_ms,
             text: text.into(),
+            source_channel: SourceChannel::Mixed,
+            model_run_id: String::new(),
+            transcript_version_id: String::new(),
+            original_text: None,
+        }
+    }
+
+    pub fn with_metadata(
+        id: impl Into<String>,
+        meeting_id: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        text: impl Into<String>,
+        source_channel: SourceChannel,
+        model_run_id: impl Into<String>,
+        transcript_version_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            meeting_id: meeting_id.into(),
+            start_ms,
+            end_ms,
+            text: text.into(),
+            source_channel,
+            model_run_id: model_run_id.into(),
+            transcript_version_id: transcript_version_id.into(),
+            original_text: None,
         }
     }
 }

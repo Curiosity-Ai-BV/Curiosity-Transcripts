@@ -51,6 +51,51 @@ pub struct CommandRecordingDto {
     pub recovery_action: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingDetailDto {
+    pub meeting_id: String,
+    pub title: String,
+    pub transcript_segments: Vec<TranscriptSegmentDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TranscriptSegmentDto {
+    pub id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    pub source_channel: String,
+    pub model_run_id: String,
+    pub transcript_version_id: String,
+    pub original_text: Option<String>,
+}
+
+pub fn meeting_detail_dto(
+    store: &Store,
+    meeting_id: &str,
+) -> curiosity_store::StoreResult<MeetingDetailDto> {
+    let title = store.meeting_title(meeting_id)?;
+    let transcript_segments = store
+        .transcript_segments(meeting_id)?
+        .into_iter()
+        .map(|segment| TranscriptSegmentDto {
+            id: segment.id,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text,
+            source_channel: format!("{:?}", segment.source_channel),
+            model_run_id: segment.model_run_id,
+            transcript_version_id: segment.transcript_version_id,
+            original_text: segment.original_text,
+        })
+        .collect();
+    Ok(MeetingDetailDto {
+        meeting_id: meeting_id.to_string(),
+        title,
+        transcript_segments,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordingErrorKind {
     DiskFull,
