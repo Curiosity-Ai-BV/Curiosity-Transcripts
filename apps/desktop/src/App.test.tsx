@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import App from "./App";
 import {
+  CommandFetcher,
   getMockDesktopSnapshot,
   getUnavailableDesktopSnapshot,
   loadDesktopSnapshot,
@@ -263,9 +264,24 @@ describe("desktop workspace shell", () => {
     render(<App />);
 
     expect(screen.getByText("Preview shell")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start recording" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Transcribe" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Export JSON" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Delete private data" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Generate summary" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start recording" })).toHaveAttribute(
+      "title",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
+    );
+    expect(screen.getByRole("button", { name: "Stop recording" })).toHaveAttribute(
+      "title",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
+    );
+    expect(screen.getByRole("button", { name: "Transcribe" })).toHaveAttribute(
+      "title",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
+    );
     expect(screen.getByRole("button", { name: "Export JSON" })).toHaveAttribute(
       "title",
       "Export command is not wired into the desktop shell yet.",
@@ -401,4 +417,178 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("button", { name: /Design Standup/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
   });
+
+  it("starts microphone recording with the optional title and replaces the snapshot", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local microphone WAV artifact is saved.",
+      },
+    });
+    const returned = connectedSnapshot({
+      selectedMeetingId: "design-standup",
+      recording: {
+        ...initial.recording,
+        meeting_id: "design-standup",
+        recording_id: "recording-design-standup",
+        state: "Recording",
+        recovery_action: "",
+        storage_location: { app_private_path: "meetings/design-standup/audio" },
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.type(screen.getByLabelText("Recording title"), "MVP sync");
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(calls).toEqual([{ command: "start_microphone_recording", args: { title: "MVP sync" } }]);
+    expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
+    expect(screen.getAllByText("Recording").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("meetings/design-standup/audio").length).toBeGreaterThan(0);
+  });
+
+  it("enables stop for active recordings and disables start until the returned snapshot lands", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      recording: {
+        ...initial.recording,
+        state: "Complete",
+        recovery_action: "Finalized local microphone WAV artifact.",
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    expect(screen.getByRole("button", { name: "Start recording" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Stop recording" }));
+
+    expect(calls).toEqual([{ command: "stop_microphone_recording", args: undefined }]);
+    expect(screen.getByText("Finalized local microphone WAV artifact.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
+  });
+
+  it("transcribes the selected meeting through the desktop command and shows returned failures", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local microphone WAV artifact is saved.",
+      },
+    });
+    const returned = connectedSnapshot({
+      transcription: {
+        meetingId: "circuit-review",
+        state: "Failed",
+        failure: {
+          code: "missing_model",
+          message: "Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.",
+          setupGuidance: "Set CURIOSITY_WHISPER_MODEL.",
+        },
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Transcribe" }));
+
+    expect(calls).toEqual([{ command: "transcribe_meeting", args: { meetingId: "circuit-review" } }]);
+    expect(screen.getAllByText("Transcription failed").length).toBeGreaterThan(0);
+    expect(screen.getByText("Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.")).toBeInTheDocument();
+  });
+
+  it("shows in-flight command state and prevents double submitting recording start", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    let finishCommand!: () => void;
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local microphone WAV artifact is saved.",
+      },
+    });
+    const returned = connectedSnapshot();
+    const pendingSnapshot = new Promise<typeof returned>((resolve) => {
+      finishCommand = () => resolve(returned);
+    });
+    const fetchCommand: CommandFetcher = async <T,>(command: string): Promise<T> => {
+      calls.push(command);
+      return pendingSnapshot as Promise<T>;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(screen.getByRole("button", { name: "Starting recording" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Starting recording" }));
+    expect(calls).toEqual(["start_microphone_recording"]);
+
+    finishCommand();
+    expect(await screen.findByRole("button", { name: "Stop recording" })).toBeEnabled();
+  });
+
+  it("shows invocation errors without replacing the current snapshot", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local microphone WAV artifact is saved.",
+        storage_location: { app_private_path: "meetings/circuit-review/audio" },
+      },
+    });
+    const fetchCommand: CommandFetcher = async () => {
+      throw new Error("microphone permission denied");
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("microphone permission denied");
+    expect(screen.getByRole("heading", { name: "Circuit Review" })).toBeInTheDocument();
+    expect(screen.getAllByText("meetings/circuit-review/audio").length).toBeGreaterThan(0);
+  });
 });
+
+function connectedSnapshot(overrides: Partial<ReturnType<typeof getMockDesktopSnapshot>> = {}) {
+  const base = getMockDesktopSnapshot();
+  return {
+    ...base,
+    commandSurface: {
+      detail: "Connected to local desktop commands.",
+    },
+    capture: {
+      microphone: "Ready" as const,
+      systemAudio: "SystemAudioUnavailable" as const,
+    },
+    model: {
+      kind: "ready" as const,
+      configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin",
+    },
+    ...overrides,
+  };
+}

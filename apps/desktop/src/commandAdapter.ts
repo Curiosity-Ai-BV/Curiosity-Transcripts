@@ -123,7 +123,7 @@ interface LoadDesktopSnapshotOptions {
 }
 
 export async function loadDesktopSnapshot({
-  fetchCommand = getTauriCommandFetcher(),
+  fetchCommand = getDesktopCommandFetcher(),
   previewFallback = !isTauriRuntime(),
 }: LoadDesktopSnapshotOptions = {}): Promise<DesktopSnapshot> {
   if (fetchCommand) {
@@ -507,7 +507,7 @@ function retentionDetail(policy: RawAudioRetentionPolicy): string {
   return "Raw audio retained in private app storage.";
 }
 
-function getTauriCommandFetcher(): CommandFetcher | undefined {
+export function getDesktopCommandFetcher(): CommandFetcher | undefined {
   if (!isTauriRuntime()) {
     return undefined;
   }

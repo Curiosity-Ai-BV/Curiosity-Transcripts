@@ -169,6 +169,70 @@ h3 {
   font-size: 13px;
 }
 
+.recording-actions {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) auto;
+  gap: 8px;
+  align-items: end;
+  justify-items: end;
+}
+
+.recording-title-field {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 5px;
+}
+
+.recording-title-field span {
+  color: #403b34;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recording-title-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: #fffefa;
+  color: #24211d;
+  padding: 8px 9px;
+  outline: 0;
+}
+
+.recording-title-field input:disabled {
+  color: var(--muted);
+  background: #f1f0eb;
+}
+
+.recording-buttons,
+.detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.recording-path {
+  grid-column: 1 / -1;
+  max-width: 460px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.command-error {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--blocked) 8%, #fffefa);
+  color: var(--blocked);
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .icon-frame {
   display: inline-flex;
   width: 42px;
@@ -510,6 +574,15 @@ h3 {
   .recording-strip,
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .recording-actions {
+    justify-items: stretch;
+  }
+
+  .recording-buttons,
+  .detail-header-actions {
+    justify-content: flex-start;
   }
 
   .meeting-pane,

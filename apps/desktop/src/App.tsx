@@ -12,6 +12,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  CommandFetcher,
   DesktopSnapshot,
   getMockDesktopSnapshot,
   mapAnalysisDisclosure,
@@ -29,38 +30,70 @@ import "./styles.css";
 
 interface AppProps {
   snapshot?: DesktopSnapshot;
+  fetchCommand?: CommandFetcher;
 }
 
-export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
-  const [query, setQuery] = useState("");
-  const [selectedMeetingId, setSelectedMeetingId] = useState(snapshot.selectedMeetingId);
+type PendingCommand = "start" | "stop" | "transcribe" | null;
 
-  const meetings = useMemo(() => searchMeetings(snapshot.meetings, query), [snapshot.meetings, query]);
+const connectedCommandSurface = "Connected to local desktop commands.";
+
+export default function App({ snapshot, fetchCommand }: AppProps) {
+  const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
+  const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
+  const [query, setQuery] = useState("");
+  const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
+  const [recordingTitle, setRecordingTitle] = useState("");
+  const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (snapshot) {
+      setCurrentSnapshot(snapshot);
+      setCommandError(null);
+      setPendingCommand(null);
+    }
+  }, [snapshot]);
+
+  const meetings = useMemo(() => searchMeetings(currentSnapshot.meetings, query), [currentSnapshot.meetings, query]);
   useEffect(() => {
     setSelectedMeetingId((current) => {
-      const backendSelected = snapshot.selectedMeetingId;
-      if (backendSelected && snapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
+      const backendSelected = currentSnapshot.selectedMeetingId;
+      if (backendSelected && currentSnapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
         return backendSelected;
       }
-      if (current && snapshot.meetings.some((meeting) => meeting.id === current)) {
+      if (current && currentSnapshot.meetings.some((meeting) => meeting.id === current)) {
         return current;
       }
-      return snapshot.meetings[0]?.id ?? null;
+      return currentSnapshot.meetings[0]?.id ?? null;
     });
-  }, [snapshot.meetings, snapshot.selectedMeetingId]);
+  }, [currentSnapshot.meetings, currentSnapshot.selectedMeetingId]);
 
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? meetings[0] ?? null;
-  const commandUnavailable = snapshot.commandSurface.detail;
+  const commandUnavailable = currentSnapshot.commandSurface.detail;
+  const commandSurfaceReady = Boolean(fetchCommand && commandUnavailable === connectedCommandSurface);
+  const commandUnavailableTitle = commandSurfaceReady
+    ? ""
+    : fetchCommand || commandUnavailable.startsWith("Preview shell")
+      ? commandUnavailable || "Desktop command surface is unavailable."
+      : "Desktop command surface is unavailable in this runtime.";
+  const isRecordingActive =
+    currentSnapshot.recording.permission_state === "Ready" &&
+    (currentSnapshot.recording.state === "Recording" || currentSnapshot.recording.state === "Paused");
+  const commandBusy = pendingCommand !== null;
   const recording = commandUnavailable.startsWith("Preview shell")
     ? {
         label: "Recording unavailable",
         tone: "muted" as Tone,
         detail: commandUnavailable,
       }
-    : mapRecordingState(snapshot.recording);
-  const model = mapModelStatus(snapshot.model);
-  const transcription = mapTranscriptionState(snapshot.transcription);
+    : mapRecordingState(currentSnapshot.recording);
+  const model = mapModelStatus(currentSnapshot.model);
+  const transcription = mapTranscriptionState(currentSnapshot.transcription);
   const shellLabel = commandUnavailable.startsWith("Preview shell") ? "Preview shell" : "Desktop shell";
+  const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
+  const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -72,6 +105,73 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
   const summaryCommandUnavailable = "Summary command is not wired into the desktop shell yet.";
   const exportCommandUnavailable = "Export command is not wired into the desktop shell yet.";
   const deleteCommandUnavailable = "Delete command is not wired into the desktop shell yet.";
+
+  async function runSnapshotCommand(
+    pending: Exclude<PendingCommand, null>,
+    command: string,
+    args?: Record<string, unknown>,
+  ) {
+    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand(pending);
+    setCommandError(null);
+    try {
+      const nextSnapshot = await fetchCommand<DesktopSnapshot>(command, args);
+      setCurrentSnapshot(nextSnapshot);
+      setRecordingTitle("");
+    } catch (error) {
+      setCommandError(commandErrorMessage(error));
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  function startRecording() {
+    const title = recordingTitle.trim();
+    void runSnapshotCommand(
+      "start",
+      "start_microphone_recording",
+      title ? { title } : undefined,
+    );
+  }
+
+  function stopRecording() {
+    void runSnapshotCommand("stop", "stop_microphone_recording");
+  }
+
+  function transcribeSelectedMeeting() {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("transcribe", "transcribe_meeting", {
+      meetingId: selectedMeeting.id,
+    });
+  }
+
+  const busyCommandTitle = "A desktop command is already running.";
+  const startButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop the active recording before starting another one."
+        : "Start microphone recording.";
+  const stopButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop microphone recording."
+        : "No active microphone recording to stop.";
+  const transcribeButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : selectedMeeting
+        ? "Transcribe the selected meeting with the configured local Whisper model."
+        : "Select a meeting before transcription.";
 
   return (
     <main className="app-shell">
@@ -99,10 +199,47 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
               <p>{recording.detail}</p>
             </div>
           </div>
-          <div className="strip-meta">
-            <span>{snapshot.recording.storage_location.app_private_path}</span>
+          <div className="recording-actions">
+            <label className="recording-title-field" htmlFor="recording-title">
+              <span>Recording title</span>
+              <input
+                id="recording-title"
+                value={recordingTitle}
+                onChange={(event) => setRecordingTitle(event.target.value)}
+                placeholder="Optional meeting title"
+                disabled={recordingTitleDisabled}
+              />
+            </label>
+            <div className="recording-buttons">
+              <button
+                type="button"
+                className="button"
+                disabled={startDisabled}
+                title={startButtonTitle}
+                onClick={startRecording}
+              >
+                <Microphone size={16} weight="regular" />
+                {pendingCommand === "start" ? "Starting recording" : "Start recording"}
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={stopDisabled}
+                title={stopButtonTitle}
+                onClick={stopRecording}
+              >
+                <Waveform size={16} weight="regular" />
+                {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
+              </button>
+            </div>
+            <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
           </div>
         </section>
+        {commandError ? (
+          <p role="alert" className="command-error">
+            {commandError}
+          </p>
+        ) : null}
 
         <div className="content-grid">
           <aside className="meeting-pane" aria-label="Meetings">
@@ -119,7 +256,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
               </div>
             </div>
 
-            {snapshot.loading ? <SkeletonList /> : null}
+            {currentSnapshot.loading ? <SkeletonList /> : null}
 
             <div className="meeting-list">
               {meetings.map((meeting) => (
@@ -140,7 +277,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
               ))}
             </div>
 
-            {!snapshot.loading && query && meetings.length === 0 ? <p className="empty-state">No meetings match this search.</p> : null}
+            {!currentSnapshot.loading && query && meetings.length === 0 ? <p className="empty-state">No meetings match this search.</p> : null}
           </aside>
 
           <section className="detail-pane" aria-label="Meeting detail">
@@ -151,7 +288,19 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
                     <p className="eyebrow">{selectedMeeting.startedAt}</p>
                     <h2>{selectedMeeting.title}</h2>
                   </div>
-                  <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
+                  <div className="detail-header-actions">
+                    <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={transcribeDisabled}
+                      title={transcribeButtonTitle}
+                      onClick={transcribeSelectedMeeting}
+                    >
+                      <FileText size={16} weight="regular" />
+                      {pendingCommand === "transcribe" ? "Transcribing" : "Transcribe"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="privacy-row">
@@ -228,15 +377,15 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
             <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
             <StatusLine
               icon={<Microphone size={18} weight="regular" />}
-              label={captureLabel(snapshot.capture.microphone)}
-              value={captureDetail(snapshot.capture.microphone)}
-              tone={captureTone(snapshot.capture.microphone)}
+              label={captureLabel(currentSnapshot.capture.microphone)}
+              value={captureDetail(currentSnapshot.capture.microphone)}
+              tone={captureTone(currentSnapshot.capture.microphone)}
             />
             <StatusLine
               icon={<WarningDiamond size={18} weight="regular" />}
-              label={captureLabel(snapshot.capture.systemAudio)}
-              value={captureDetail(snapshot.capture.systemAudio)}
-              tone={captureTone(snapshot.capture.systemAudio)}
+              label={captureLabel(currentSnapshot.capture.systemAudio)}
+              value={captureDetail(currentSnapshot.capture.systemAudio)}
+              tone={captureTone(currentSnapshot.capture.systemAudio)}
             />
             {selectedMeeting ? (
               <StatusLine
@@ -304,6 +453,16 @@ function captureDetail(state: DesktopSnapshot["capture"]["microphone"]) {
 
 function captureTone(state: DesktopSnapshot["capture"]["microphone"]): Tone {
   return mapPermissionState(state).tone;
+}
+
+function commandErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Desktop command failed.";
 }
 
 function formatTime(ms: number) {
