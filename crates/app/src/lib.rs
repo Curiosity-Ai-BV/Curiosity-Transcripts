@@ -70,6 +70,36 @@ pub struct TranscriptSegmentDto {
     pub original_text: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingSummaryDto {
+    pub meeting_id: String,
+    pub title: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub status: String,
+    pub transcript_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingSearchResultDto {
+    pub meeting_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExportedMeetingDto {
+    pub meeting_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeletedMeetingDto {
+    pub meeting_id: String,
+    pub deleted_private_artifacts: Vec<String>,
+    pub skipped_private_artifacts: Vec<String>,
+    pub remaining_exports: Vec<String>,
+}
+
 pub fn meeting_detail_dto(
     store: &Store,
     meeting_id: &str,
@@ -94,6 +124,84 @@ pub fn meeting_detail_dto(
         title,
         transcript_segments,
     })
+}
+
+pub fn list_meetings_dto(store: &Store) -> curiosity_store::StoreResult<Vec<MeetingSummaryDto>> {
+    Ok(store
+        .list_meetings()?
+        .into_iter()
+        .map(meeting_summary_dto)
+        .collect())
+}
+
+pub fn search_meetings_dto(
+    store: &Store,
+    query: &str,
+) -> curiosity_store::StoreResult<Vec<MeetingSearchResultDto>> {
+    Ok(store
+        .search_meetings(query)?
+        .into_iter()
+        .map(|result| MeetingSearchResultDto {
+            meeting_id: result.meeting_id,
+            title: result.title,
+        })
+        .collect())
+}
+
+pub fn rename_meeting_command(
+    store: &Store,
+    meeting_id: &str,
+    title: &str,
+) -> curiosity_store::StoreResult<MeetingSummaryDto> {
+    Ok(meeting_summary_dto(store.rename_meeting(meeting_id, title)?))
+}
+
+pub fn export_meeting_json_command(
+    store: &Store,
+    meeting_id: &str,
+    export_root: impl AsRef<std::path::Path>,
+) -> curiosity_store::StoreResult<ExportedMeetingDto> {
+    let path = store.export_meeting_json(meeting_id, export_root.as_ref())?;
+    Ok(ExportedMeetingDto {
+        meeting_id: meeting_id.to_string(),
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+pub fn delete_meeting_command(
+    store: &Store,
+    meeting_id: &str,
+) -> curiosity_store::StoreResult<DeletedMeetingDto> {
+    let report = store.delete_meeting(meeting_id)?;
+    Ok(DeletedMeetingDto {
+        meeting_id: meeting_id.to_string(),
+        deleted_private_artifacts: report
+            .deleted_private_artifacts
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        skipped_private_artifacts: report
+            .skipped_private_artifacts
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        remaining_exports: report
+            .exported_files_outside_app_control
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+    })
+}
+
+fn meeting_summary_dto(summary: curiosity_store::MeetingSummary) -> MeetingSummaryDto {
+    MeetingSummaryDto {
+        meeting_id: summary.meeting_id,
+        title: summary.title,
+        started_at_ms: summary.started_at_ms,
+        ended_at_ms: summary.ended_at_ms,
+        status: summary.status,
+        transcript_state: summary.transcript_state,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

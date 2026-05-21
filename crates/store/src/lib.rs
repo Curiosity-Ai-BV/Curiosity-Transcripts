@@ -15,6 +15,22 @@ pub struct Store {
     app_root: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeetingSummary {
+    pub meeting_id: String,
+    pub title: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub status: String,
+    pub transcript_state: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeetingSearchResult {
+    pub meeting_id: String,
+    pub title: String,
+}
+
 impl Store {
     pub fn open(db_path: impl AsRef<Path>, app_root: impl Into<PathBuf>) -> StoreResult<Self> {
         let db_path = db_path.as_ref();
@@ -124,6 +140,9 @@ impl Store {
                 previous_text TEXT NOT NULL,
                 corrected_text TEXT NOT NULL
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS meeting_search
+            USING fts5(meeting_id UNINDEXED, title, transcript_text);
             ",
         )?;
         Ok(())
@@ -389,6 +408,169 @@ impl Store {
         Ok(())
     }
 
+    pub fn exported_files(&self, meeting_id: &str) -> StoreResult<Vec<PathBuf>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM exported_files WHERE meeting_id = ?1 ORDER BY path")?;
+        let files = stmt
+            .query_map(params![meeting_id], |row| {
+                Ok(PathBuf::from(row.get::<_, String>(0)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(files)
+    }
+
+    pub fn list_meetings(&self) -> StoreResult<Vec<MeetingSummary>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id, title, started_at_ms, ended_at_ms, status, transcript_state
+            FROM meetings
+            WHERE status != 'Deleted'
+            ORDER BY started_at_ms DESC, id DESC
+            ",
+        )?;
+        let meetings = stmt
+            .query_map([], |row| {
+                Ok(MeetingSummary {
+                    meeting_id: row.get(0)?,
+                    title: row.get(1)?,
+                    started_at_ms: row.get(2)?,
+                    ended_at_ms: row.get(3)?,
+                    status: row.get(4)?,
+                    transcript_state: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(meetings)
+    }
+
+    pub fn rename_meeting(&self, meeting_id: &str, title: &str) -> StoreResult<MeetingSummary> {
+        self.ensure_active_meeting_exists(meeting_id)?;
+        self.update_manifest_title(meeting_id, title)?;
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.rename_meeting_in_transaction(meeting_id, title);
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+        self.meeting_summary(meeting_id)
+    }
+
+    fn rename_meeting_in_transaction(&self, meeting_id: &str, title: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE meetings SET title = ?2 WHERE id = ?1 AND status != 'Deleted'",
+            params![meeting_id, title],
+        )?;
+        if self.conn.changes() == 0 {
+            return Err(format!("meeting not found or deleted: {meeting_id}").into());
+        }
+        self.rebuild_search_index()?;
+        Ok(())
+    }
+
+    pub fn rebuild_search_index(&self) -> StoreResult<()> {
+        self.conn.execute("DELETE FROM meeting_search", [])?;
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id, title
+            FROM meetings
+            WHERE status != 'Deleted'
+            ORDER BY id
+            ",
+        )?;
+        let meetings = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (meeting_id, title) in meetings {
+            let transcript_text = self.searchable_transcript_text(&meeting_id)?;
+            self.conn.execute(
+                "
+                INSERT INTO meeting_search (meeting_id, title, transcript_text)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![meeting_id, title, transcript_text],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn refresh_search_index_for_meeting(&self, meeting_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "DELETE FROM meeting_search WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        let meeting = self
+            .conn
+            .query_row(
+                "
+                SELECT id, title
+                FROM meetings
+                WHERE id = ?1 AND status != 'Deleted'
+                ",
+                params![meeting_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((meeting_id, title)) = meeting {
+            let transcript_text = self.searchable_transcript_text(&meeting_id)?;
+            self.conn.execute(
+                "
+                INSERT INTO meeting_search (meeting_id, title, transcript_text)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![meeting_id, title, transcript_text],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn search_meetings(&self, query: &str) -> StoreResult<Vec<MeetingSearchResult>> {
+        let query = fts_query(query)?;
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT meeting_search.meeting_id, meetings.title, bm25(meeting_search) AS rank
+            FROM meeting_search
+            JOIN meetings ON meetings.id = meeting_search.meeting_id
+            WHERE meeting_search MATCH ?1
+              AND meetings.status != 'Deleted'
+            ORDER BY rank, meetings.started_at_ms DESC, meeting_search.meeting_id
+            ",
+        )?;
+        let results = stmt
+            .query_map(params![query], |row| {
+                Ok(MeetingSearchResult {
+                    meeting_id: row.get(0)?,
+                    title: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    pub fn export_meeting_json(&self, meeting_id: &str, export_root: &Path) -> StoreResult<PathBuf> {
+        let export = self.meeting_export(meeting_id)?;
+        fs::create_dir_all(export_root)?;
+        let path = export_root.join(safe_export_filename(meeting_id)?);
+        fs::write(&path, serde_json::to_vec_pretty(&export)?)?;
+        self.record_exported_file(meeting_id, &path)?;
+        Ok(path)
+    }
+
+    pub fn read_meeting_export_json(path: impl AsRef<Path>) -> StoreResult<MeetingExport> {
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
     pub fn delete_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
         let mut report = DeleteReport::default();
         let mut stmt = self.conn.prepare(
@@ -406,7 +588,7 @@ impl Store {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        for (artifact_id, artifact_path) in artifacts {
+        for (_artifact_id, artifact_path) in artifacts {
             let Some(path) = self.private_app_path(&artifact_path) else {
                 report.skipped_private_artifacts.push(self.reported_path(&artifact_path));
                 continue;
@@ -415,10 +597,6 @@ impl Store {
                 fs::remove_file(&path)?;
                 report.deleted_private_artifacts.push(path);
             }
-            self.conn.execute(
-                "UPDATE audio_artifacts SET retained = 0, tombstoned = 1 WHERE id = ?1",
-                params![artifact_id],
-            )?;
         }
 
         let mut exports = self
@@ -430,10 +608,21 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        self.conn.execute(
-            "UPDATE meetings SET status = 'Deleted', deleted_at_ms = COALESCE(deleted_at_ms, 0) WHERE id = ?1",
-            params![meeting_id],
-        )?;
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.delete_meeting_db_rows_in_transaction(meeting_id);
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+        self.delete_private_manifests(meeting_id)?;
         report.deleted_private_artifacts.sort();
         report.skipped_private_artifacts.sort();
         Ok(report)
@@ -452,12 +641,18 @@ impl Store {
     }
 
     pub fn artifact_tombstoned(&self, artifact_id: &str) -> StoreResult<bool> {
-        let (retained, tombstoned): (u8, u8) = self.conn.query_row(
-            "SELECT retained, tombstoned FROM audio_artifacts WHERE id = ?1",
-            params![artifact_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        Ok(retained == 0 && tombstoned == 1)
+        let row = self
+            .conn
+            .query_row(
+                "SELECT retained, tombstoned FROM audio_artifacts WHERE id = ?1",
+                params![artifact_id],
+                |row| Ok((row.get::<_, u8>(0)?, row.get::<_, u8>(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((retained, tombstoned)) => retained == 0 && tombstoned == 1,
+            None => true,
+        })
     }
 
     fn audio_artifact_id_by_import_identity(
@@ -495,6 +690,7 @@ impl Store {
                     let _ = self.conn.execute_batch("ROLLBACK");
                     return Err(err.into());
                 }
+                self.refresh_search_index_for_meeting(&model_run.meeting_id)?;
                 Ok(())
             }
             Err(err) => {
@@ -696,6 +892,12 @@ impl Store {
             "UPDATE transcript_versions SET edited_at_ms = ?2 WHERE id = ?1",
             params![version_id, edited_at_ms],
         )?;
+        let meeting_id: String = self.conn.query_row(
+            "SELECT meeting_id FROM transcript_segments WHERE id = ?1",
+            params![segment_id],
+            |row| row.get(0),
+        )?;
+        self.refresh_search_index_for_meeting(&meeting_id)?;
         Ok(())
     }
 
@@ -799,6 +1001,244 @@ impl Store {
             params![meeting_id],
             |row| row.get(0),
         )?)
+    }
+
+    fn meeting_summary(&self, meeting_id: &str) -> StoreResult<MeetingSummary> {
+        Ok(self.conn.query_row(
+            "
+            SELECT id, title, started_at_ms, ended_at_ms, status, transcript_state
+            FROM meetings
+            WHERE id = ?1
+            ",
+            params![meeting_id],
+            |row| {
+                Ok(MeetingSummary {
+                    meeting_id: row.get(0)?,
+                    title: row.get(1)?,
+                    started_at_ms: row.get(2)?,
+                    ended_at_ms: row.get(3)?,
+                    status: row.get(4)?,
+                    transcript_state: row.get(5)?,
+                })
+            },
+        )?)
+    }
+
+    fn ensure_active_meeting_exists(&self, meeting_id: &str) -> StoreResult<()> {
+        let exists = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM meetings WHERE id = ?1 AND status != 'Deleted'",
+                params![meeting_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if exists {
+            Ok(())
+        } else {
+            Err(format!("meeting not found or deleted: {meeting_id}").into())
+        }
+    }
+
+    fn searchable_transcript_text(&self, meeting_id: &str) -> StoreResult<String> {
+        let mut parts = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT text, original_text
+            FROM transcript_segments
+            WHERE meeting_id = ?1
+            ORDER BY start_ms, end_ms, ordinal
+            ",
+        )?;
+        let segments = stmt
+            .query_map(params![meeting_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (text, original_text) in segments {
+            parts.push(text);
+            if let Some(original_text) = original_text {
+                parts.push(original_text);
+            }
+        }
+        let mut edits = self.conn.prepare(
+            "
+            SELECT corrected_text
+            FROM transcript_segment_edits
+            WHERE transcript_version_id IN (
+                SELECT id FROM transcript_versions WHERE meeting_id = ?1
+            )
+            ORDER BY edited_at_ms, id
+            ",
+        )?;
+        for corrected_text in edits.query_map(params![meeting_id], |row| row.get::<_, String>(0))? {
+            parts.push(corrected_text?);
+        }
+        Ok(parts.join("\n"))
+    }
+
+    fn update_manifest_title(&self, meeting_id: &str, title: &str) -> StoreResult<()> {
+        let mut staged = Vec::new();
+        let mut originals = Vec::new();
+        for manifest_path in manifest_paths(&self.app_root)? {
+            let original_bytes = fs::read(&manifest_path).map_err(|err| {
+                format!(
+                    "manifest read failed for {}: {err}",
+                    manifest_path.display()
+                )
+            })?;
+            let mut manifest: ArtifactManifest =
+                serde_json::from_slice(&original_bytes).map_err(|err| {
+                    format!(
+                        "manifest read failed for {}: {err}",
+                        manifest_path.display()
+                    )
+                })?;
+            if manifest.meeting_id != meeting_id {
+                continue;
+            }
+            manifest.meeting_title = Some(title.to_string());
+            let temp_path = manifest_update_temp_path(&manifest_path);
+            let stage_result = fs::write(&temp_path, serde_json::to_vec_pretty(&manifest)?);
+            if let Err(err) = stage_result {
+                for (_, temp_path) in staged {
+                    let _ = fs::remove_file(temp_path);
+                }
+                return Err(format!(
+                    "manifest title update failed for {}: {err}",
+                    manifest_path.display()
+                )
+                .into());
+            }
+            originals.push((manifest_path.clone(), original_bytes));
+            staged.push((manifest_path, temp_path));
+        }
+
+        let mut replaced = Vec::new();
+        for (manifest_path, temp_path) in staged {
+            if let Err(err) = fs::rename(&temp_path, &manifest_path) {
+                let _ = fs::remove_file(&temp_path);
+                for (replaced_path, original_bytes) in replaced {
+                    let _ = fs::write(replaced_path, original_bytes);
+                }
+                return Err(format!(
+                    "manifest title update failed for {}: {err}",
+                    manifest_path.display()
+                )
+                .into());
+            }
+            if let Some((_, original_bytes)) = originals
+                .iter()
+                .find(|(original_path, _)| original_path == &manifest_path)
+            {
+                replaced.push((manifest_path, original_bytes.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    fn meeting_export(&self, meeting_id: &str) -> StoreResult<MeetingExport> {
+        let summary = self.meeting_summary(meeting_id)?;
+        let mut segments = Vec::new();
+        for segment in self.transcript_segments(meeting_id)? {
+            let edits = self
+                .transcript_segment_edits(&segment.id)?
+                .into_iter()
+                .map(|edit| TranscriptSegmentEditExport {
+                    edited_at_ms: edit.edited_at_ms,
+                    previous_text: edit.previous_text,
+                    corrected_text: edit.corrected_text,
+                })
+                .collect();
+            segments.push(TranscriptSegmentExport {
+                id: segment.id,
+                start_ms: segment.start_ms,
+                end_ms: segment.end_ms,
+                text: segment.text,
+                original_text: segment.original_text,
+                source_channel: enum_name(segment.source_channel),
+                model_run_id: segment.model_run_id,
+                transcript_version_id: segment.transcript_version_id,
+                edits,
+            });
+        }
+        Ok(MeetingExport {
+            meeting_id: summary.meeting_id,
+            title: summary.title,
+            started_at_ms: summary.started_at_ms,
+            ended_at_ms: summary.ended_at_ms,
+            segments,
+        })
+    }
+
+    fn delete_meeting_db_rows_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE meetings SET status = 'Deleted', deleted_at_ms = COALESCE(deleted_at_ms, 0) WHERE id = ?1",
+            params![meeting_id],
+        )?;
+        self.delete_private_meeting_rows(meeting_id)?;
+        self.conn.execute(
+            "DELETE FROM meeting_search WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        Ok(())
+    }
+
+    fn delete_private_meeting_rows(&self, meeting_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            DELETE FROM transcript_segment_edits
+            WHERE transcript_version_id IN (
+                SELECT id FROM transcript_versions WHERE meeting_id = ?1
+            )
+            ",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM transcript_segments WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM transcript_versions WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM model_runs WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "
+            DELETE FROM audio_artifacts
+            WHERE recording_session_id IN (
+                SELECT id FROM recording_sessions WHERE meeting_id = ?1
+            )
+            ",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM recording_sessions WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        Ok(())
+    }
+
+    fn delete_private_manifests(&self, meeting_id: &str) -> StoreResult<()> {
+        for manifest_path in manifest_paths(&self.app_root)? {
+            let manifest = ArtifactManifest::read(&manifest_path)?;
+            if manifest.meeting_id == meeting_id {
+                let Some(relative_path) = manifest_path.strip_prefix(&self.app_root).ok() else {
+                    continue;
+                };
+                let Some(safe_path) = self.private_app_path(&relative_path.to_string_lossy()) else {
+                    continue;
+                };
+                if safe_path.exists() {
+                    fs::remove_file(safe_path)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn db_artifact_for_repair(&self, artifact_id: &str) -> StoreResult<Option<DbArtifactForRepair>> {
@@ -924,6 +1364,35 @@ pub struct TranscriptSegmentEdit {
     pub corrected_text: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingExport {
+    pub meeting_id: String,
+    pub title: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub segments: Vec<TranscriptSegmentExport>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TranscriptSegmentExport {
+    pub id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    pub original_text: Option<String>,
+    pub source_channel: String,
+    pub model_run_id: String,
+    pub transcript_version_id: String,
+    pub edits: Vec<TranscriptSegmentEditExport>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TranscriptSegmentEditExport {
+    pub edited_at_ms: u64,
+    pub previous_text: String,
+    pub corrected_text: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum WriteStatus {
     Writing,
@@ -940,6 +1409,8 @@ pub enum RepairStatus {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArtifactManifest {
     pub meeting_id: String,
+    #[serde(default)]
+    pub meeting_title: Option<String>,
     pub session_id: String,
     pub artifact_id: String,
     pub path: String,
@@ -958,6 +1429,7 @@ impl ArtifactManifest {
     ) -> Self {
         Self {
             meeting_id: meeting_id.to_string(),
+            meeting_title: None,
             session_id: session_id.to_string(),
             artifact_id: artifact_id.to_string(),
             path: path.to_string(),
@@ -977,7 +1449,9 @@ impl ArtifactManifest {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        let temp_path = path.with_extension("json.tmp");
+        fs::write(&temp_path, serde_json::to_vec_pretty(self)?)?;
+        fs::rename(temp_path, path)?;
         Ok(())
     }
 
@@ -1004,6 +1478,33 @@ fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
 
 fn enum_name<T: std::fmt::Debug>(value: T) -> String {
     format!("{value:?}")
+}
+
+fn safe_export_filename(meeting_id: &str) -> StoreResult<String> {
+    if meeting_id.is_empty()
+        || meeting_id.contains('/')
+        || meeting_id.contains('\\')
+        || meeting_id.contains("..")
+    {
+        return Err(format!("meeting id is not a safe export filename: {meeting_id}").into());
+    }
+    Ok(format!("{meeting_id}.json"))
+}
+
+fn manifest_update_temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!(
+        "json.rename-tmp-{}",
+        std::process::id()
+    ))
+}
+
+fn fts_query(query: &str) -> StoreResult<String> {
+    let tokens = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>();
+    Ok(tokens.join(" "))
 }
 
 fn nearest_existing_path(path: &Path) -> Option<PathBuf> {
