@@ -1,8 +1,40 @@
 use curiosity_audio::{
-    AudioCapture, CapturePermission, CapturePermissionError, DeviceIdentity, FakeAudioCapture,
-    ManualSmokeCheck, ManualSmokeStatus, StreamKind,
+    AudioCapture, CaptureConfiguration, CaptureError, CapturePermission, CapturePermissionError,
+    CaptureUnavailable, DeviceIdentity, FakeAudioCapture, ManualSmokeCheck, ManualSmokeResult,
+    ManualSmokeStatus, StreamKind,
 };
 use std::process::Command;
+
+#[test]
+fn capture_configuration_accepts_mic_only_requests() {
+    let config = CaptureConfiguration::mic_only().expect("mic-only config");
+
+    assert_eq!(config.requested_streams(), vec![StreamKind::Microphone]);
+}
+
+#[test]
+fn capture_configuration_accepts_system_only_requests() {
+    let config = CaptureConfiguration::system_only().expect("system-only config");
+
+    assert_eq!(config.requested_streams(), vec![StreamKind::SystemAudio]);
+}
+
+#[test]
+fn capture_configuration_accepts_mixed_requests() {
+    let config = CaptureConfiguration::mixed().expect("mixed config");
+
+    assert_eq!(
+        config.requested_streams(),
+        vec![StreamKind::Microphone, StreamKind::SystemAudio]
+    );
+}
+
+#[test]
+fn capture_configuration_rejects_empty_requests() {
+    let error = CaptureConfiguration::new(false, false).expect_err("empty request should fail");
+
+    assert!(error.to_string().contains("at least one"));
+}
 
 #[test]
 fn fake_capture_emits_deterministic_pcm_frames_and_device_snapshot() {
@@ -63,23 +95,55 @@ fn permission_errors_map_to_actionable_user_recovery_guidance() {
 }
 
 #[test]
-fn smoke_placeholder_never_reports_passed_when_hardware_check_is_skipped() {
-    let smoke = ManualSmokeCheck::macos_placeholder();
-    let result = smoke.run_without_hardware();
+fn unavailable_errors_map_to_actionable_user_recovery_guidance() {
+    let mic = CaptureUnavailable::microphone("no default input device");
+    let mic_guidance = mic.recovery_guidance();
+    assert!(mic_guidance.title.contains("Microphone"));
+    assert!(mic_guidance
+        .steps
+        .iter()
+        .any(|step| step.contains("input device")));
 
-    assert_eq!(result.status, ManualSmokeStatus::NotRun);
-    assert!(result.message.contains("manual"));
+    let system = CaptureUnavailable::system_audio(
+        "ScreenCaptureKit audio capture requires a permissioned macOS adapter",
+    );
+    let system_guidance = system.recovery_guidance();
+    assert!(system_guidance.title.contains("System audio"));
+    assert!(system_guidance
+        .steps
+        .iter()
+        .any(|step| step.contains("Screen Recording")));
+}
+
+#[test]
+fn smoke_result_from_capture_error_never_reports_passed() {
+    let result = ManualSmokeResult::from_capture_error(CaptureError::PermissionDenied(
+        CapturePermissionError::denied(CapturePermission::Microphone),
+    ));
+
+    assert_eq!(result.status, ManualSmokeStatus::PermissionDenied);
+    assert!(result.message.contains("Microphone"));
     assert_ne!(result.status, ManualSmokeStatus::Passed);
 }
 
 #[test]
-fn smoke_binary_exits_nonzero_when_hardware_check_is_not_run() {
+fn smoke_placeholder_never_reports_passed_when_hardware_check_is_skipped() {
+    let smoke = ManualSmokeCheck::macos_placeholder();
+    let result = smoke.run_without_hardware();
+
+    assert_eq!(result.status, ManualSmokeStatus::Skipped);
+    assert!(result.message.contains("--attempt-mic"));
+    assert_ne!(result.status, ManualSmokeStatus::Passed);
+}
+
+#[test]
+fn smoke_binary_exits_nonzero_when_hardware_check_is_skipped() {
     let output = Command::new(env!("CARGO_BIN_EXE_audio-smoke"))
         .output()
         .expect("run audio-smoke");
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("NotRun"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Skipped"));
 }
 
 #[test]

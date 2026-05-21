@@ -1,8 +1,13 @@
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum StreamKind {
     Microphone,
     SystemAudio,
@@ -16,6 +21,71 @@ impl StreamKind {
         }
     }
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CaptureConfiguration {
+    microphone: bool,
+    system_audio: bool,
+}
+
+impl CaptureConfiguration {
+    pub fn new(microphone: bool, system_audio: bool) -> Result<Self, CaptureConfigurationError> {
+        if !microphone && !system_audio {
+            return Err(CaptureConfigurationError::NoStreamsRequested);
+        }
+        Ok(Self {
+            microphone,
+            system_audio,
+        })
+    }
+
+    pub fn mic_only() -> Result<Self, CaptureConfigurationError> {
+        Self::new(true, false)
+    }
+
+    pub fn system_only() -> Result<Self, CaptureConfigurationError> {
+        Self::new(false, true)
+    }
+
+    pub fn mixed() -> Result<Self, CaptureConfigurationError> {
+        Self::new(true, true)
+    }
+
+    pub fn requests(&self, stream: StreamKind) -> bool {
+        match stream {
+            StreamKind::Microphone => self.microphone,
+            StreamKind::SystemAudio => self.system_audio,
+        }
+    }
+
+    pub fn requested_streams(&self) -> Vec<StreamKind> {
+        let mut streams = Vec::new();
+        if self.microphone {
+            streams.push(StreamKind::Microphone);
+        }
+        if self.system_audio {
+            streams.push(StreamKind::SystemAudio);
+        }
+        streams
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CaptureConfigurationError {
+    NoStreamsRequested,
+}
+
+impl fmt::Display for CaptureConfigurationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CaptureConfigurationError::NoStreamsRequested => {
+                write!(f, "capture requires at least one requested audio stream")
+            }
+        }
+    }
+}
+
+impl Error for CaptureConfigurationError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceIdentity {
@@ -147,6 +217,12 @@ pub enum CapturePermission {
     SystemAudioScreenRecording,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureCapability {
+    Microphone,
+    SystemAudio,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapturePermissionError {
     pub permission: CapturePermission,
@@ -190,6 +266,116 @@ impl CapturePermissionError {
     }
 }
 
+impl fmt::Display for CapturePermissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl Error for CapturePermissionError {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CaptureUnavailable {
+    pub capability: CaptureCapability,
+    pub reason: String,
+}
+
+impl CaptureUnavailable {
+    pub fn microphone(reason: impl Into<String>) -> Self {
+        Self {
+            capability: CaptureCapability::Microphone,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn system_audio(reason: impl Into<String>) -> Self {
+        Self {
+            capability: CaptureCapability::SystemAudio,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn recovery_guidance(&self) -> UserRecoveryGuidance {
+        match self.capability {
+            CaptureCapability::Microphone => UserRecoveryGuidance {
+                title: "Microphone unavailable".to_string(),
+                steps: vec![
+                    "Connect or select a macOS input device".to_string(),
+                    "Open System Settings, then Sound, then Input to confirm the device is visible"
+                        .to_string(),
+                    "If the device is visible but capture still fails, check Privacy & Security, then Microphone"
+                        .to_string(),
+                ],
+            },
+            CaptureCapability::SystemAudio => UserRecoveryGuidance {
+                title: "System audio unavailable".to_string(),
+                steps: vec![
+                    "System audio capture requires a macOS ScreenCaptureKit adapter".to_string(),
+                    "Open System Settings, then Privacy & Security, then Screen Recording"
+                        .to_string(),
+                    "Allow Curiosity Transcripts and restart the app before recording system audio"
+                        .to_string(),
+                ],
+            },
+        }
+    }
+}
+
+impl fmt::Display for CaptureUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.capability {
+            CaptureCapability::Microphone => write!(f, "microphone unavailable: {}", self.reason),
+            CaptureCapability::SystemAudio => {
+                write!(f, "system audio unavailable: {}", self.reason)
+            }
+        }
+    }
+}
+
+impl Error for CaptureUnavailable {}
+
+#[derive(Debug)]
+pub enum CaptureError {
+    Configuration(CaptureConfigurationError),
+    PermissionDenied(CapturePermissionError),
+    Unavailable(CaptureUnavailable),
+    Recording(RecordingError),
+}
+
+impl fmt::Display for CaptureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CaptureError::Configuration(error) => write!(f, "{error}"),
+            CaptureError::PermissionDenied(error) => write!(f, "{error}"),
+            CaptureError::Unavailable(error) => write!(f, "{error}"),
+            CaptureError::Recording(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl Error for CaptureError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            CaptureError::Configuration(error) => Some(error),
+            CaptureError::PermissionDenied(error) => Some(error),
+            CaptureError::Unavailable(error) => Some(error),
+            CaptureError::Recording(error) => Some(error),
+        }
+    }
+}
+
+impl From<CaptureConfigurationError> for CaptureError {
+    fn from(error: CaptureConfigurationError) -> Self {
+        CaptureError::Configuration(error)
+    }
+}
+
+impl From<RecordingError> for CaptureError {
+    fn from(error: RecordingError) -> Self {
+        CaptureError::Recording(error)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserRecoveryGuidance {
     pub title: String,
@@ -220,9 +406,70 @@ impl ManualSmokeCheck {
 
     pub fn run_without_hardware(&self) -> ManualSmokeResult {
         ManualSmokeResult {
-            status: ManualSmokeStatus::NotRun,
-            message: "macOS audio capture smoke is manual until hardware capture is wired"
+            status: ManualSmokeStatus::Skipped,
+            message: "macOS audio smoke skipped; rerun audio-smoke with --attempt-mic to request microphone hardware capture"
                 .to_string(),
+        }
+    }
+
+    pub fn run_macos_microphone_capture(
+        &self,
+        root: &Path,
+        duration: Duration,
+    ) -> ManualSmokeResult {
+        match record_macos_microphone_to_wav(root, duration) {
+            Ok(manifest) => ManualSmokeResult::from_artifact_manifest(&manifest),
+            Err(error) => ManualSmokeResult::from_capture_error(error),
+        }
+    }
+}
+
+impl ManualSmokeResult {
+    pub fn from_capture_error(error: CaptureError) -> Self {
+        match error {
+            CaptureError::PermissionDenied(error) => {
+                let guidance = error.recovery_guidance();
+                Self {
+                    status: ManualSmokeStatus::PermissionDenied,
+                    message: format!("{}: {}", guidance.title, guidance.steps.join("; ")),
+                }
+            }
+            CaptureError::Unavailable(error) => {
+                let guidance = error.recovery_guidance();
+                Self {
+                    status: ManualSmokeStatus::Unavailable,
+                    message: format!("{}: {}", error, guidance.steps.join("; ")),
+                }
+            }
+            CaptureError::Configuration(error) => Self {
+                status: ManualSmokeStatus::Unavailable,
+                message: error.to_string(),
+            },
+            CaptureError::Recording(error) => Self {
+                status: ManualSmokeStatus::Unavailable,
+                message: error.to_string(),
+            },
+        }
+    }
+
+    pub fn from_artifact_manifest(manifest: &ArtifactManifest) -> Self {
+        let Some(artifact) = manifest.artifacts.first() else {
+            return Self {
+                status: ManualSmokeStatus::Unavailable,
+                message: "microphone capture completed without an audio artifact".to_string(),
+            };
+        };
+        Self {
+            status: ManualSmokeStatus::Passed,
+            message: format!(
+                "wrote {}: sample_rate_hz={}, channels={}, device={}, duration_ms={}, sha256={}",
+                artifact.path.display(),
+                artifact.sample_rate_hz,
+                artifact.channel_count,
+                artifact.identity.display_name,
+                artifact.duration_ms,
+                artifact.sha256
+            ),
         }
     }
 }
@@ -321,6 +568,683 @@ pub struct ChunkManifest {
     pub ended_at_ms: Option<u64>,
     pub chunks: Vec<ChunkMetadata>,
     pub recovery: Option<RecoveryMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioArtifactMetadata {
+    pub stream: StreamKind,
+    pub file_name: String,
+    pub path: PathBuf,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub duration_ms: u64,
+    pub sample_rate_hz: u32,
+    pub channel_count: u16,
+    pub identity: DeviceIdentity,
+    pub bytes_written: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactManifest {
+    pub recording: RecordingMetadata,
+    pub status: ManifestStatus,
+    pub ended_at_ms: Option<u64>,
+    pub artifacts: Vec<AudioArtifactMetadata>,
+    pub recovery: Option<RecoveryMetadata>,
+}
+
+#[derive(Debug)]
+pub enum RecordingError {
+    Io(io::Error),
+    Wav(hound::Error),
+    StreamNotRequested(StreamKind),
+    MissingStreamMetadata(StreamKind),
+    MismatchedFrameFormat {
+        stream: StreamKind,
+        expected_sample_rate_hz: u32,
+        actual_sample_rate_hz: u32,
+        expected_channel_count: u16,
+        actual_channel_count: u16,
+    },
+}
+
+impl fmt::Display for RecordingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RecordingError::Io(error) => write!(f, "audio artifact I/O failed: {error}"),
+            RecordingError::Wav(error) => write!(f, "WAV artifact write failed: {error}"),
+            RecordingError::StreamNotRequested(stream) => {
+                write!(
+                    f,
+                    "frame stream was not requested: {}",
+                    stream.as_manifest_str()
+                )
+            }
+            RecordingError::MissingStreamMetadata(stream) => write!(
+                f,
+                "missing device metadata for requested stream: {}",
+                stream.as_manifest_str()
+            ),
+            RecordingError::MismatchedFrameFormat {
+                stream,
+                expected_sample_rate_hz,
+                actual_sample_rate_hz,
+                expected_channel_count,
+                actual_channel_count,
+            } => write!(
+                f,
+                "mismatched {} frame format: expected {} Hz/{} channels, got {} Hz/{} channels",
+                stream.as_manifest_str(),
+                expected_sample_rate_hz,
+                expected_channel_count,
+                actual_sample_rate_hz,
+                actual_channel_count
+            ),
+        }
+    }
+}
+
+impl Error for RecordingError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            RecordingError::Io(error) => Some(error),
+            RecordingError::Wav(error) => Some(error),
+            RecordingError::StreamNotRequested(_)
+            | RecordingError::MissingStreamMetadata(_)
+            | RecordingError::MismatchedFrameFormat { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for RecordingError {
+    fn from(error: io::Error) -> Self {
+        RecordingError::Io(error)
+    }
+}
+
+impl From<hound::Error> for RecordingError {
+    fn from(error: hound::Error) -> Self {
+        RecordingError::Wav(error)
+    }
+}
+
+struct ActiveWavArtifact {
+    file_name: String,
+    path: PathBuf,
+    writer: hound::WavWriter<BufWriter<File>>,
+    started_at_ms: u64,
+    ended_at_ms: Option<u64>,
+    sample_rate_hz: u32,
+    channel_count: u16,
+    identity: DeviceIdentity,
+    audio_frame_count: u64,
+}
+
+pub struct StreamingWavRecorder {
+    session_dir: PathBuf,
+    config: CaptureConfiguration,
+    manifest: ArtifactManifest,
+    snapshot: DeviceSnapshot,
+    active: BTreeMap<StreamKind, ActiveWavArtifact>,
+}
+
+impl StreamingWavRecorder {
+    pub fn start(
+        root: &Path,
+        recording: RecordingMetadata,
+        config: CaptureConfiguration,
+        snapshot: DeviceSnapshot,
+    ) -> Result<Self, RecordingError> {
+        for stream in config.requested_streams() {
+            if metadata_for_stream(&snapshot, stream).is_none() {
+                return Err(RecordingError::MissingStreamMetadata(stream));
+            }
+        }
+
+        let session_dir = root.join(&recording.session_id);
+        fs::create_dir_all(&session_dir)?;
+        let recorder = Self {
+            session_dir,
+            config,
+            manifest: ArtifactManifest {
+                recording,
+                status: ManifestStatus::Recording,
+                ended_at_ms: None,
+                artifacts: Vec::new(),
+                recovery: None,
+            },
+            snapshot,
+            active: BTreeMap::new(),
+        };
+        recorder.write_manifest()?;
+        Ok(recorder)
+    }
+
+    pub fn write_frame(&mut self, frame: &AudioFrame) -> Result<(), RecordingError> {
+        if !self.config.requests(frame.stream) {
+            return Err(RecordingError::StreamNotRequested(frame.stream));
+        }
+        if !self.active.contains_key(&frame.stream) {
+            let metadata = metadata_for_stream(&self.snapshot, frame.stream)
+                .ok_or(RecordingError::MissingStreamMetadata(frame.stream))?;
+            let file_name = wav_file_name(frame.stream).to_string();
+            let path = self.session_dir.join(&file_name);
+            let writer = hound::WavWriter::create(
+                &path,
+                hound::WavSpec {
+                    channels: frame.channel_count,
+                    sample_rate: frame.sample_rate_hz,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )?;
+            self.active.insert(
+                frame.stream,
+                ActiveWavArtifact {
+                    file_name,
+                    path,
+                    writer,
+                    started_at_ms: frame.start_time_ms,
+                    ended_at_ms: None,
+                    sample_rate_hz: frame.sample_rate_hz,
+                    channel_count: frame.channel_count,
+                    identity: metadata.identity,
+                    audio_frame_count: 0,
+                },
+            );
+        }
+
+        {
+            let artifact = self
+                .active
+                .get_mut(&frame.stream)
+                .ok_or(RecordingError::MissingStreamMetadata(frame.stream))?;
+            if artifact.sample_rate_hz != frame.sample_rate_hz
+                || artifact.channel_count != frame.channel_count
+            {
+                return Err(RecordingError::MismatchedFrameFormat {
+                    stream: frame.stream,
+                    expected_sample_rate_hz: artifact.sample_rate_hz,
+                    actual_sample_rate_hz: frame.sample_rate_hz,
+                    expected_channel_count: artifact.channel_count,
+                    actual_channel_count: frame.channel_count,
+                });
+            }
+            for sample in &frame.pcm_i16 {
+                artifact.writer.write_sample(*sample)?;
+            }
+            artifact.audio_frame_count +=
+                frame.pcm_i16.len() as u64 / u64::from(frame.channel_count.max(1));
+            artifact.ended_at_ms = Some(frame_end_time_ms(frame));
+            artifact.writer.flush()?;
+        }
+        self.write_manifest()
+    }
+
+    pub fn stop(mut self, ended_at_ms: u64) -> Result<ArtifactManifest, RecordingError> {
+        self.manifest.status = ManifestStatus::Complete;
+        self.manifest.ended_at_ms = Some(ended_at_ms);
+        for (stream, artifact) in std::mem::take(&mut self.active) {
+            artifact.writer.finalize()?;
+            let bytes_written = fs::metadata(&artifact.path)?.len();
+            let sha256 = sha256_file(&artifact.path)?;
+            self.manifest.artifacts.push(AudioArtifactMetadata {
+                stream,
+                file_name: artifact.file_name,
+                path: artifact.path,
+                started_at_ms: artifact.started_at_ms,
+                ended_at_ms: artifact.ended_at_ms,
+                duration_ms: samples_to_ms_ceil(
+                    artifact.audio_frame_count as usize,
+                    artifact.sample_rate_hz,
+                ),
+                sample_rate_hz: artifact.sample_rate_hz,
+                channel_count: artifact.channel_count,
+                identity: artifact.identity,
+                bytes_written,
+                sha256,
+            });
+        }
+        self.write_manifest()?;
+        Ok(self.manifest)
+    }
+
+    fn write_manifest(&self) -> Result<(), RecordingError> {
+        let path = self.session_dir.join("manifest.txt");
+        let mut file = File::create(path)?;
+        writeln!(file, "session_id={}", self.manifest.recording.session_id)?;
+        writeln!(file, "status={}", self.manifest.status.as_manifest_str())?;
+        writeln!(
+            file,
+            "started_at_ms={}",
+            self.manifest.recording.started_at_ms
+        )?;
+        writeln!(file, "ended_at_ms={:?}", self.manifest.ended_at_ms)?;
+        if let Some(recovery) = &self.manifest.recovery {
+            writeln!(file, "recoverable={}", recovery.recoverable)?;
+            writeln!(file, "recovery_reason={}", recovery.reason)?;
+        } else if self.manifest.status == ManifestStatus::Recording && !self.active.is_empty() {
+            writeln!(file, "recoverable=true")?;
+            writeln!(
+                file,
+                "recovery_reason=recording active; WAV artifact can be recovered if interrupted"
+            )?;
+        }
+        for artifact in &self.manifest.artifacts {
+            writeln!(
+                file,
+                "artifact={},{},{},{}",
+                artifact.stream.as_manifest_str(),
+                artifact.file_name,
+                artifact_status_for_manifest(self.manifest.status),
+                artifact.bytes_written
+            )?;
+            writeln!(file, "artifact_started_at_ms={}", artifact.started_at_ms)?;
+            writeln!(file, "artifact_ended_at_ms={:?}", artifact.ended_at_ms)?;
+            writeln!(file, "duration_ms={}", artifact.duration_ms)?;
+            writeln!(file, "sample_rate_hz={}", artifact.sample_rate_hz)?;
+            writeln!(file, "channel_count={}", artifact.channel_count)?;
+            writeln!(file, "device_identity={}", artifact.identity.identity)?;
+            writeln!(
+                file,
+                "device_display_name={}",
+                artifact.identity.display_name
+            )?;
+            writeln!(file, "device_transport={}", artifact.identity.transport)?;
+            writeln!(file, "sha256={}", artifact.sha256)?;
+        }
+        for (stream, artifact) in &self.active {
+            let bytes_written = fs::metadata(&artifact.path)?.len();
+            writeln!(
+                file,
+                "artifact={},{},{},{}",
+                stream.as_manifest_str(),
+                artifact.file_name,
+                "Writing",
+                bytes_written
+            )?;
+            writeln!(file, "artifact_started_at_ms={}", artifact.started_at_ms)?;
+            writeln!(file, "artifact_ended_at_ms={:?}", artifact.ended_at_ms)?;
+            writeln!(
+                file,
+                "duration_ms={}",
+                samples_to_ms_ceil(artifact.audio_frame_count as usize, artifact.sample_rate_hz)
+            )?;
+            writeln!(file, "sample_rate_hz={}", artifact.sample_rate_hz)?;
+            writeln!(file, "channel_count={}", artifact.channel_count)?;
+            writeln!(file, "device_identity={}", artifact.identity.identity)?;
+            writeln!(
+                file,
+                "device_display_name={}",
+                artifact.identity.display_name
+            )?;
+            writeln!(file, "device_transport={}", artifact.identity.transport)?;
+        }
+        file.sync_data()?;
+        Ok(())
+    }
+}
+
+fn metadata_for_stream(snapshot: &DeviceSnapshot, stream: StreamKind) -> Option<StreamMetadata> {
+    match stream {
+        StreamKind::Microphone => snapshot.mic.clone(),
+        StreamKind::SystemAudio => snapshot.system.clone(),
+    }
+}
+
+fn wav_file_name(stream: StreamKind) -> &'static str {
+    match stream {
+        StreamKind::Microphone => "raw-mic.wav",
+        StreamKind::SystemAudio => "raw-system.wav",
+    }
+}
+
+fn artifact_status_for_manifest(status: ManifestStatus) -> &'static str {
+    match status {
+        ManifestStatus::Recording => "Recording",
+        ManifestStatus::Complete => "Complete",
+        ManifestStatus::Canceled => "Interrupted",
+        ManifestStatus::Failed => "Interrupted",
+    }
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemAudioAdapterStatus {
+    Available,
+    PermissionDenied(CapturePermissionError),
+    Unavailable(CaptureUnavailable),
+}
+
+pub struct ScreenCaptureKitSystemAudioAdapter;
+
+impl ScreenCaptureKitSystemAudioAdapter {
+    pub fn status() -> SystemAudioAdapterStatus {
+        #[cfg(target_os = "macos")]
+        {
+            SystemAudioAdapterStatus::Unavailable(CaptureUnavailable::system_audio(
+                "screencapturekit 6.0.1 is available, but this crate does not yet own a safe ScreenCaptureKit stream lifecycle for app-scoped Screen Recording permission prompts",
+            ))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            SystemAudioAdapterStatus::Unavailable(CaptureUnavailable::system_audio(
+                "ScreenCaptureKit system audio capture requires macOS",
+            ))
+        }
+    }
+
+    pub fn start_capture(&self) -> Result<(), CaptureError> {
+        match Self::status() {
+            SystemAudioAdapterStatus::Available => Ok(()),
+            SystemAudioAdapterStatus::PermissionDenied(error) => {
+                Err(CaptureError::PermissionDenied(error))
+            }
+            SystemAudioAdapterStatus::Unavailable(error) => Err(CaptureError::Unavailable(error)),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn record_macos_microphone_to_wav(
+    root: &Path,
+    duration: Duration,
+) -> Result<ArtifactManifest, CaptureError> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let started_at_ms = now_ms();
+    let host = cpal::default_host();
+    let device = host.default_input_device().ok_or_else(|| {
+        CaptureError::Unavailable(CaptureUnavailable::microphone(
+            "no default macOS input device is available",
+        ))
+    })?;
+    let device_name = device
+        .description()
+        .map(|description| description.name().to_string())
+        .unwrap_or_else(|_| "Default input device".to_string());
+    let supported_config = device
+        .default_input_config()
+        .map_err(|error| microphone_error_from_message(error.to_string()))?;
+    let sample_format = supported_config.sample_format();
+    let stream_config: cpal::StreamConfig = supported_config.clone().into();
+    let sample_rate_hz = stream_config.sample_rate;
+    let channel_count = stream_config.channels;
+    let (sample_tx, sample_rx) = mpsc::channel::<Vec<i16>>();
+    let stream_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    let stream = match sample_format {
+        cpal::SampleFormat::I8 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i8], _| {
+                    let _ = tx.send(data.iter().map(|sample| i16::from(*sample) << 8).collect());
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _| {
+                    let _ = tx.send(data.to_vec());
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I32 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i32], _| {
+                    let _ = tx.send(data.iter().map(|sample| (sample >> 16) as i16).collect());
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I64 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i64], _| {
+                    let _ = tx.send(data.iter().map(|sample| (sample >> 48) as i16).collect());
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U8 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u8], _| {
+                    let _ = tx.send(
+                        data.iter()
+                            .map(|sample| (i16::from(*sample) - 128) << 8)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U16 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _| {
+                    let _ = tx.send(
+                        data.iter()
+                            .map(|sample| (*sample as i32 - 32_768) as i16)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U32 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u32], _| {
+                    let _ = tx.send(
+                        data.iter()
+                            .map(|sample| ((*sample as i64 - 2_147_483_648) >> 16) as i16)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U64 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u64], _| {
+                    let _ = tx.send(
+                        data.iter()
+                            .map(|sample| {
+                                ((*sample as i128 - 9_223_372_036_854_775_808i128) >> 48) as i16
+                            })
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::F32 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _| {
+                    let _ = tx.send(data.iter().map(|sample| f32_to_i16(*sample)).collect());
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::F64 => {
+            let tx = sample_tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f64], _| {
+                    let _ = tx.send(
+                        data.iter()
+                            .map(|sample| f32_to_i16(*sample as f32))
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        unsupported => {
+            return Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+                format!("unsupported default input sample format: {unsupported:?}"),
+            )));
+        }
+    }
+    .map_err(|error| microphone_error_from_message(error.to_string()))?;
+
+    stream
+        .play()
+        .map_err(|error| microphone_error_from_message(error.to_string()))?;
+    std::thread::sleep(duration);
+    drop(stream);
+    drop(sample_tx);
+
+    let snapshot = DeviceSnapshot {
+        captured_at_ms: started_at_ms,
+        mic: Some(StreamMetadata {
+            stream: StreamKind::Microphone,
+            sample_rate_hz,
+            channel_count,
+            identity: DeviceIdentity::new("macos-default-input", &device_name, "cpal"),
+            start_time_ms: started_at_ms,
+        }),
+        system: None,
+    };
+    let mut recorder = StreamingWavRecorder::start(
+        root,
+        RecordingMetadata::new("mic-smoke", started_at_ms),
+        CaptureConfiguration::mic_only()?,
+        snapshot,
+    )?;
+    let mut frame_start_ms = started_at_ms;
+    let mut wrote_samples = false;
+    for pcm_i16 in sample_rx.try_iter() {
+        if pcm_i16.is_empty() {
+            continue;
+        }
+        wrote_samples = true;
+        let frame = AudioFrame {
+            stream: StreamKind::Microphone,
+            start_time_ms: frame_start_ms,
+            sample_rate_hz,
+            channel_count,
+            pcm_i16,
+        };
+        frame_start_ms = frame_end_time_ms(&frame);
+        recorder.write_frame(&frame)?;
+    }
+    let stream_errors = stream_errors.lock().map(|errors| errors.clone()).unwrap_or_default();
+    microphone_capture_stream_result(wrote_samples, &stream_errors)?;
+
+    recorder.stop(now_ms()).map_err(CaptureError::from)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn record_macos_microphone_to_wav(
+    _root: &Path,
+    _duration: Duration,
+) -> Result<ArtifactManifest, CaptureError> {
+    Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+        "macOS microphone capture requires macOS",
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn cpal_error_handler(
+    errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |error| {
+        if let Ok(mut errors) = errors.lock() {
+            errors.push(error.to_string());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn f32_to_i16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
+}
+
+fn microphone_error_from_message(message: String) -> CaptureError {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("permission") || lower.contains("denied") || lower.contains("authorized") {
+        CaptureError::PermissionDenied(CapturePermissionError::denied(
+            CapturePermission::Microphone,
+        ))
+    } else {
+        CaptureError::Unavailable(CaptureUnavailable::microphone(message))
+    }
+}
+
+fn microphone_capture_stream_result(
+    wrote_samples: bool,
+    stream_errors: &[String],
+) -> Result<(), CaptureError> {
+    if let Some(stream_error) = stream_errors.first() {
+        return Err(microphone_error_from_message(stream_error.clone()));
+    }
+    if !wrote_samples {
+        return Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+            "microphone stream produced no samples",
+        )));
+    }
+    Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn microphone_stream_errors_fail_even_after_samples_arrive() {
+        let result = microphone_capture_stream_result(true, &["DeviceNotAvailable".to_string()]);
+
+        assert!(matches!(result, Err(CaptureError::Unavailable(_))));
+    }
 }
 
 pub struct ChunkWriter {
@@ -437,7 +1361,11 @@ impl ChunkWriter {
         let mut file = File::create(path)?;
         writeln!(file, "session_id={}", self.manifest.recording.session_id)?;
         writeln!(file, "status={}", self.manifest.status.as_manifest_str())?;
-        writeln!(file, "started_at_ms={}", self.manifest.recording.started_at_ms)?;
+        writeln!(
+            file,
+            "started_at_ms={}",
+            self.manifest.recording.started_at_ms
+        )?;
         writeln!(file, "ended_at_ms={:?}", self.manifest.ended_at_ms)?;
         if let Some(recovery) = &self.manifest.recovery {
             writeln!(file, "recoverable={}", recovery.recoverable)?;
@@ -532,10 +1460,19 @@ fn frame_end_time_ms(frame: &AudioFrame) -> u64 {
         return frame.start_time_ms;
     }
     let audio_frames = frame.pcm_i16.len() as u64 / frame.channel_count as u64;
-    let duration_ms = audio_frames.saturating_mul(1_000).div_ceil(frame.sample_rate_hz as u64);
+    let duration_ms = audio_frames
+        .saturating_mul(1_000)
+        .div_ceil(frame.sample_rate_hz as u64);
     frame.start_time_ms.saturating_add(duration_ms)
 }
 
 fn samples_to_ms(samples: usize, sample_rate_hz: u32) -> u64 {
     ((samples as u64) * 1_000) / sample_rate_hz as u64
+}
+
+fn samples_to_ms_ceil(samples: usize, sample_rate_hz: u32) -> u64 {
+    if samples == 0 || sample_rate_hz == 0 {
+        return 0;
+    }
+    ((samples as u64) * 1_000).div_ceil(sample_rate_hz as u64)
 }
