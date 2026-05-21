@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 whisper-rs = ["curiosity-transcription/whisper-rs"]
+system-audio-screencapturekit = ["curiosity-audio/system-audio-screencapturekit"]
 
 [dependencies]
 curiosity-app = { path = "../../../crates/app" }

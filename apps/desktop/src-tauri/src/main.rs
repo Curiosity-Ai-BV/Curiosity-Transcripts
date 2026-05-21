@@ -30,6 +30,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             desktop_snapshot,
             audio_smoke_status,
+            system_audio_smoke_recording,
             start_microphone_recording,
             stop_microphone_recording,
             transcribe_meeting
@@ -57,6 +58,21 @@ fn desktop_snapshot(
 #[tauri::command]
 fn audio_smoke_status() -> AudioSmokeStatus {
     build_audio_smoke_status()
+}
+
+#[tauri::command]
+fn system_audio_smoke_recording(
+    app: tauri::AppHandle,
+    duration_ms: Option<u64>,
+) -> Result<CaptureProbeStatus, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    Ok(system_audio_smoke_recording_for_app_root(
+        &app_root,
+        std::time::Duration::from_millis(duration_ms.unwrap_or(1_000).min(10_000)),
+    ))
 }
 
 #[tauri::command]
@@ -966,6 +982,17 @@ fn build_audio_smoke_status() -> AudioSmokeStatus {
     }
 }
 
+fn system_audio_smoke_recording_for_app_root(
+    app_root: &Path,
+    duration: std::time::Duration,
+) -> CaptureProbeStatus {
+    let output_root = app_root.join("system-audio-smoke");
+    smoke_result_status(
+        ManualSmokeCheck::macos_placeholder()
+            .run_macos_system_audio_capture(&output_root, duration),
+    )
+}
+
 fn smoke_result_status(result: ManualSmokeResult) -> CaptureProbeStatus {
     let state = match result.status {
         ManualSmokeStatus::NotRun => "NotRun",
@@ -1202,6 +1229,23 @@ mod tests {
         assert_eq!(json["capture"]["microphone"], "MicrophoneUnavailable");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
         assert!(json["transcription"].is_null());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(feature = "system-audio-screencapturekit"))]
+    fn system_audio_smoke_recording_reports_unavailable_without_fake_success() {
+        let root = unique_test_root();
+
+        let status =
+            system_audio_smoke_recording_for_app_root(&root, std::time::Duration::from_millis(1));
+
+        assert_ne!(status.state, "Passed");
+        assert!(
+            status.message.contains("ScreenCaptureKit")
+                || status.message.contains("Screen Recording")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

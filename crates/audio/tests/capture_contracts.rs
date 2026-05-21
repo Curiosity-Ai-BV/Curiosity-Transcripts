@@ -4,6 +4,7 @@ use curiosity_audio::{
     ManualSmokeStatus, StreamKind,
 };
 use std::process::Command;
+use std::time::Duration;
 
 #[test]
 fn capture_configuration_accepts_mic_only_requests() {
@@ -144,6 +145,36 @@ fn smoke_binary_exits_nonzero_when_hardware_check_is_skipped() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("Skipped"));
+}
+
+#[test]
+#[cfg(not(feature = "system-audio-screencapturekit"))]
+fn system_audio_smoke_path_does_not_report_fake_success_without_real_capture() {
+    let root = std::env::temp_dir().join(format!(
+        "curiosity-system-audio-smoke-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let result = ManualSmokeCheck::macos_placeholder()
+        .run_macos_system_audio_capture(&root, Duration::from_millis(1));
+
+    assert_ne!(result.status, ManualSmokeStatus::Passed);
+    assert!(
+        result.message.contains("ScreenCaptureKit") || result.message.contains("Screen Recording")
+    );
+}
+
+#[test]
+#[cfg(not(feature = "system-audio-screencapturekit"))]
+fn smoke_binary_exposes_system_audio_attempt_without_fake_success() {
+    let output = Command::new(env!("CARGO_BIN_EXE_audio-smoke"))
+        .args(["--attempt-system-audio", "--duration-ms", "1"])
+        .output()
+        .expect("run audio-smoke");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("System"));
 }
 
 #[test]
