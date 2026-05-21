@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import App from "./App";
 import {
   getMockDesktopSnapshot,
+  getUnavailableDesktopSnapshot,
+  loadDesktopSnapshot,
   mapAnalysisDisclosure,
   mapDeleteState,
   mapExportState,
@@ -17,6 +19,53 @@ import {
 afterEach(() => cleanup());
 
 describe("desktop command-state mapping", () => {
+  it("loads the desktop snapshot through the provided command fetcher", async () => {
+    const snapshot = {
+      ...getMockDesktopSnapshot(),
+      meetings: [],
+      selectedMeetingId: null,
+      commandSurface: {
+        detail: "Connected to local desktop commands.",
+      },
+    };
+    const calls: string[] = [];
+
+    const result = await loadDesktopSnapshot({
+      fetchCommand: async <T,>(command: string): Promise<T> => {
+        calls.push(command);
+        return snapshot as T;
+      },
+      previewFallback: false,
+    });
+
+    expect(calls).toEqual(["desktop_snapshot"]);
+    expect(result).toEqual(snapshot);
+  });
+
+  it("only falls back to preview data when preview fallback is explicitly allowed", async () => {
+    const preview = await loadDesktopSnapshot({
+      fetchCommand: undefined,
+      previewFallback: true,
+    });
+
+    expect(preview.commandSurface.detail).toContain("Preview");
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: undefined,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("Tauri command surface is unavailable");
+  });
+
+  it("represents desktop command failures without preview meetings or fake command outcomes", () => {
+    const snapshot = getUnavailableDesktopSnapshot("Desktop command loading failed: permission denied.");
+
+    expect(snapshot.commandSurface.detail).not.toContain("Preview");
+    expect(snapshot.meetings).toEqual([]);
+    expect(snapshot.selectedMeetingId).toBeNull();
+    expect(snapshot.recording.permission_state).toBe("MicrophoneUnavailable");
+  });
+
   it("renders recording state from command trust DTOs", () => {
     expect(
       mapRecordingState({
@@ -105,6 +154,11 @@ describe("desktop command-state mapping", () => {
   });
 
   it("discloses summary provider privacy state", () => {
+    expect(mapAnalysisDisclosure(null)).toEqual({
+      label: "No summary",
+      tone: "muted",
+      detail: "Summary command is not wired into the desktop shell yet.",
+    });
     expect(
       mapAnalysisDisclosure({
         provider: "fake-local",
@@ -142,7 +196,7 @@ describe("desktop workspace shell", () => {
     expect(screen.getByLabelText("Search meetings")).toBeInTheDocument();
     expect(
       within(screen.getByLabelText("Recording controls and status")).getByText(
-        "Backend command wiring is not connected in this shell yet.",
+        "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
       ),
     ).toBeInTheDocument();
     expect(within(screen.getByLabelText("Meetings")).getByText("Circuit Review")).toBeInTheDocument();
@@ -176,9 +230,55 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("button", { name: "Export JSON" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Delete private data" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Generate summary" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Export JSON" })).toHaveAttribute(
+      "title",
+      "Export command is not wired into the desktop shell yet.",
+    );
+    expect(screen.getByRole("button", { name: "Delete private data" })).toHaveAttribute(
+      "title",
+      "Delete command is not wired into the desktop shell yet.",
+    );
+    expect(screen.getByRole("button", { name: "Generate summary" })).toHaveAttribute(
+      "title",
+      "Summary command is not wired into the desktop shell yet.",
+    );
+    expect(screen.getAllByText("No summary").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/fake-local \/ fixture-summary/i)).not.toBeInTheDocument();
     expect(screen.queryByText("JSON exported")).not.toBeInTheDocument();
     expect(screen.queryByText("exports/circuit-review.json")).not.toBeInTheDocument();
     expect(screen.queryByText(/private artifact removed/i)).not.toBeInTheDocument();
+  });
+
+  it("does not imply connected recording support when desktop commands are read-only", () => {
+    render(
+      <App
+        snapshot={{
+          ...getMockDesktopSnapshot(),
+          commandSurface: {
+            detail: "Connected to local desktop commands.",
+          },
+          recording: {
+            meeting_id: "",
+            recording_id: null,
+            state: "Interrupted",
+            permission_state: "MicrophoneUnavailable",
+            storage_location: { app_private_path: "/tmp/curiosity" },
+            raw_audio_retention: "Retain",
+            recoverable: false,
+            recovery_action: "Recording commands are not wired into the desktop shell yet.",
+          },
+          capture: {
+            microphone: "MicrophoneUnavailable",
+            systemAudio: "SystemAudioUnavailable",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("Microphone unavailable").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Paused")).not.toBeInTheDocument();
+    expect(screen.queryByText("Raw audio retained in private app storage.")).not.toBeInTheDocument();
+    expect(screen.getByText("Recording commands are not wired into the desktop shell yet.")).toBeInTheDocument();
   });
 
   it("updates meeting results from search input", async () => {
@@ -224,5 +324,20 @@ describe("desktop workspace shell", () => {
 
     expect(screen.getByRole("button", { name: /Circuit Review/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: /Circuit Review/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("uses the backend-selected meeting when an async desktop snapshot replaces loading state", () => {
+    const loading = getUnavailableDesktopSnapshot("Loading local desktop commands.");
+    const loaded = {
+      ...getMockDesktopSnapshot(),
+      commandSurface: { detail: "Connected to local desktop commands." },
+      selectedMeetingId: "design-standup",
+    };
+    const { rerender } = render(<App snapshot={{ ...loading, loading: true }} />);
+
+    rerender(<App snapshot={loaded} />);
+
+    expect(screen.getByRole("button", { name: /Design Standup/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
   });
 });

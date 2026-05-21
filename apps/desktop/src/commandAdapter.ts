@@ -83,7 +83,7 @@ export interface MeetingView {
   };
   exportState: ExportCommandState;
   deleteState: DeleteCommandState;
-  analysis: AnalysisDisclosureState;
+  analysis: AnalysisDisclosureState | null;
 }
 
 export interface CaptureStatus {
@@ -101,9 +101,37 @@ export interface DesktopSnapshot {
   capture: CaptureStatus;
 }
 
+export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+interface LoadDesktopSnapshotOptions {
+  fetchCommand?: CommandFetcher;
+  previewFallback?: boolean;
+}
+
+export async function loadDesktopSnapshot({
+  fetchCommand = getTauriCommandFetcher(),
+  previewFallback = !isTauriRuntime(),
+}: LoadDesktopSnapshotOptions = {}): Promise<DesktopSnapshot> {
+  if (fetchCommand) {
+    return fetchCommand<DesktopSnapshot>("desktop_snapshot");
+  }
+  if (previewFallback) {
+    return getMockDesktopSnapshot();
+  }
+  throw new Error("Tauri command surface is unavailable");
+}
+
+export function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
 export function mapRecordingState(dto: CommandRecordingDto): StatusView {
   if (dto.permission_state !== "Ready") {
-    return mapPermissionState(dto.permission_state);
+    const permission = mapPermissionState(dto.permission_state);
+    return {
+      ...permission,
+      detail: dto.recovery_action || permission.detail,
+    };
   }
   if (dto.state === "Interrupted") {
     return {
@@ -264,7 +292,14 @@ export function mapDeleteState(state: DeleteCommandState): StatusView {
   };
 }
 
-export function mapAnalysisDisclosure(state: AnalysisDisclosureState): StatusView {
+export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): StatusView {
+  if (!state) {
+    return {
+      label: "No summary",
+      tone: "muted",
+      detail: "Summary command is not wired into the desktop shell yet.",
+    };
+  }
   if (state.networkUsed && state.disclosureRequired && !state.disclosureConfirmed) {
     return {
       label: "Hosted summary gated",
@@ -306,13 +341,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
           "Mixed",
         ),
       ],
-      analysis: {
-        provider: "fake-local",
-        modelName: "fixture-summary",
-        networkUsed: false,
-        disclosureRequired: false,
-        disclosureConfirmed: false,
-      },
+      analysis: null,
     }),
     meeting({
       id: "design-standup",
@@ -322,20 +351,14 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       transcriptState: "Transcribing",
       transcriptText: "The standup covered narrow layout density and settings copy.",
       segments: [segment("segment-3", 0, 9300, "The standup covered narrow layout density.", "Imported")],
-      analysis: {
-        provider: "openai-compatible",
-        modelName: "DeepSeek-V3.2-Speciale",
-        networkUsed: true,
-        disclosureRequired: true,
-        disclosureConfirmed: false,
-      },
+      analysis: null,
     }),
   ];
 
   return {
     loading: variant === "state-matrix",
     commandSurface: {
-      detail: "Backend command wiring is not connected in this shell yet.",
+      detail: "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
     },
     meetings,
     selectedMeetingId: "circuit-review",
@@ -366,6 +389,32 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
   };
 }
 
+export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
+  return {
+    loading: false,
+    commandSurface: {
+      detail,
+    },
+    meetings: [],
+    selectedMeetingId: null,
+    recording: {
+      meeting_id: "",
+      recording_id: null,
+      state: "Interrupted",
+      permission_state: "MicrophoneUnavailable",
+      storage_location: { app_private_path: "" },
+      raw_audio_retention: "Retain",
+      recoverable: false,
+      recovery_action: "Load the desktop command surface before recording.",
+    },
+    model: { kind: "missing", configuredPath: "" },
+    capture: {
+      microphone: "MicrophoneUnavailable",
+      systemAudio: "SystemAudioUnavailable",
+    },
+  };
+}
+
 function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" | "deleteState">): MeetingView {
   return {
     ...input,
@@ -374,7 +423,7 @@ function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" |
       storageLabel: "Private storage",
       storagePath: `meetings/${input.id}/audio`,
       rawAudioRetention: "Retain",
-      localOnly: !input.analysis.networkUsed,
+      localOnly: !input.analysis?.networkUsed,
     },
     exportState: {
       state: "idle",
@@ -411,4 +460,14 @@ function retentionDetail(policy: RawAudioRetentionPolicy): string {
     return "Raw audio is not saved for this meeting.";
   }
   return "Raw audio retained in private app storage.";
+}
+
+function getTauriCommandFetcher(): CommandFetcher | undefined {
+  if (!isTauriRuntime()) {
+    return undefined;
+  }
+  return async <T>(command: string, args?: Record<string, unknown>) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<T>(command, args);
+  };
 }

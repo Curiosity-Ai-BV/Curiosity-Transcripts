@@ -9,7 +9,7 @@ import {
   WarningDiamond,
   Waveform,
 } from "@phosphor-icons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   DesktopSnapshot,
@@ -35,14 +35,30 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
   const [selectedMeetingId, setSelectedMeetingId] = useState(snapshot.selectedMeetingId);
 
   const meetings = useMemo(() => searchMeetings(snapshot.meetings, query), [snapshot.meetings, query]);
+  useEffect(() => {
+    setSelectedMeetingId((current) => {
+      const backendSelected = snapshot.selectedMeetingId;
+      if (backendSelected && snapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
+        return backendSelected;
+      }
+      if (current && snapshot.meetings.some((meeting) => meeting.id === current)) {
+        return current;
+      }
+      return snapshot.meetings[0]?.id ?? null;
+    });
+  }, [snapshot.meetings, snapshot.selectedMeetingId]);
+
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? meetings[0] ?? null;
   const commandUnavailable = snapshot.commandSurface.detail;
-  const recording = {
-    label: "Recording unavailable",
-    tone: "muted" as Tone,
-    detail: commandUnavailable,
-  };
+  const recording = commandUnavailable.startsWith("Preview shell")
+    ? {
+        label: "Recording unavailable",
+        tone: "muted" as Tone,
+        detail: commandUnavailable,
+      }
+    : mapRecordingState(snapshot.recording);
   const model = mapModelStatus(snapshot.model);
+  const shellLabel = commandUnavailable.startsWith("Preview shell") ? "Preview shell" : "Desktop shell";
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -51,6 +67,9 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
     ? mapDeleteState(selectedMeeting.deleteState)
     : mapDeleteState({ state: "idle" });
   const analysisDisclosure = selectedMeeting ? mapAnalysisDisclosure(selectedMeeting.analysis) : null;
+  const summaryCommandUnavailable = "Summary command is not wired into the desktop shell yet.";
+  const exportCommandUnavailable = "Export command is not wired into the desktop shell yet.";
+  const deleteCommandUnavailable = "Delete command is not wired into the desktop shell yet.";
 
   return (
     <main className="app-shell">
@@ -63,7 +82,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
           <div className="topbar-status" aria-label="Workspace status">
             <StatusPill tone={recording.tone} label={recording.label} />
             <StatusPill tone={model.tone} label={model.label} />
-            <StatusPill tone="muted" label="Preview shell" />
+            <StatusPill tone={shellLabel === "Preview shell" ? "muted" : "ready"} label={shellLabel} />
           </div>
         </header>
 
@@ -153,7 +172,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
                       type="button"
                       className="button"
                       disabled
-                      title={commandUnavailable}
+                      title={summaryCommandUnavailable}
                     >
                       <FileText size={16} weight="regular" />
                       Generate summary
@@ -179,7 +198,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
                     type="button"
                     className="button"
                     disabled
-                    title={commandUnavailable}
+                    title={exportCommandUnavailable}
                   >
                     <DownloadSimple size={16} weight="regular" />
                     Export JSON
@@ -188,7 +207,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
                     type="button"
                     className="button danger"
                     disabled
-                    title={commandUnavailable}
+                    title={deleteCommandUnavailable}
                   >
                     <Trash size={16} weight="regular" />
                     Delete private data

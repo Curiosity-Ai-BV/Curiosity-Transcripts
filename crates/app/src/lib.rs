@@ -27,6 +27,8 @@ pub enum AppPermissionState {
     Ready,
     MicrophoneDenied,
     SystemAudioDenied,
+    MicrophoneUnavailable,
+    SystemAudioUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
