@@ -13,6 +13,7 @@ import {
   mapModelStatus,
   mapPermissionState,
   mapRecordingState,
+  mapTranscriptionState,
   searchMeetings,
 } from "./commandAdapter";
 
@@ -80,6 +81,41 @@ describe("desktop command-state mapping", () => {
       label: "Recording",
       tone: "active",
       detail: "Raw audio retained in private app storage.",
+    });
+  });
+
+  it("renders completed recordings as saved instead of permanently stopping", () => {
+    expect(
+      mapRecordingState({
+        state: "Complete",
+        permission_state: "Ready",
+        recoverable: false,
+        recovery_action: "Finalized local microphone WAV artifact.",
+        raw_audio_retention: "Retain",
+        storage_location: { app_private_path: "meetings/circuit-review/audio" },
+      }),
+    ).toEqual({
+      label: "Recorded",
+      tone: "ready",
+      detail: "Finalized local microphone WAV artifact.",
+    });
+  });
+
+  it("renders transcription command failures as visible blocked state", () => {
+    expect(
+      mapTranscriptionState({
+        meetingId: "meeting-1",
+        state: "Failed",
+        failure: {
+          code: "missing_model",
+          message: "Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.",
+          setupGuidance: "Set CURIOSITY_WHISPER_MODEL.",
+        },
+      }),
+    ).toEqual({
+      label: "Transcription failed",
+      tone: "blocked",
+      detail: "Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.",
     });
   });
 
@@ -279,6 +315,31 @@ describe("desktop workspace shell", () => {
     expect(screen.queryByText("Paused")).not.toBeInTheDocument();
     expect(screen.queryByText("Raw audio retained in private app storage.")).not.toBeInTheDocument();
     expect(screen.getByText("Recording commands are not wired into the desktop shell yet.")).toBeInTheDocument();
+  });
+
+  it("shows transcription failure returned by desktop commands", () => {
+    render(
+      <App
+        snapshot={{
+          ...getMockDesktopSnapshot(),
+          commandSurface: {
+            detail: "Connected to local desktop commands.",
+          },
+          transcription: {
+            meetingId: "circuit-review",
+            state: "Failed",
+            failure: {
+              code: "missing_model",
+              message: "Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.",
+              setupGuidance: "Set CURIOSITY_WHISPER_MODEL.",
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("Transcription failed").length).toBeGreaterThan(0);
+    expect(screen.getByText("Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.")).toBeInTheDocument();
   });
 
   it("updates meeting results from search input", async () => {

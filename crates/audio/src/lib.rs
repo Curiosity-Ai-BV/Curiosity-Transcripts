@@ -960,220 +960,204 @@ impl ScreenCaptureKitSystemAudioAdapter {
 }
 
 #[cfg(target_os = "macos")]
+pub struct MacosMicrophoneWavRecording {
+    stream: cpal::Stream,
+    sample_tx: Option<std::sync::mpsc::SyncSender<MicrophoneWriterMessage>>,
+    writer: Option<std::thread::JoinHandle<Result<ArtifactManifest, CaptureError>>>,
+    sample_rate_hz: u32,
+}
+
+#[cfg(target_os = "macos")]
+enum MicrophoneWriterMessage {
+    Samples(Vec<i16>),
+    Stop { ended_at_ms: u64 },
+}
+
+#[cfg(not(target_os = "macos"))]
+pub struct MacosMicrophoneWavRecording;
+
+impl MacosMicrophoneWavRecording {
+    #[cfg(target_os = "macos")]
+    pub fn start(root: &Path, session_id: &str, started_at_ms: u64) -> Result<Self, CaptureError> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use std::sync::{mpsc, Arc, Mutex};
+
+        let host = cpal::default_host();
+        let device = host.default_input_device().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "no default macOS input device is available",
+            ))
+        })?;
+        let device_name = device
+            .description()
+            .map(|description| description.name().to_string())
+            .unwrap_or_else(|_| "Default input device".to_string());
+        let supported_config = device
+            .default_input_config()
+            .map_err(|error| microphone_error_from_message(error.to_string()))?;
+        let sample_format = supported_config.sample_format();
+        let stream_config: cpal::StreamConfig = supported_config.clone().into();
+        let sample_rate_hz = stream_config.sample_rate;
+        let channel_count = stream_config.channels;
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<MicrophoneWriterMessage>(32);
+        let stream_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let stream = build_macos_input_stream(
+            &device,
+            &stream_config,
+            sample_format,
+            sample_tx.clone(),
+            Arc::clone(&stream_errors),
+        )?;
+        let snapshot = DeviceSnapshot {
+            captured_at_ms: started_at_ms,
+            mic: Some(StreamMetadata {
+                stream: StreamKind::Microphone,
+                sample_rate_hz,
+                channel_count,
+                identity: DeviceIdentity::new("macos-default-input", &device_name, "cpal"),
+                start_time_ms: started_at_ms,
+            }),
+            system: None,
+        };
+        let recorder = StreamingWavRecorder::start(
+            root,
+            RecordingMetadata::new(session_id, started_at_ms),
+            CaptureConfiguration::mic_only()?,
+            snapshot,
+        )?;
+        let writer_errors = Arc::clone(&stream_errors);
+        let writer = std::thread::spawn(move || {
+            run_microphone_writer(
+                recorder,
+                sample_rx,
+                writer_errors,
+                started_at_ms,
+                sample_rate_hz,
+                channel_count,
+            )
+        });
+        stream
+            .play()
+            .map_err(|error| microphone_error_from_message(error.to_string()))?;
+
+        Ok(Self {
+            stream,
+            sample_tx: Some(sample_tx),
+            writer: Some(writer),
+            sample_rate_hz,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn start(
+        _root: &Path,
+        _session_id: &str,
+        _started_at_ms: u64,
+    ) -> Result<Self, CaptureError> {
+        Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+            "macOS microphone capture requires macOS",
+        )))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate_hz
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn sample_rate_hz(&self) -> u32 {
+        0
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn stop(mut self, ended_at_ms: u64) -> Result<ArtifactManifest, CaptureError> {
+        drop(self.stream);
+        let sample_tx = self.sample_tx.take().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "microphone writer channel is unavailable",
+            ))
+        })?;
+        sample_tx
+            .send(MicrophoneWriterMessage::Stop { ended_at_ms })
+            .map_err(|_| {
+                CaptureError::Unavailable(CaptureUnavailable::microphone(
+                    "microphone writer stopped before finalizing the WAV artifact",
+                ))
+            })?;
+        drop(sample_tx);
+        let writer = self.writer.take().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "microphone writer task is unavailable",
+            ))
+        })?;
+        writer.join().map_err(|_| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "microphone writer task panicked while finalizing the WAV artifact",
+            ))
+        })?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn stop(self, _ended_at_ms: u64) -> Result<ArtifactManifest, CaptureError> {
+        Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+            "macOS microphone capture requires macOS",
+        )))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_microphone_writer(
+    mut recorder: StreamingWavRecorder,
+    sample_rx: std::sync::mpsc::Receiver<MicrophoneWriterMessage>,
+    stream_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    started_at_ms: u64,
+    sample_rate_hz: u32,
+    channel_count: u16,
+) -> Result<ArtifactManifest, CaptureError> {
+    let mut wrote_samples = false;
+    let mut frame_start_ms = started_at_ms;
+    for message in sample_rx {
+        match message {
+            MicrophoneWriterMessage::Samples(pcm_i16) => {
+                if pcm_i16.is_empty() {
+                    continue;
+                }
+                wrote_samples = true;
+                let frame = AudioFrame {
+                    stream: StreamKind::Microphone,
+                    start_time_ms: frame_start_ms,
+                    sample_rate_hz,
+                    channel_count,
+                    pcm_i16,
+                };
+                frame_start_ms = frame_end_time_ms(&frame);
+                recorder.write_frame(&frame)?;
+            }
+            MicrophoneWriterMessage::Stop { ended_at_ms } => {
+                let stream_errors = stream_errors
+                    .lock()
+                    .map(|errors| errors.clone())
+                    .unwrap_or_default();
+                microphone_capture_stream_result(wrote_samples, &stream_errors)?;
+                return recorder.stop(ended_at_ms).map_err(CaptureError::from);
+            }
+        }
+    }
+    Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+        "microphone writer stopped before finalizing the WAV artifact",
+    )))
+}
+
+#[cfg(target_os = "macos")]
 pub fn record_macos_microphone_to_wav(
     root: &Path,
     duration: Duration,
 ) -> Result<ArtifactManifest, CaptureError> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use std::sync::{mpsc, Arc, Mutex};
-
     let started_at_ms = now_ms();
-    let host = cpal::default_host();
-    let device = host.default_input_device().ok_or_else(|| {
-        CaptureError::Unavailable(CaptureUnavailable::microphone(
-            "no default macOS input device is available",
-        ))
-    })?;
-    let device_name = device
-        .description()
-        .map(|description| description.name().to_string())
-        .unwrap_or_else(|_| "Default input device".to_string());
-    let supported_config = device
-        .default_input_config()
-        .map_err(|error| microphone_error_from_message(error.to_string()))?;
-    let sample_format = supported_config.sample_format();
-    let stream_config: cpal::StreamConfig = supported_config.clone().into();
-    let sample_rate_hz = stream_config.sample_rate;
-    let channel_count = stream_config.channels;
-    let (sample_tx, sample_rx) = mpsc::channel::<Vec<i16>>();
-    let stream_errors = Arc::new(Mutex::new(Vec::<String>::new()));
-
-    let stream = match sample_format {
-        cpal::SampleFormat::I8 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[i8], _| {
-                    let _ = tx.send(data.iter().map(|sample| i16::from(*sample) << 8).collect());
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::I16 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[i16], _| {
-                    let _ = tx.send(data.to_vec());
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::I32 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[i32], _| {
-                    let _ = tx.send(data.iter().map(|sample| (sample >> 16) as i16).collect());
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::I64 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[i64], _| {
-                    let _ = tx.send(data.iter().map(|sample| (sample >> 48) as i16).collect());
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::U8 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[u8], _| {
-                    let _ = tx.send(
-                        data.iter()
-                            .map(|sample| (i16::from(*sample) - 128) << 8)
-                            .collect(),
-                    );
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::U16 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[u16], _| {
-                    let _ = tx.send(
-                        data.iter()
-                            .map(|sample| (*sample as i32 - 32_768) as i16)
-                            .collect(),
-                    );
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::U32 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[u32], _| {
-                    let _ = tx.send(
-                        data.iter()
-                            .map(|sample| ((*sample as i64 - 2_147_483_648) >> 16) as i16)
-                            .collect(),
-                    );
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::U64 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[u64], _| {
-                    let _ = tx.send(
-                        data.iter()
-                            .map(|sample| {
-                                ((*sample as i128 - 9_223_372_036_854_775_808i128) >> 48) as i16
-                            })
-                            .collect(),
-                    );
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::F32 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[f32], _| {
-                    let _ = tx.send(data.iter().map(|sample| f32_to_i16(*sample)).collect());
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        cpal::SampleFormat::F64 => {
-            let tx = sample_tx.clone();
-            device.build_input_stream(
-                &stream_config,
-                move |data: &[f64], _| {
-                    let _ = tx.send(
-                        data.iter()
-                            .map(|sample| f32_to_i16(*sample as f32))
-                            .collect(),
-                    );
-                },
-                cpal_error_handler(Arc::clone(&stream_errors)),
-                None,
-            )
-        }
-        unsupported => {
-            return Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
-                format!("unsupported default input sample format: {unsupported:?}"),
-            )));
-        }
-    }
-    .map_err(|error| microphone_error_from_message(error.to_string()))?;
-
-    stream
-        .play()
-        .map_err(|error| microphone_error_from_message(error.to_string()))?;
+    let recording = MacosMicrophoneWavRecording::start(root, "mic-smoke", started_at_ms)?;
     std::thread::sleep(duration);
-    drop(stream);
-    drop(sample_tx);
-
-    let snapshot = DeviceSnapshot {
-        captured_at_ms: started_at_ms,
-        mic: Some(StreamMetadata {
-            stream: StreamKind::Microphone,
-            sample_rate_hz,
-            channel_count,
-            identity: DeviceIdentity::new("macos-default-input", &device_name, "cpal"),
-            start_time_ms: started_at_ms,
-        }),
-        system: None,
-    };
-    let mut recorder = StreamingWavRecorder::start(
-        root,
-        RecordingMetadata::new("mic-smoke", started_at_ms),
-        CaptureConfiguration::mic_only()?,
-        snapshot,
-    )?;
-    let mut frame_start_ms = started_at_ms;
-    let mut wrote_samples = false;
-    for pcm_i16 in sample_rx.try_iter() {
-        if pcm_i16.is_empty() {
-            continue;
-        }
-        wrote_samples = true;
-        let frame = AudioFrame {
-            stream: StreamKind::Microphone,
-            start_time_ms: frame_start_ms,
-            sample_rate_hz,
-            channel_count,
-            pcm_i16,
-        };
-        frame_start_ms = frame_end_time_ms(&frame);
-        recorder.write_frame(&frame)?;
-    }
-    let stream_errors = stream_errors.lock().map(|errors| errors.clone()).unwrap_or_default();
-    microphone_capture_stream_result(wrote_samples, &stream_errors)?;
-
-    recorder.stop(now_ms()).map_err(CaptureError::from)
+    recording.stop(now_ms())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1184,6 +1168,207 @@ pub fn record_macos_microphone_to_wav(
     Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
         "macOS microphone capture requires macOS",
     )))
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_input_stream(
+    device: &cpal::Device,
+    stream_config: &cpal::StreamConfig,
+    sample_format: cpal::SampleFormat,
+    sample_tx: std::sync::mpsc::SyncSender<MicrophoneWriterMessage>,
+    stream_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> Result<cpal::Stream, CaptureError> {
+    use cpal::traits::DeviceTrait;
+
+    match sample_format {
+        cpal::SampleFormat::I8 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i8], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter().map(|sample| i16::from(*sample) << 8).collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i16], _| {
+                    send_mic_samples(&tx, &errors, data.to_vec());
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I32 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i32], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter().map(|sample| (sample >> 16) as i16).collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I64 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i64], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter().map(|sample| (sample >> 48) as i16).collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U8 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[u8], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter()
+                            .map(|sample| (i16::from(*sample) - 128) << 8)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U16 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[u16], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter()
+                            .map(|sample| (*sample as i32 - 32_768) as i16)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U32 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[u32], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter()
+                            .map(|sample| ((*sample as i64 - 2_147_483_648) >> 16) as i16)
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U64 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[u64], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter()
+                            .map(|sample| {
+                                ((*sample as i128 - 9_223_372_036_854_775_808i128) >> 48) as i16
+                            })
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::F32 => {
+            let tx = sample_tx.clone();
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[f32], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter().map(|sample| f32_to_i16(*sample)).collect(),
+                    );
+                },
+                cpal_error_handler(std::sync::Arc::clone(&stream_errors)),
+                None,
+            )
+        }
+        cpal::SampleFormat::F64 => {
+            let tx = sample_tx;
+            let errors = std::sync::Arc::clone(&stream_errors);
+            device.build_input_stream(
+                stream_config,
+                move |data: &[f64], _| {
+                    send_mic_samples(
+                        &tx,
+                        &errors,
+                        data.iter()
+                            .map(|sample| f32_to_i16(*sample as f32))
+                            .collect(),
+                    );
+                },
+                cpal_error_handler(stream_errors),
+                None,
+            )
+        }
+        unsupported => {
+            return Err(CaptureError::Unavailable(CaptureUnavailable::microphone(
+                format!("unsupported default input sample format: {unsupported:?}"),
+            )));
+        }
+    }
+    .map_err(|error| microphone_error_from_message(error.to_string()))
+}
+
+#[cfg(target_os = "macos")]
+fn send_mic_samples(
+    tx: &std::sync::mpsc::SyncSender<MicrophoneWriterMessage>,
+    errors: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    samples: Vec<i16>,
+) {
+    if let Err(error) = tx.try_send(MicrophoneWriterMessage::Samples(samples)) {
+        if let Ok(mut errors) = errors.lock() {
+            errors.push(format!("microphone writer backpressure: {error}"));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

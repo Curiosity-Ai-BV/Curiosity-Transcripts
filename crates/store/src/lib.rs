@@ -43,6 +43,15 @@ pub struct MeetingSearchResult {
     pub title: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptionAudioArtifact {
+    pub artifact_id: String,
+    pub recording_session_id: String,
+    pub kind: String,
+    pub path: String,
+    pub sha256: String,
+}
+
 impl Store {
     pub fn open(db_path: impl AsRef<Path>, app_root: impl Into<PathBuf>) -> StoreResult<Self> {
         let db_path = db_path.as_ref();
@@ -269,6 +278,40 @@ impl Store {
         Ok(())
     }
 
+    pub fn insert_recording_start(
+        &self,
+        meeting: &Meeting,
+        session: &RecordingSession,
+        artifact: &AudioArtifact,
+    ) -> StoreResult<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = (|| {
+            self.insert_meeting(meeting)?;
+            self.insert_recording_session(session)?;
+            let inserted_artifact_id = self.insert_audio_artifact(artifact)?;
+            if inserted_artifact_id != artifact.id {
+                return Err(format!(
+                    "recording start reused unexpected audio artifact: {inserted_artifact_id}"
+                )
+                .into());
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
     pub fn insert_audio_artifact(&self, artifact: &AudioArtifact) -> StoreResult<String> {
         let kind = enum_name(artifact.kind);
         if !is_pending_sha256(&artifact.sha256) {
@@ -373,6 +416,83 @@ impl Store {
             params![recording_id, enum_name(status), ended_at_ms, recovery_note],
         )?;
         Ok(())
+    }
+
+    pub fn complete_audio_artifact(&self, artifact_id: &str, sha256: &str) -> StoreResult<()> {
+        if is_pending_sha256(sha256) {
+            return Err("completed audio artifacts require a final sha256".into());
+        }
+        self.conn.execute(
+            "
+            UPDATE audio_artifacts
+            SET sha256 = ?2,
+                write_status = 'Complete',
+                recovery_status = 'NotNeeded'
+            WHERE id = ?1
+            ",
+            params![artifact_id, sha256],
+        )?;
+        if self.conn.changes() == 0 {
+            return Err(format!("audio artifact not found: {artifact_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn tombstone_audio_artifact(&self, artifact_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE audio_artifacts
+            SET retained = 0,
+                tombstoned = 1
+            WHERE id = ?1
+            ",
+            params![artifact_id],
+        )?;
+        if self.conn.changes() == 0 {
+            return Err(format!("audio artifact not found: {artifact_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn completed_wav_artifact_for_transcription(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<TranscriptionAudioArtifact>> {
+        let meeting_path_prefix = format!("meetings/{meeting_id}/");
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT
+                audio_artifacts.id,
+                audio_artifacts.recording_session_id,
+                audio_artifacts.kind,
+                audio_artifacts.path,
+                audio_artifacts.sha256
+            FROM audio_artifacts
+            JOIN recording_sessions
+              ON recording_sessions.id = audio_artifacts.recording_session_id
+            WHERE recording_sessions.meeting_id = ?1
+              AND audio_artifacts.retained = 1
+              AND audio_artifacts.write_status = 'Complete'
+              AND audio_artifacts.tombstoned = 0
+              AND lower(audio_artifacts.path) LIKE '%.wav'
+            ORDER BY recording_sessions.started_at_ms DESC, audio_artifacts.id DESC
+            ",
+        )?;
+        let artifacts = stmt
+            .query_map(params![meeting_id], |row| {
+                Ok(TranscriptionAudioArtifact {
+                    artifact_id: row.get(0)?,
+                    recording_session_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    path: row.get(3)?,
+                    sha256: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(artifacts.into_iter().find(|artifact| {
+            artifact.path.starts_with(&meeting_path_prefix)
+                && self.private_app_path(&artifact.path).is_some()
+        }))
     }
 
     pub fn meeting_status(&self, meeting_id: &str) -> StoreResult<String> {

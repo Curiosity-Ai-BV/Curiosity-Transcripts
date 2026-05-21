@@ -3,11 +3,16 @@ name = "curiosity-desktop"
 version = "0.0.0"
 edition = "2021"
 
+[features]
+default = []
+whisper-rs = ["curiosity-transcription/whisper-rs"]
+
 [dependencies]
 curiosity-app = { path = "../../../crates/app" }
 curiosity-audio = { path = "../../../crates/audio" }
 curiosity-domain = { path = "../../../crates/domain" }
 curiosity-store = { path = "../../../crates/store" }
+curiosity-transcription = { path = "../../../crates/transcription" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

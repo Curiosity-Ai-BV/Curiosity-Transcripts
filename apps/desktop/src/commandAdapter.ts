@@ -3,7 +3,8 @@ export type CommandRecordingState =
   | "Paused"
   | "Stopping"
   | "Interrupted"
-  | "Recovering";
+  | "Recovering"
+  | "Complete";
 
 export type AppPermissionState = "Ready" | "MicrophoneDenied" | "SystemAudioDenied" | "MicrophoneUnavailable" | "SystemAudioUnavailable";
 export type RawAudioRetentionPolicy = "Retain" | "DeleteAfterTranscription" | "NeverSave";
@@ -56,6 +57,18 @@ export interface AnalysisDisclosureState {
   disclosureConfirmed: boolean;
 }
 
+export interface CommandFailureView {
+  code: string;
+  message: string;
+  setupGuidance: string;
+}
+
+export interface TranscriptionCommandView {
+  meetingId: string;
+  state: "Complete" | "Failed";
+  failure?: CommandFailureView | null;
+}
+
 export interface TranscriptSegment {
   id: string;
   startMs: number;
@@ -99,6 +112,7 @@ export interface DesktopSnapshot {
   recording: CommandRecordingDto;
   model: ModelStatus;
   capture: CaptureStatus;
+  transcription: TranscriptionCommandView | null;
 }
 
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -154,10 +168,39 @@ export function mapRecordingState(dto: CommandRecordingDto): StatusView {
       detail: "Finalizing the local recording session.",
     };
   }
+  if (dto.state === "Complete") {
+    return {
+      label: "Recorded",
+      tone: "ready",
+      detail: dto.recovery_action || "Local microphone WAV artifact is saved.",
+    };
+  }
   return {
     label: dto.state,
     tone: dto.state === "Recording" ? "active" : "muted",
     detail: retentionDetail(dto.raw_audio_retention),
+  };
+}
+
+export function mapTranscriptionState(state: TranscriptionCommandView | null): StatusView {
+  if (!state) {
+    return {
+      label: "Transcription idle",
+      tone: "muted",
+      detail: "Record a meeting, then transcribe it with a local Whisper model.",
+    };
+  }
+  if (state.state === "Failed") {
+    return {
+      label: "Transcription failed",
+      tone: "blocked",
+      detail: state.failure?.message || "Local transcription failed.",
+    };
+  }
+  return {
+    label: "Transcript ready",
+    tone: "ready",
+    detail: "Local Whisper transcript persisted in private storage.",
   };
 }
 
@@ -386,6 +429,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
             microphone: "Ready",
             systemAudio: "SystemAudioDenied",
           },
+    transcription: null,
   };
 }
 
@@ -412,6 +456,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       microphone: "MicrophoneUnavailable",
       systemAudio: "SystemAudioUnavailable",
     },
+    transcription: null,
   };
 }
 

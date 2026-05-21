@@ -667,6 +667,99 @@ fn multiple_transcript_corrections_preserve_full_edit_trail_without_changing_tim
     assert_eq!(edits[1].corrected_text, "hello world");
 }
 
+#[test]
+fn completed_wav_artifact_for_transcription_excludes_incomplete_and_tombstoned_rows() {
+    let root = test_root("completed-wav-for-transcription");
+    let store = migrated_store(&root);
+    seed_meeting_session(&store);
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-complete",
+            "meeting-1",
+            RecordingSource::Microphone,
+            1_001,
+            48_000,
+        ))
+        .expect("complete session");
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-cross-meeting-path",
+            "meeting-1",
+            RecordingSource::Microphone,
+            1_003,
+            48_000,
+        ))
+        .expect("cross-path session");
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-tombstoned",
+            "meeting-1",
+            RecordingSource::Microphone,
+            1_002,
+            48_000,
+        ))
+        .expect("tombstoned session");
+
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-incomplete",
+            "session-1",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/incomplete.wav",
+            "sha256:pending:artifact-incomplete",
+        ))
+        .expect("incomplete artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-complete",
+            "session-complete",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/raw-mic.wav",
+            "sha256:pending:artifact-complete",
+        ))
+        .expect("complete artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-cross-meeting-path",
+            "session-cross-meeting-path",
+            ArtifactKind::RawMic,
+            "meetings/other-meeting/audio/raw-mic.wav",
+            "sha256:pending:artifact-cross-meeting-path",
+        ))
+        .expect("cross-path artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-tombstoned",
+            "session-tombstoned",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/tombstoned.wav",
+            "sha256:pending:artifact-tombstoned",
+        ))
+        .expect("tombstoned artifact");
+    store
+        .complete_audio_artifact("artifact-complete", "sha256:complete")
+        .expect("mark complete");
+    store
+        .complete_audio_artifact("artifact-tombstoned", "sha256:tombstoned")
+        .expect("mark tombstoned complete");
+    store
+        .complete_audio_artifact("artifact-cross-meeting-path", "sha256:cross")
+        .expect("mark cross-path complete");
+    store
+        .tombstone_audio_artifact("artifact-tombstoned")
+        .expect("mark tombstoned");
+
+    let artifact = store
+        .completed_wav_artifact_for_transcription("meeting-1")
+        .expect("select artifact")
+        .expect("complete wav artifact");
+
+    assert_eq!(artifact.artifact_id, "artifact-complete");
+    assert_eq!(artifact.recording_session_id, "session-complete");
+    assert_eq!(artifact.path, "meetings/meeting-1/audio/raw-mic.wav");
+    assert_eq!(artifact.sha256, "sha256:complete");
+}
+
 fn migrated_store(root: &PathBuf) -> Store {
     let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
     store.migrate().expect("migrate");

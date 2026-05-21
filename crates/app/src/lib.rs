@@ -20,6 +20,7 @@ pub enum CommandRecordingState {
     Stopping,
     Interrupted,
     Recovering,
+    Complete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

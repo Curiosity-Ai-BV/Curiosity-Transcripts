@@ -20,6 +20,7 @@ import {
   mapModelStatus,
   mapPermissionState,
   mapRecordingState,
+  mapTranscriptionState,
   searchMeetings,
   Tone,
 } from "./commandAdapter";
@@ -58,6 +59,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
       }
     : mapRecordingState(snapshot.recording);
   const model = mapModelStatus(snapshot.model);
+  const transcription = mapTranscriptionState(snapshot.transcription);
   const shellLabel = commandUnavailable.startsWith("Preview shell") ? "Preview shell" : "Desktop shell";
 
   const exportState = selectedMeeting
@@ -82,6 +84,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
           <div className="topbar-status" aria-label="Workspace status">
             <StatusPill tone={recording.tone} label={recording.label} />
             <StatusPill tone={model.tone} label={model.label} />
+            <StatusPill tone={transcription.tone} label={transcription.label} />
             <StatusPill tone={shellLabel === "Preview shell" ? "muted" : "ready"} label={shellLabel} />
           </div>
         </header>
@@ -222,6 +225,7 @@ export default function App({ snapshot = getMockDesktopSnapshot() }: AppProps) {
           <aside className="settings-pane" aria-label="Settings and model status">
             <h2>Settings</h2>
             <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
+            <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
             <StatusLine
               icon={<Microphone size={18} weight="regular" />}
               label={captureLabel(snapshot.capture.microphone)}
