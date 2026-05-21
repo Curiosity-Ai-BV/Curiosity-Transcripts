@@ -1,0 +1,15 @@
+[package]
+name = "curiosity-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "curiosity_app"
+path = "src/lib.rs"
+
+[dependencies]
+curiosity-analysis = { path = "../analysis" }
+curiosity-audio = { path = "../audio" }
+curiosity-domain = { path = "../domain" }
+curiosity-store = { path = "../store" }
+serde = { version = "1", features = ["derive"] }
