@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Curiosity Transcripts",
-  "version": "0.0.0",
-  "identifier": "dev.curiosity.transcripts",
+  "version": "0.1.0",
+  "identifier": "com.curiosity.transcripts",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -24,7 +24,17 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": ["app"],
+    "category": "Productivity",
+    "publisher": "Curiosity",
+    "shortDescription": "Local-first meeting transcription for macOS.",
+    "longDescription": "Curiosity Transcripts records local meeting audio, transcribes it with a local Whisper model, and keeps transcripts, summaries, exports, and private artifacts under local user control.",
+    "icon": ["icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "infoPlist": "Info.plist"
+    }
   }
 }

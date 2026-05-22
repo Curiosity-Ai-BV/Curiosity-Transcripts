@@ -41,9 +41,8 @@ Implemented MVP flows:
 
 Remaining gaps:
 
-- Production packaging and installer flow.
+- First-run model download/management UI for Whisper and Ollama.
 - Calendar integration.
-- Model download and management UI for Whisper models.
 
 ## Workspace Layout
 
@@ -128,6 +127,32 @@ In debug/test Tauri builds, a harness can invoke `seed_dev_fixture` to create
 one deterministic transcript-ready meeting in app-private storage. Release
 builds do not register this command, and there is no production UI control for
 it.
+
+## macOS Installer Build
+
+The desktop app is configured to produce a macOS `.app` bundle with the
+ScreenCaptureKit system-audio feature enabled, then package it into a DMG:
+
+```sh
+./scripts/build-macos-dmg.sh
+```
+
+When signing credentials are not available, local unsigned verification can use:
+
+```sh
+./scripts/build-macos-dmg.sh --no-sign
+```
+
+Generated artifacts are written under:
+
+```text
+apps/desktop/src-tauri/target/release/bundle/macos/
+apps/desktop/src-tauri/target/release/bundle/dmg/
+```
+
+Browser-distributed macOS releases still require a Developer ID Application
+certificate and notarization. See `docs/macos-dmg-release.md` for the release
+checklist, signing environment variables, and manual installer smoke path.
 
 ## Hardware Smoke Checks
 
