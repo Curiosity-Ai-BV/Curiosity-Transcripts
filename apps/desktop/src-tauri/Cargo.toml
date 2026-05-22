@@ -24,4 +24,7 @@ url = "2"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+sha2 = "0.10.8"
+
 [workspace]

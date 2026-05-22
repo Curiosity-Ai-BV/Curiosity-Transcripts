@@ -33,6 +33,8 @@ Implemented MVP flows:
   questions, local Ollama wiring, and privacy-gated provider paths.
 - Desktop command wiring for transcript search, JSON export, delete, and
   summary generation after a transcript is ready.
+- Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
+  transcript-ready local meeting without microphone, Whisper, or Ollama.
 
 Remaining gaps:
 
@@ -40,8 +42,6 @@ Remaining gaps:
 - Calendar integration.
 - System-audio recording in the main desktop recording UI.
 - Model download and management UI for Whisper models.
-- Deterministic desktop fixture/import path for repeatable end-to-end
-  transcription demos, if real microphone capture is not desired.
 
 ## Workspace Layout
 
@@ -106,6 +106,11 @@ npm exec -- tauri dev
 
 The Tauri config uses `devUrl` `http://127.0.0.1:1420` and
 `beforeDevCommand` `npm run dev`.
+
+In debug/test Tauri builds, a harness can invoke `seed_dev_fixture` to create
+one deterministic transcript-ready meeting in app-private storage. Release
+builds do not register this command, and there is no production UI control for
+it.
 
 ## Hardware Smoke Checks
 

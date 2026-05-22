@@ -19,6 +19,8 @@ use curiosity_audio::{
     ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus, ScreenCaptureKitSystemAudioAdapter,
     StreamKind, SystemAudioAdapterStatus,
 };
+#[cfg(any(test, debug_assertions))]
+use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, MeetingStatus, ModelRun, RecordingSession,
     RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
@@ -35,26 +37,47 @@ use tauri::Manager;
 use url::Url;
 
 fn main() {
-    tauri::Builder::default()
-        .manage(Mutex::new(DesktopCommandState::default()))
-        .invoke_handler(tauri::generate_handler![
-            desktop_snapshot,
-            search_meetings,
-            rename_meeting,
-            export_meeting_json,
-            delete_meeting,
-            generate_summary,
-            get_settings,
-            save_whisper_model_path,
-            save_analysis_settings,
-            test_whisper_model_path,
-            test_ollama_connection,
-            audio_smoke_status,
-            system_audio_smoke_recording,
-            start_microphone_recording,
-            stop_microphone_recording,
-            transcribe_meeting
-        ])
+    let builder = tauri::Builder::default().manage(Mutex::new(DesktopCommandState::default()));
+    #[cfg(any(test, debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        desktop_snapshot,
+        search_meetings,
+        rename_meeting,
+        export_meeting_json,
+        delete_meeting,
+        generate_summary,
+        get_settings,
+        save_whisper_model_path,
+        save_analysis_settings,
+        test_whisper_model_path,
+        test_ollama_connection,
+        audio_smoke_status,
+        system_audio_smoke_recording,
+        start_microphone_recording,
+        stop_microphone_recording,
+        transcribe_meeting,
+        seed_dev_fixture
+    ]);
+    #[cfg(not(any(test, debug_assertions)))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        desktop_snapshot,
+        search_meetings,
+        rename_meeting,
+        export_meeting_json,
+        delete_meeting,
+        generate_summary,
+        get_settings,
+        save_whisper_model_path,
+        save_analysis_settings,
+        test_whisper_model_path,
+        test_ollama_connection,
+        audio_smoke_status,
+        system_audio_smoke_recording,
+        start_microphone_recording,
+        stop_microphone_recording,
+        transcribe_meeting
+    ]);
+    builder
         .run(tauri::generate_context!())
         .expect("failed to run Curiosity Transcripts desktop shell");
 }
@@ -73,6 +96,20 @@ fn desktop_snapshot(
         command_state.snapshot_state()
     };
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[tauri::command]
+fn seed_dev_fixture(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let command_state = state.lock().map_err(|error| error.to_string())?;
+    seed_dev_fixture_for_app_root(&app_root, &command_state)
 }
 
 #[tauri::command]
@@ -585,6 +622,7 @@ where
         .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn generate_summary_for_app_root_with_client<C>(
     app_root: &Path,
     command_state: &mut DesktopCommandState,
@@ -615,6 +653,204 @@ fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf 
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| app_root.join("exports"))
+}
+
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_MEETING_ID: &str = "dev-fixture-meeting";
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_TITLE: &str = "Dev Fixture Full Cycle";
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_SESSION_ID: &str = "dev-fixture-session";
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_ARTIFACT_ID: &str = "dev-fixture-artifact";
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_ARTIFACT_PATH: &str = "meetings/dev-fixture-meeting/audio/imported.wav";
+#[cfg(any(test, debug_assertions))]
+const DEV_FIXTURE_AUDIO_SHA256: &str =
+    "156075e2635b9b2c186258f4db987ed9fbdfb727f49e5eac4b9a126aefbdf727";
+
+#[cfg(any(test, debug_assertions))]
+fn seed_dev_fixture_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandState,
+) -> Result<DesktopSnapshot, String> {
+    seed_dev_fixture_rows(app_root)?;
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+#[cfg(any(test, debug_assertions))]
+fn seed_dev_fixture_rows(app_root: &Path) -> Result<(), String> {
+    let store = open_store(app_root)?;
+    if store
+        .list_meetings()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|meeting| meeting.meeting_id == DEV_FIXTURE_MEETING_ID)
+    {
+        validate_existing_dev_fixture(&store, app_root)?;
+        return Ok(());
+    }
+    if store
+        .meeting_deleted(DEV_FIXTURE_MEETING_ID)
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "dev fixture was deleted in this app data store; reset the app data directory to seed it again"
+                .to_string(),
+        );
+    }
+
+    let meeting = Meeting::new_manual(DEV_FIXTURE_MEETING_ID, DEV_FIXTURE_TITLE, 1_700_000_000_000);
+    store
+        .insert_meeting(&meeting)
+        .map_err(|error| error.to_string())?;
+    let session = RecordingSession::start(
+        DEV_FIXTURE_SESSION_ID,
+        DEV_FIXTURE_MEETING_ID,
+        RecordingSource::Imported,
+        1_700_000_000_000,
+        48_000,
+    )
+    .complete(1_700_000_003_000);
+    store
+        .insert_recording_session(&session)
+        .map_err(|error| error.to_string())?;
+
+    let absolute_artifact_path = app_root.join(DEV_FIXTURE_ARTIFACT_PATH);
+    let parent = absolute_artifact_path
+        .parent()
+        .ok_or_else(|| "dev fixture artifact path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    std::fs::write(&absolute_artifact_path, dev_fixture_wav_bytes())
+        .map_err(|error| error.to_string())?;
+    let inserted_artifact_id = store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            DEV_FIXTURE_ARTIFACT_ID,
+            DEV_FIXTURE_SESSION_ID,
+            ArtifactKind::Imported,
+            DEV_FIXTURE_ARTIFACT_PATH,
+            DEV_FIXTURE_AUDIO_SHA256,
+        ))
+        .map_err(|error| error.to_string())?;
+    if inserted_artifact_id != DEV_FIXTURE_ARTIFACT_ID {
+        return Err(format!(
+            "dev fixture reused unexpected audio artifact: {inserted_artifact_id}"
+        ));
+    }
+    store
+        .complete_audio_artifact(DEV_FIXTURE_ARTIFACT_ID, DEV_FIXTURE_AUDIO_SHA256)
+        .map_err(|error| error.to_string())?;
+    store
+        .update_meeting_status(
+            DEV_FIXTURE_MEETING_ID,
+            MeetingStatus::Complete,
+            Some(1_700_000_003_000),
+        )
+        .map_err(|error| error.to_string())?;
+
+    let run = ModelRun::new(
+        "dev-fixture-run",
+        DEV_FIXTURE_MEETING_ID,
+        DEV_FIXTURE_AUDIO_SHA256,
+        "fixture-local",
+        "fixture-whisper",
+        false,
+        1_700_000_003_100,
+    );
+    let version = TranscriptVersion::new(
+        "dev-fixture-version",
+        DEV_FIXTURE_MEETING_ID,
+        "dev-fixture-run",
+        1,
+        1_700_000_003_200,
+    );
+    let segments = [
+        TranscriptSegment::with_metadata(
+            "dev-fixture-segment-1",
+            DEV_FIXTURE_MEETING_ID,
+            0,
+            1_500,
+            "Dev fixture kickoff covers deterministic transcript search.",
+            SourceChannel::Imported,
+            &run.id,
+            &version.id,
+        ),
+        TranscriptSegment::with_metadata(
+            "dev-fixture-segment-2",
+            DEV_FIXTURE_MEETING_ID,
+            1_500,
+            3_000,
+            "Export delete and local summary generation should work without live hardware.",
+            SourceChannel::Imported,
+            &run.id,
+            &version.id,
+        ),
+    ];
+    store
+        .persist_transcript(&run, &version, &segments)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(any(test, debug_assertions))]
+fn validate_existing_dev_fixture(store: &Store, app_root: &Path) -> Result<(), String> {
+    let status = store
+        .meeting_status(DEV_FIXTURE_MEETING_ID)
+        .map_err(|error| error.to_string())?;
+    if status != "Complete" {
+        return Err(format!(
+            "partial dev fixture: expected Complete meeting status, got {status}"
+        ));
+    }
+    let artifact = store
+        .completed_wav_artifact_for_transcription(DEV_FIXTURE_MEETING_ID)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            "partial dev fixture: missing completed private audio artifact".to_string()
+        })?;
+    if artifact.artifact_id != DEV_FIXTURE_ARTIFACT_ID
+        || artifact.recording_session_id != DEV_FIXTURE_SESSION_ID
+        || artifact.sha256 != DEV_FIXTURE_AUDIO_SHA256
+    {
+        return Err("partial dev fixture: completed audio artifact identity changed".to_string());
+    }
+    if artifact.path != DEV_FIXTURE_ARTIFACT_PATH {
+        return Err("partial dev fixture: completed audio artifact path changed".to_string());
+    }
+    if !app_root.join(&artifact.path).is_file() {
+        return Err(
+            "partial dev fixture: completed private audio artifact file is missing".to_string(),
+        );
+    }
+    let segments = store
+        .transcript_segments(DEV_FIXTURE_MEETING_ID)
+        .map_err(|error| error.to_string())?;
+    if segments.len() != 2 {
+        return Err(format!(
+            "partial dev fixture: expected 2 transcript segments, got {}",
+            segments.len()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, debug_assertions))]
+fn dev_fixture_wav_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&38u32.to_le_bytes());
+    bytes.extend_from_slice(b"WAVE");
+    bytes.extend_from_slice(b"fmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16_000u32.to_le_bytes());
+    bytes.extend_from_slice(&32_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&0i16.to_le_bytes());
+    bytes
 }
 
 #[derive(Default)]
@@ -2008,6 +2244,7 @@ mod tests {
         RecordingSession, RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
     };
     use curiosity_transcription::{FakeWhisperBackend, WhisperBackendSegment};
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -2469,6 +2706,164 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].meeting_id, "meeting-1");
         assert_eq!(results[0].title, "Planning Alpha");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn seed_dev_fixture_for_app_root_returns_transcript_ready_snapshot_without_duplication() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let command_state = DesktopCommandState::default();
+
+        let first_snapshot =
+            seed_dev_fixture_for_app_root(&root, &command_state).expect("seed fixture");
+        let second_snapshot =
+            seed_dev_fixture_for_app_root(&root, &command_state).expect("seed fixture again");
+        let first = serde_json::to_value(&first_snapshot).expect("serialize first snapshot");
+        let second = serde_json::to_value(&second_snapshot).expect("serialize second snapshot");
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription("dev-fixture-meeting")
+            .expect("query completed artifact")
+            .expect("completed fixture artifact");
+
+        assert_eq!(first["meetings"][0]["id"], "dev-fixture-meeting");
+        assert_eq!(first["meetings"][0]["title"], "Dev Fixture Full Cycle");
+        assert_eq!(first["meetings"][0]["transcriptState"], "Ready");
+        assert_eq!(
+            first["meetings"][0]["segments"]
+                .as_array()
+                .expect("segments")
+                .len(),
+            2
+        );
+        assert_eq!(second, first);
+        assert_eq!(store.count("meetings").expect("meetings"), 1);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 1);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 1);
+        assert_eq!(store.count("model_runs").expect("model runs"), 1);
+        assert_eq!(store.count("transcript_versions").expect("versions"), 1);
+        assert_eq!(store.count("transcript_segments").expect("segments"), 2);
+        assert_eq!(artifact.artifact_id, "dev-fixture-artifact");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(dev_fixture_wav_bytes())),
+            DEV_FIXTURE_AUDIO_SHA256
+        );
+        assert_eq!(artifact.sha256, DEV_FIXTURE_AUDIO_SHA256);
+        assert!(root.join(&artifact.path).is_file());
+
+        restore_whisper_env(previous);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn seed_dev_fixture_for_app_root_fails_loudly_when_fixed_id_is_partial_fixture() {
+        let root = unique_test_root();
+        let command_state = DesktopCommandState::default();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(
+                "dev-fixture-meeting",
+                "Dev Fixture Full Cycle",
+                1_700_000_000_000,
+            ))
+            .expect("insert partial fixture");
+
+        let error = seed_dev_fixture_for_app_root(&root, &command_state)
+            .expect_err("partial fixture should fail loudly");
+
+        assert!(error.contains("partial dev fixture"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn seed_dev_fixture_for_app_root_fails_loudly_when_private_audio_file_is_missing() {
+        let root = unique_test_root();
+        let command_state = DesktopCommandState::default();
+        seed_dev_fixture_for_app_root(&root, &command_state).expect("seed fixture");
+        fs::remove_file(root.join(DEV_FIXTURE_ARTIFACT_PATH)).expect("remove fixture audio");
+
+        let error = seed_dev_fixture_for_app_root(&root, &command_state)
+            .expect_err("missing fixture audio should fail loudly");
+
+        assert!(error.contains("private audio artifact file is missing"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn seed_dev_fixture_for_app_root_supports_search_export_and_delete_workflow() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_dev_fixture_for_app_root(&root, &command_state).expect("seed fixture");
+
+        let title_results =
+            search_meetings_for_app_root(&root, "Fixture").expect("search by title");
+        let transcript_results =
+            search_meetings_for_app_root(&root, "deterministic").expect("search by transcript");
+        let export_snapshot =
+            export_meeting_json_for_app_root(&root, &mut command_state, "dev-fixture-meeting")
+                .expect("export fixture");
+        let export_json = serde_json::to_value(&export_snapshot).expect("serialize export");
+        let exported_path = export_json["exportCommand"]["path"]
+            .as_str()
+            .expect("export path");
+        let export = Store::read_meeting_export_json(exported_path).expect("read export");
+        let private_path = root.join("meetings/dev-fixture-meeting/audio/imported.wav");
+        let delete_snapshot =
+            delete_meeting_for_app_root(&root, &mut command_state, "dev-fixture-meeting")
+                .expect("delete fixture");
+        let delete_json = serde_json::to_value(&delete_snapshot).expect("serialize delete");
+
+        assert_eq!(title_results[0].meeting_id, "dev-fixture-meeting");
+        assert_eq!(transcript_results[0].meeting_id, "dev-fixture-meeting");
+        assert_eq!(export.meeting_id, "dev-fixture-meeting");
+        assert_eq!(export.segments.len(), 2);
+        assert!(!private_path.exists());
+        assert_eq!(
+            delete_json["meetings"].as_array().expect("meetings").len(),
+            0
+        );
+        assert_eq!(delete_json["deleteCommand"]["state"], "deleted");
+        assert!(PathBuf::from(exported_path).exists());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn seed_dev_fixture_for_app_root_supports_summary_with_injected_ollama_client() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_dev_fixture_for_app_root(&root, &command_state).expect("seed fixture");
+        let transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Fixture summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"dev-fixture-segment-1\",\"start_ms\":0,\"end_ms\":1500}]}"}"#,
+        );
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport);
+
+        let snapshot = generate_summary_for_app_root_with_client(
+            &root,
+            &mut command_state,
+            "dev-fixture-meeting",
+            client,
+            "qwen3.6:27b",
+            1_700_000_002_000,
+        )
+        .expect("generate fixture summary");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["analysisCommand"]["state"], "Complete");
+        assert_eq!(
+            json["analysisCommand"]["analysis"]["summary"],
+            "Fixture summary"
+        );
+        assert_eq!(
+            json["meetings"][0]["analysis"]["summary"],
+            "Fixture summary"
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
