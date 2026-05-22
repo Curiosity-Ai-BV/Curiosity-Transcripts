@@ -4,6 +4,7 @@ import {
   FileText,
   MagnifyingGlass,
   Microphone,
+  PencilSimple,
   ShieldCheck,
   Trash,
   WarningDiamond,
@@ -22,6 +23,7 @@ import {
   mapPermissionState,
   mapRecordingState,
   mapTranscriptionState,
+  MeetingSearchResult,
   searchMeetings,
   Tone,
   WhisperModelPathTestResult,
@@ -34,7 +36,17 @@ interface AppProps {
   fetchCommand?: CommandFetcher;
 }
 
-type PendingCommand = "start" | "stop" | "transcribe" | "test-whisper" | "save-whisper" | "save-analysis" | null;
+type PendingCommand =
+  | "start"
+  | "stop"
+  | "transcribe"
+  | "rename"
+  | "export"
+  | "delete"
+  | "test-whisper"
+  | "save-whisper"
+  | "save-analysis"
+  | null;
 
 interface SettingsFormState {
   whisperModelPath: string;
@@ -53,7 +65,9 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
+  const [connectedSearchResultIds, setConnectedSearchResultIds] = useState<string[] | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
+  const [renameTitle, setRenameTitle] = useState(selectedTitleFromSnapshot(initialSnapshot));
   const [recordingTitle, setRecordingTitle] = useState("");
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromSnapshot(initialSnapshot));
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
@@ -64,20 +78,14 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     if (snapshot) {
       setCurrentSnapshot(snapshot);
       setSettingsForm(settingsFormFromSnapshot(snapshot));
+      setConnectedSearchResultIds(null);
+      setRenameTitle(selectedTitleFromSnapshot(snapshot));
       setSettingsFeedback(null);
       setCommandError(null);
       setPendingCommand(null);
     }
   }, [snapshot]);
 
-  const meetings = useMemo(() => searchMeetings(currentSnapshot.meetings, query), [currentSnapshot.meetings, query]);
-  useEffect(() => {
-    setSelectedMeetingId((current) => {
-      return resolveSelectedMeetingId(currentSnapshot, current);
-    });
-  }, [currentSnapshot.meetings, currentSnapshot.selectedMeetingId]);
-
-  const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? meetings[0] ?? null;
   const commandUnavailable = currentSnapshot.commandSurface.detail;
   const commandSurfaceReady = Boolean(fetchCommand && commandUnavailable === connectedCommandSurface);
   const commandUnavailableTitle = commandSurfaceReady
@@ -85,6 +93,64 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     : fetchCommand || commandUnavailable.startsWith("Preview shell")
       ? commandUnavailable || "Desktop command surface is unavailable."
       : "Desktop command surface is unavailable in this runtime.";
+  const meetings = useMemo(() => {
+    if (!commandSurfaceReady) {
+      return searchMeetings(currentSnapshot.meetings, query);
+    }
+    if (!query.trim()) {
+      return currentSnapshot.meetings;
+    }
+    if (!connectedSearchResultIds) {
+      return [];
+    }
+    const resultIds = new Set(connectedSearchResultIds);
+    return currentSnapshot.meetings.filter((meeting) => resultIds.has(meeting.id));
+  }, [commandSurfaceReady, connectedSearchResultIds, currentSnapshot.meetings, query]);
+  useEffect(() => {
+    setSelectedMeetingId((current) => {
+      return resolveSelectedMeetingId(currentSnapshot, current);
+    });
+  }, [currentSnapshot.meetings, currentSnapshot.selectedMeetingId]);
+
+  const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? meetings[0] ?? null;
+  useEffect(() => {
+    if (selectedMeeting) {
+      setRenameTitle(selectedMeeting.title);
+    } else {
+      setRenameTitle("");
+    }
+  }, [selectedMeeting?.id, selectedMeeting?.title]);
+
+  useEffect(() => {
+    if (!fetchCommand || !commandSurfaceReady) {
+      setConnectedSearchResultIds(null);
+      return;
+    }
+    const searchQuery = query.trim();
+    if (!searchQuery) {
+      setConnectedSearchResultIds(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetchCommand<MeetingSearchResult[]>("search_meetings", { query: searchQuery })
+      .then((results) => {
+        if (!cancelled) {
+          setConnectedSearchResultIds(results.map((result) => result.meeting_id));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setConnectedSearchResultIds([]);
+          setCommandError(commandErrorMessage(error));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [commandSurfaceReady, fetchCommand, query]);
+
   const isRecordingActive =
     currentSnapshot.recording.permission_state === "Ready" &&
     (currentSnapshot.recording.state === "Recording" || currentSnapshot.recording.state === "Paused");
@@ -102,6 +168,14 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const renameDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    commandBusy ||
+    !renameTitle.trim() ||
+    renameTitle.trim() === selectedMeeting.title;
+  const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const settingsDisabled = !commandSurfaceReady || commandBusy;
 
@@ -111,10 +185,12 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const deleteState = selectedMeeting
     ? mapDeleteState(selectedMeeting.deleteState)
     : mapDeleteState({ state: "idle" });
+  const exportCommandState = mapExportState(currentSnapshot.exportCommand);
+  const deleteCommandState = mapDeleteState(currentSnapshot.deleteCommand);
+  const failedDeleteMeetingId =
+    currentSnapshot.deleteCommand.state === "failed" ? currentSnapshot.deleteCommand.meetingId?.trim() : undefined;
   const analysisDisclosure = selectedMeeting ? mapAnalysisDisclosure(selectedMeeting.analysis) : null;
   const summaryCommandUnavailable = "Summary command is not wired into the desktop shell yet.";
-  const exportCommandUnavailable = "Export command is not wired into the desktop shell yet.";
-  const deleteCommandUnavailable = "Delete command is not wired into the desktop shell yet.";
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
@@ -158,6 +234,47 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     }
     void runSnapshotCommand("transcribe", "transcribe_meeting", {
       meetingId: selectedMeeting.id,
+    });
+  }
+
+  function renameSelectedMeeting() {
+    if (!selectedMeeting) {
+      return;
+    }
+    const title = renameTitle.trim();
+    if (!title) {
+      return;
+    }
+    void runSnapshotCommand("rename", "rename_meeting", {
+      meetingId: selectedMeeting.id,
+      title,
+    });
+  }
+
+  function exportSelectedMeeting() {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("export", "export_meeting_json", {
+      meetingId: selectedMeeting.id,
+    });
+  }
+
+  function deleteSelectedMeeting() {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("delete", "delete_meeting", {
+      meetingId: selectedMeeting.id,
+    });
+  }
+
+  function retryFailedDelete() {
+    if (!failedDeleteMeetingId) {
+      return;
+    }
+    void runSnapshotCommand("delete", "delete_meeting", {
+      meetingId: failedDeleteMeetingId,
     });
   }
 
@@ -253,6 +370,27 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
       : selectedMeeting
         ? "Transcribe the selected meeting with the configured local Whisper model."
         : "Select a meeting before transcription.";
+  const renameButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : selectedMeeting
+        ? "Rename the selected meeting."
+        : "Select a meeting before renaming.";
+  const exportButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : selectedMeeting
+        ? "Export the selected meeting as JSON."
+        : "Select a meeting before exporting.";
+  const deleteButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : selectedMeeting
+        ? "Delete app-private data for the selected meeting."
+        : "Select a meeting before deleting private data.";
 
   return (
     <main className="app-shell">
@@ -321,6 +459,30 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
             {commandError}
           </p>
         ) : null}
+        {currentSnapshot.exportCommand.state !== "idle" ? (
+          <p role="status" className={`command-outcome ${exportCommandState.tone}`}>
+            <strong>{exportCommandState.label}</strong>
+            <span>{exportCommandState.detail}</span>
+          </p>
+        ) : null}
+        {currentSnapshot.deleteCommand.state !== "idle" ? (
+          <div role="status" className={`command-outcome ${deleteCommandState.tone}`}>
+            <strong>{deleteCommandState.label}</strong>
+            <span>{deleteCommandState.detail}</span>
+            {failedDeleteMeetingId ? (
+              <button
+                type="button"
+                className="button danger"
+                disabled={!commandSurfaceReady || commandBusy}
+                title={commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting."}
+                onClick={retryFailedDelete}
+              >
+                <Trash size={16} weight="regular" />
+                Retry delete
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="content-grid">
           <aside className="meeting-pane" aria-label="Meetings">
@@ -368,6 +530,27 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                   <div>
                     <p className="eyebrow">{selectedMeeting.startedAt}</p>
                     <h2>{selectedMeeting.title}</h2>
+                    <div className="rename-title-row">
+                      <label className="rename-title-field" htmlFor="selected-meeting-title">
+                        <span>Selected meeting title</span>
+                        <input
+                          id="selected-meeting-title"
+                          value={renameTitle}
+                          onChange={(event) => setRenameTitle(event.target.value)}
+                          disabled={!commandSurfaceReady || commandBusy}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={renameDisabled}
+                        title={renameButtonTitle}
+                        onClick={renameSelectedMeeting}
+                      >
+                        <PencilSimple size={16} weight="regular" />
+                        {pendingCommand === "rename" ? "Renaming" : "Rename"}
+                      </button>
+                    </div>
                   </div>
                   <div className="detail-header-actions">
                     <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
@@ -430,20 +613,22 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                   <button
                     type="button"
                     className="button"
-                    disabled
-                    title={exportCommandUnavailable}
+                    disabled={exportDisabled}
+                    title={exportButtonTitle}
+                    onClick={exportSelectedMeeting}
                   >
                     <DownloadSimple size={16} weight="regular" />
-                    Export JSON
+                    {pendingCommand === "export" ? "Exporting JSON" : "Export JSON"}
                   </button>
                   <button
                     type="button"
                     className="button danger"
-                    disabled
-                    title={deleteCommandUnavailable}
+                    disabled={deleteDisabled}
+                    title={deleteButtonTitle}
+                    onClick={deleteSelectedMeeting}
                   >
                     <Trash size={16} weight="regular" />
-                    Delete private data
+                    {pendingCommand === "delete" ? "Deleting private data" : "Delete private data"}
                   </button>
                 </div>
               </>
@@ -602,6 +787,11 @@ function settingsFormFromSnapshot(snapshot: DesktopSnapshot): SettingsFormState 
     ollamaBaseUrl: snapshot.settings.ollamaBaseUrl,
     ollamaModel: snapshot.settings.ollamaModel,
   };
+}
+
+function selectedTitleFromSnapshot(snapshot: DesktopSnapshot): string {
+  const selected = snapshot.meetings.find((meeting) => meeting.id === snapshot.selectedMeetingId);
+  return selected?.title ?? snapshot.meetings[0]?.title ?? "";
 }
 
 function resolveSelectedMeetingId(snapshot: DesktopSnapshot, current: string | null): string | null {

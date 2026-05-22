@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -190,6 +190,22 @@ describe("desktop command-state mapping", () => {
     });
   });
 
+  it("renders skipped private artifacts as incomplete delete cleanup", () => {
+    expect(
+      mapDeleteState({
+        state: "deleted",
+        deletedPrivateArtifacts: ["meetings/circuit-review/audio/imported.wav"],
+        skippedPrivateArtifacts: ["meetings/circuit-review/audio/locked.wav"],
+        remainingExports: [],
+      }),
+    ).toEqual({
+      label: "Cleanup incomplete",
+      tone: "warn",
+      detail:
+        "1 private artifact removed. Cleanup incomplete: 1 private artifact could not be removed. 0 exported files remain outside app control.",
+    });
+  });
+
   it("discloses summary provider privacy state", () => {
     expect(mapAnalysisDisclosure(null)).toEqual({
       label: "No summary",
@@ -310,11 +326,11 @@ describe("desktop workspace shell", () => {
     );
     expect(screen.getByRole("button", { name: "Export JSON" })).toHaveAttribute(
       "title",
-      "Export command is not wired into the desktop shell yet.",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
     );
     expect(screen.getByRole("button", { name: "Delete private data" })).toHaveAttribute(
       "title",
-      "Delete command is not wired into the desktop shell yet.",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
     );
     expect(screen.getByRole("button", { name: "Generate summary" })).toHaveAttribute(
       "title",
@@ -392,6 +408,36 @@ describe("desktop workspace shell", () => {
 
     expect(within(screen.getByLabelText("Meetings")).getByText("Design Standup")).toBeInTheDocument();
     expect(within(screen.getByLabelText("Meetings")).queryByText("Circuit Review")).not.toBeInTheDocument();
+  });
+
+  it("filters connected search through desktop command results", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      if (command === "search_meetings") {
+        return [{ meeting_id: "design-standup", title: "Design Standup" }] as never;
+      }
+      return initial as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.type(screen.getByLabelText("Search meetings"), "layout");
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        command: "search_meetings",
+        args: { query: "layout" },
+      }),
+    );
+    expect(within(screen.getByLabelText("Meetings")).getByText("Design Standup")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Meetings")).queryByText("Circuit Review")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Search meetings"));
+
+    expect(within(screen.getByLabelText("Meetings")).getByText("Circuit Review")).toBeInTheDocument();
   });
 
   it("renders empty search results separately from loading", async () => {
@@ -542,6 +588,154 @@ describe("desktop workspace shell", () => {
     expect(calls).toEqual([{ command: "transcribe_meeting", args: { meetingId: "circuit-review" } }]);
     expect(screen.getAllByText("Transcription failed").length).toBeGreaterThan(0);
     expect(screen.getByText("Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.")).toBeInTheDocument();
+  });
+
+  it("renames the selected meeting through the desktop command", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      meetings: initial.meetings.map((meeting) =>
+        meeting.id === "circuit-review" ? { ...meeting, title: "Renamed Planning" } : meeting,
+      ),
+      selectedMeetingId: "circuit-review",
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.clear(screen.getByLabelText("Selected meeting title"));
+    await user.type(screen.getByLabelText("Selected meeting title"), "Renamed Planning");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    expect(calls).toEqual([
+      {
+        command: "rename_meeting",
+        args: {
+          meetingId: "circuit-review",
+          title: "Renamed Planning",
+        },
+      },
+    ]);
+    expect(screen.getByRole("heading", { name: "Renamed Planning" })).toBeInTheDocument();
+  });
+
+  it("exports the selected meeting through the desktop command", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      meetings: initial.meetings.map((meeting) =>
+        meeting.id === "circuit-review"
+          ? {
+              ...meeting,
+              exportState: {
+                state: "exported",
+                meetingId: "circuit-review",
+                path: "/tmp/circuit-review.json",
+              },
+            }
+          : meeting,
+      ),
+      exportCommand: {
+        state: "exported",
+        meetingId: "circuit-review",
+        path: "/tmp/circuit-review.json",
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Export JSON" }));
+
+    expect(calls).toEqual([
+      {
+        command: "export_meeting_json",
+        args: { meetingId: "circuit-review" },
+      },
+    ]);
+    expect(screen.getAllByText("JSON exported").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("/tmp/circuit-review.json").length).toBeGreaterThan(0);
+  });
+
+  it("deletes private data through the desktop command while showing remaining exports", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      meetings: initial.meetings.filter((meeting) => meeting.id !== "circuit-review"),
+      selectedMeetingId: "design-standup",
+      deleteCommand: {
+        state: "deleted",
+        meetingId: "circuit-review",
+        deletedPrivateArtifacts: ["meetings/circuit-review/audio/imported.wav"],
+        remainingExports: ["/tmp/circuit-review.json"],
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Delete private data" }));
+
+    expect(calls).toEqual([
+      {
+        command: "delete_meeting",
+        args: { meetingId: "circuit-review" },
+      },
+    ]);
+    expect(within(screen.getByLabelText("Meetings")).queryByText("Circuit Review")).not.toBeInTheDocument();
+    expect(screen.getByText("Private artifacts deleted")).toBeInTheDocument();
+    expect(screen.getByText("1 private artifact removed. 1 exported file remains outside app control.")).toBeInTheDocument();
+  });
+
+  it("retries a failed delete through the preserved command meeting id", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      selectedMeetingId: "design-standup",
+      deleteCommand: {
+        state: "failed",
+        meetingId: "circuit-review",
+        message: "private artifact is locked",
+      },
+    });
+    const returned = connectedSnapshot({
+      selectedMeetingId: "design-standup",
+      deleteCommand: {
+        state: "deleted",
+        meetingId: "circuit-review",
+        deletedPrivateArtifacts: ["meetings/circuit-review/audio/imported.wav"],
+        remainingExports: [],
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry delete" }));
+
+    expect(calls).toEqual([
+      {
+        command: "delete_meeting",
+        args: { meetingId: "circuit-review" },
+      },
+    ]);
+    expect(screen.getByText("Private artifacts deleted")).toBeInTheDocument();
   });
 
   it("tests and saves the configured Whisper path through desktop commands", async () => {

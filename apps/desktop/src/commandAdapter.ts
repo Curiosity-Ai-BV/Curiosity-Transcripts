@@ -51,15 +51,23 @@ export interface WhisperModelPathTestResult {
 
 export interface ExportCommandState {
   state: "idle" | "exporting" | "exported" | "failed";
-  path?: string;
-  message?: string;
+  meetingId?: string | null;
+  path?: string | null;
+  message?: string | null;
 }
 
 export interface DeleteCommandState {
   state: "idle" | "deleting" | "deleted" | "failed";
+  meetingId?: string | null;
   deletedPrivateArtifacts?: string[];
+  skippedPrivateArtifacts?: string[];
   remainingExports?: string[];
-  message?: string;
+  message?: string | null;
+}
+
+export interface MeetingSearchResult {
+  meeting_id: string;
+  title: string;
 }
 
 export interface AnalysisDisclosureState {
@@ -127,6 +135,8 @@ export interface DesktopSnapshot {
   settings: AppSettings;
   capture: CaptureStatus;
   transcription: TranscriptionCommandView | null;
+  exportCommand: ExportCommandState;
+  deleteCommand: DeleteCommandState;
 }
 
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -321,11 +331,20 @@ export function mapExportState(state: ExportCommandState): StatusView {
 export function mapDeleteState(state: DeleteCommandState): StatusView {
   if (state.state === "deleted") {
     const deleted = state.deletedPrivateArtifacts?.length ?? 0;
+    const skipped = state.skippedPrivateArtifacts?.length ?? 0;
     const remaining = state.remainingExports?.length ?? 0;
+    const remainingExportsDetail = `${remaining} exported file${remaining === 1 ? "" : "s"} ${remaining === 1 ? "remains" : "remain"} outside app control.`;
+    if (skipped > 0) {
+      return {
+        label: "Cleanup incomplete",
+        tone: "warn",
+        detail: `${deleted} private artifact${deleted === 1 ? "" : "s"} removed. Cleanup incomplete: ${skipped} private artifact${skipped === 1 ? "" : "s"} could not be removed. ${remainingExportsDetail}`,
+      };
+    }
     return {
       label: "Private artifacts deleted",
       tone: remaining > 0 ? "warn" : "ready",
-      detail: `${deleted} private artifact${deleted === 1 ? "" : "s"} removed. ${remaining} exported file${remaining === 1 ? "" : "s"} remains outside app control.`,
+      detail: `${deleted} private artifact${deleted === 1 ? "" : "s"} removed. ${remainingExportsDetail}`,
     };
   }
   if (state.state === "deleting") {
@@ -451,6 +470,12 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
             systemAudio: "SystemAudioDenied",
           },
     transcription: null,
+    exportCommand: {
+      state: "idle",
+    },
+    deleteCommand: {
+      state: "idle",
+    },
   };
 }
 
@@ -484,6 +509,12 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       systemAudio: "SystemAudioUnavailable",
     },
     transcription: null,
+    exportCommand: {
+      state: "idle",
+    },
+    deleteCommand: {
+      state: "idle",
+    },
   };
 }
 

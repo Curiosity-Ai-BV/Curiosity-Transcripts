@@ -233,6 +233,21 @@ h3 {
   font-weight: 700;
 }
 
+.command-outcome {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--tone) 8%, #fffefa);
+  color: var(--tone);
+  padding: 10px 20px;
+  font-size: 13px;
+}
+
+.command-outcome strong {
+  color: #312d27;
+}
+
 .icon-frame {
   display: inline-flex;
   width: 42px;
@@ -356,6 +371,41 @@ h3 {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.rename-title-row {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rename-title-field {
+  display: grid;
+  min-width: min(280px, 100%);
+  gap: 5px;
+}
+
+.rename-title-field span {
+  color: #403b34;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rename-title-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: #fffefa;
+  color: #24211d;
+  padding: 8px 9px;
+  outline: 0;
+}
+
+.rename-title-field input:disabled {
+  color: var(--muted);
+  background: #f1f0eb;
 }
 
 .privacy-row {

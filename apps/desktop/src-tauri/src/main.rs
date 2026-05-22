@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use curiosity_app::{
-    list_meetings_dto, meeting_detail_dto, AppPermissionState, CommandRecordingDto,
-    CommandRecordingState, RawAudioRetentionPolicy, StorageLocationDto,
+    delete_meeting_command, export_meeting_json_command, list_meetings_dto, meeting_detail_dto,
+    rename_meeting_command, search_meetings_dto, AppPermissionState, CommandRecordingDto,
+    CommandRecordingState, DeletedMeetingDto, ExportedMeetingDto, MeetingSearchResultDto,
+    RawAudioRetentionPolicy, StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureError, CapturePermission, MacosMicrophoneWavRecording,
@@ -29,6 +31,10 @@ fn main() {
         .manage(Mutex::new(DesktopCommandState::default()))
         .invoke_handler(tauri::generate_handler![
             desktop_snapshot,
+            search_meetings,
+            rename_meeting,
+            export_meeting_json,
+            delete_meeting,
             get_settings,
             save_whisper_model_path,
             save_analysis_settings,
@@ -57,6 +63,61 @@ fn desktop_snapshot(
         command_state.snapshot_state()
     };
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn search_meetings(
+    app: tauri::AppHandle,
+    query: String,
+) -> Result<Vec<MeetingSearchResultDto>, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    search_meetings_for_app_root(&app_root, &query)
+}
+
+#[tauri::command]
+fn rename_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    title: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let mut command_state = state.lock().map_err(|error| error.to_string())?;
+    rename_meeting_for_app_root(&app_root, &mut command_state, &meeting_id, &title)
+}
+
+#[tauri::command]
+fn export_meeting_json(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let mut command_state = state.lock().map_err(|error| error.to_string())?;
+    export_meeting_json_for_app_root(&app_root, &mut command_state, &meeting_id)
+}
+
+#[tauri::command]
+fn delete_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let mut command_state = state.lock().map_err(|error| error.to_string())?;
+    delete_meeting_for_app_root(&app_root, &mut command_state, &meeting_id)
 }
 
 #[tauri::command]
@@ -269,9 +330,7 @@ fn desktop_snapshot_for_app_root_with_state(
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
     let store = open_store(app_root)?;
-    let settings = store
-        .app_settings()
-        .map_err(|error| error.to_string())?;
+    let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
 
@@ -319,8 +378,18 @@ fn desktop_snapshot_for_app_root_with_state(
                     .map(|analysis| !analysis.network_used)
                     .unwrap_or(true),
             },
-            export_state: ExportCommandState::default(),
-            delete_state: DeleteCommandState::default(),
+            export_state: command_state
+                .last_export
+                .as_ref()
+                .filter(|state| state.meeting_id.as_deref() == Some(summary.meeting_id.as_str()))
+                .cloned()
+                .unwrap_or_default(),
+            delete_state: command_state
+                .last_delete
+                .as_ref()
+                .filter(|state| state.meeting_id.as_deref() == Some(summary.meeting_id.as_str()))
+                .cloned()
+                .unwrap_or_default(),
             analysis: analysis.map(|analysis| AnalysisDisclosureState {
                 provider: analysis.provider,
                 model_name: analysis.model_name,
@@ -348,6 +417,8 @@ fn desktop_snapshot_for_app_root_with_state(
             system_audio: DesktopPermissionState::SystemAudioUnavailable,
         },
         transcription: command_state.last_transcription.clone(),
+        export_command: command_state.last_export.clone().unwrap_or_default(),
+        delete_command: command_state.last_delete.clone().unwrap_or_default(),
     })
 }
 
@@ -392,12 +463,75 @@ fn save_analysis_settings_for_app_root(
         .map_err(|error| error.to_string())
 }
 
+fn search_meetings_for_app_root(
+    app_root: &Path,
+    query: &str,
+) -> Result<Vec<MeetingSearchResultDto>, String> {
+    let store = open_store(app_root)?;
+    search_meetings_dto(&store, query).map_err(|error| error.to_string())
+}
+
+fn rename_meeting_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+    title: &str,
+) -> Result<DesktopSnapshot, String> {
+    let store = open_store(app_root)?;
+    rename_meeting_command(&store, meeting_id, title).map_err(|error| error.to_string())?;
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn export_meeting_json_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+) -> Result<DesktopSnapshot, String> {
+    let store = open_store(app_root)?;
+    let settings = store.app_settings().map_err(|error| error.to_string())?;
+    let export_root = export_root_for_settings(app_root, &settings);
+    command_state.last_export = match export_meeting_json_command(&store, meeting_id, &export_root)
+    {
+        Ok(exported) => Some(ExportCommandState::exported(exported)),
+        Err(error) => Some(ExportCommandState::failed(meeting_id, error.to_string())),
+    };
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn delete_meeting_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+) -> Result<DesktopSnapshot, String> {
+    let store = open_store(app_root)?;
+    command_state.last_delete = match delete_meeting_command(&store, meeting_id) {
+        Ok(deleted) => Some(DeleteCommandState::deleted(deleted)),
+        Err(error) => Some(DeleteCommandState::failed(meeting_id, error.to_string())),
+    };
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf {
+    settings
+        .export_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| app_root.join("exports"))
+}
+
 #[derive(Default)]
 struct DesktopCommandState {
     active_recording: Option<ActiveDesktopRecording>,
     starting_recording: bool,
     last_recording: Option<CommandRecordingDto>,
     last_transcription: Option<TranscriptionCommandView>,
+    last_export: Option<ExportCommandState>,
+    last_delete: Option<DeleteCommandState>,
 }
 
 impl DesktopCommandState {
@@ -411,6 +545,8 @@ impl DesktopCommandState {
             }),
             last_recording: self.last_recording.clone(),
             last_transcription: self.last_transcription.clone(),
+            last_export: self.last_export.clone(),
+            last_delete: self.last_delete.clone(),
         }
     }
 }
@@ -420,6 +556,8 @@ struct DesktopCommandSnapshotState {
     active_recording: Option<ActiveDesktopRecordingSnapshot>,
     last_recording: Option<CommandRecordingDto>,
     last_transcription: Option<TranscriptionCommandView>,
+    last_export: Option<ExportCommandState>,
+    last_delete: Option<DeleteCommandState>,
 }
 
 #[derive(Clone)]
@@ -1094,7 +1232,9 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
         Ok(_) => WhisperModelPathTestView {
             state: "Valid".to_string(),
             message: "Whisper model path is readable.".to_string(),
-            setup_guidance: "Save this path, then transcribe with the whisper-rs desktop feature enabled.".to_string(),
+            setup_guidance:
+                "Save this path, then transcribe with the whisper-rs desktop feature enabled."
+                    .to_string(),
         },
         Err(error) => WhisperModelPathTestView::invalid(
             format!("Whisper model path is not readable: {error}"),
@@ -1194,6 +1334,8 @@ struct DesktopSnapshot {
     settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
+    export_command: ExportCommandState,
+    delete_command: DeleteCommandState,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1318,24 +1460,98 @@ struct MeetingPrivacy {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ExportCommandState {
-    state: &'static str,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meeting_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 impl Default for ExportCommandState {
     fn default() -> Self {
-        Self { state: "idle" }
+        Self {
+            state: "idle".to_string(),
+            meeting_id: None,
+            path: None,
+            message: None,
+        }
+    }
+}
+
+impl ExportCommandState {
+    fn exported(exported: ExportedMeetingDto) -> Self {
+        Self {
+            state: "exported".to_string(),
+            meeting_id: Some(exported.meeting_id),
+            path: Some(exported.path),
+            message: None,
+        }
+    }
+
+    fn failed(meeting_id: &str, message: String) -> Self {
+        Self {
+            state: "failed".to_string(),
+            meeting_id: Some(meeting_id.to_string()),
+            path: None,
+            message: Some(message),
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DeleteCommandState {
-    state: &'static str,
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meeting_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    deleted_private_artifacts: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_private_artifacts: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    remaining_exports: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 impl Default for DeleteCommandState {
     fn default() -> Self {
-        Self { state: "idle" }
+        Self {
+            state: "idle".to_string(),
+            meeting_id: None,
+            deleted_private_artifacts: Vec::new(),
+            skipped_private_artifacts: Vec::new(),
+            remaining_exports: Vec::new(),
+            message: None,
+        }
+    }
+}
+
+impl DeleteCommandState {
+    fn deleted(deleted: DeletedMeetingDto) -> Self {
+        Self {
+            state: "deleted".to_string(),
+            meeting_id: Some(deleted.meeting_id),
+            deleted_private_artifacts: deleted.deleted_private_artifacts,
+            skipped_private_artifacts: deleted.skipped_private_artifacts,
+            remaining_exports: deleted.remaining_exports,
+            message: None,
+        }
+    }
+
+    fn failed(meeting_id: &str, message: String) -> Self {
+        Self {
+            state: "failed".to_string(),
+            meeting_id: Some(meeting_id.to_string()),
+            deleted_private_artifacts: Vec::new(),
+            skipped_private_artifacts: Vec::new(),
+            remaining_exports: Vec::new(),
+            message: Some(message),
+        }
     }
 }
 
@@ -1370,8 +1586,8 @@ mod tests {
         StreamKind,
     };
     use curiosity_domain::{
-        AnalysisCitation, Meeting, MeetingAnalysis, ModelRun, SourceChannel, TranscriptSegment,
-        TranscriptVersion,
+        AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,
+        RecordingSession, RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
     };
     use curiosity_transcription::{FakeWhisperBackend, WhisperBackendSegment};
     use std::fs;
@@ -1413,10 +1629,7 @@ mod tests {
         assert_eq!(json["model"]["kind"], "missing");
         assert_eq!(json["capture"]["microphone"], "MicrophoneUnavailable");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
-        assert_eq!(
-            json["settings"]["ollamaBaseUrl"],
-            "http://127.0.0.1:11434"
-        );
+        assert_eq!(json["settings"]["ollamaBaseUrl"], "http://127.0.0.1:11434");
         assert_eq!(json["settings"]["ollamaModel"], "qwen3.6:27b");
         assert!(json["transcription"].is_null());
 
@@ -1516,11 +1729,8 @@ mod tests {
         fs::write(&saved_model_path, b"fixture").expect("saved model file");
         let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
         std::env::set_var("CURIOSITY_WHISPER_MODEL", &env_model_path);
-        save_whisper_model_path_for_app_root(
-            &root,
-            saved_model_path.to_string_lossy().to_string(),
-        )
-        .expect("save whisper");
+        save_whisper_model_path_for_app_root(&root, saved_model_path.to_string_lossy().to_string())
+            .expect("save whisper");
 
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
@@ -1589,6 +1799,112 @@ mod tests {
         );
         assert_eq!(meeting["analysis"]["modelName"], "qwen3:30b");
         assert_eq!(meeting["analysis"]["networkUsed"], false);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn search_meetings_command_returns_fts_backed_result_ids_and_titles() {
+        let root = unique_test_root();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Planning Alpha",
+            "launch readiness",
+        );
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-2",
+            "Design Review",
+            "layout density",
+        );
+
+        let results = search_meetings_for_app_root(&root, "launch").expect("search meetings");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].meeting_id, "meeting-1");
+        assert_eq!(results[0].title, "Planning Alpha");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn rename_meeting_command_updates_selected_snapshot_title() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Original Planning",
+            "rename target",
+        );
+
+        let snapshot =
+            rename_meeting_for_app_root(&root, &mut command_state, "meeting-1", "Renamed Planning")
+                .expect("rename meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["selectedMeetingId"], "meeting-1");
+        assert_eq!(json["meetings"][0]["title"], "Renamed Planning");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn export_meeting_json_command_writes_json_and_exposes_export_state() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Export Planning",
+            "export this transcript",
+        );
+
+        let snapshot = export_meeting_json_for_app_root(&root, &mut command_state, "meeting-1")
+            .expect("export meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let exported_path = json["exportCommand"]["path"].as_str().expect("export path");
+        let export = Store::read_meeting_export_json(exported_path).expect("read export");
+
+        assert_eq!(json["exportCommand"]["state"], "exported");
+        assert_eq!(json["meetings"][0]["exportState"]["path"], exported_path);
+        assert_eq!(export.meeting_id, "meeting-1");
+        assert_eq!(export.segments[0].text, "export this transcript");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn delete_meeting_command_removes_private_data_and_preserves_visible_delete_outcome() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Delete Planning",
+            "delete this transcript",
+        );
+        let export_snapshot =
+            export_meeting_json_for_app_root(&root, &mut command_state, "meeting-1")
+                .expect("export meeting");
+        let export_json = serde_json::to_value(&export_snapshot).expect("serialize export");
+        let exported_path = export_json["exportCommand"]["path"]
+            .as_str()
+            .expect("export path")
+            .to_string();
+        let private_path = root.join("meetings/meeting-1/audio/imported.wav");
+
+        let snapshot = delete_meeting_for_app_root(&root, &mut command_state, "meeting-1")
+            .expect("delete meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let meetings = json["meetings"].as_array().expect("meetings");
+
+        assert!(!private_path.exists());
+        assert!(meetings.iter().all(|meeting| meeting["id"] != "meeting-1"));
+        assert_eq!(json["deleteCommand"]["state"], "deleted");
+        assert_eq!(json["deleteCommand"]["remainingExports"][0], exported_path);
+        assert!(PathBuf::from(exported_path).exists());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -2056,6 +2372,79 @@ mod tests {
                 }],
             })
             .expect("persist analysis");
+    }
+
+    fn seed_transcribed_meeting_with_private_artifact(
+        root: &Path,
+        meeting_id: &str,
+        title: &str,
+        text: &str,
+    ) {
+        let store = open_store(root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(meeting_id, title, 1_000))
+            .expect("insert meeting");
+        let session_id = format!("{meeting_id}-session-1");
+        let session = RecordingSession::start(
+            &session_id,
+            meeting_id,
+            RecordingSource::Imported,
+            1_000,
+            48_000,
+        );
+        store
+            .insert_recording_session(&session)
+            .expect("insert session");
+        let artifact_path = format!("meetings/{meeting_id}/audio/imported.wav");
+        let absolute_artifact_path = root.join(&artifact_path);
+        fs::create_dir_all(
+            absolute_artifact_path
+                .parent()
+                .expect("private artifact parent"),
+        )
+        .expect("private artifact dir");
+        fs::write(&absolute_artifact_path, b"private audio").expect("private artifact");
+        store
+            .insert_audio_artifact(&AudioArtifact::new_private(
+                format!("{meeting_id}-artifact-1"),
+                &session_id,
+                ArtifactKind::Imported,
+                artifact_path,
+                format!("sha256:{meeting_id}"),
+            ))
+            .expect("insert artifact");
+        let run = ModelRun::new(
+            format!("{meeting_id}-run-1"),
+            meeting_id,
+            format!("sha256:{meeting_id}"),
+            "fake-local",
+            "fixture-whisper",
+            false,
+            2_000,
+        );
+        let version = TranscriptVersion::new(
+            format!("{meeting_id}-version-1"),
+            meeting_id,
+            format!("{meeting_id}-run-1"),
+            1,
+            2_010,
+        );
+        store
+            .persist_transcript(
+                &run,
+                &version,
+                &[TranscriptSegment::with_metadata(
+                    format!("{meeting_id}-segment-1"),
+                    meeting_id,
+                    0,
+                    1_200,
+                    text,
+                    SourceChannel::Imported,
+                    &run.id,
+                    &version.id,
+                )],
+            )
+            .expect("persist transcript");
     }
 
     fn unique_test_root() -> std::path::PathBuf {
