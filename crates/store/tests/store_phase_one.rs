@@ -5,15 +5,13 @@ use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, RecordingSession, RecordingSource,
 };
 use curiosity_store::{
-    ArtifactManifest, DeleteReport, RepairConflict, RepairStatus, Store, WriteStatus,
+    ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
+    WriteStatus,
 };
 use rusqlite::Connection;
 
 fn test_root(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "curiosity-store-{name}-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("curiosity-store-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("test root");
     path
@@ -48,8 +46,12 @@ fn migrate_creates_local_sqlite_db_and_persists_core_loop_rows() {
     );
 
     store.insert_meeting(&meeting).expect("insert meeting");
-    store.insert_recording_session(&session).expect("insert session");
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
     store.insert_processing_job(&job).expect("insert job");
 
     assert_eq!(store.count("meetings").expect("meetings"), 1);
@@ -83,7 +85,7 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 1);
+    assert_eq!(store.schema_version().expect("schema version"), 2);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(audio_artifacts)")
@@ -120,16 +122,16 @@ fn pending_artifact_hashes_fail_loud_instead_of_deduping_to_first_row() {
     );
 
     assert_eq!(
-        store.insert_audio_artifact(&first).expect("first pending insert"),
+        store
+            .insert_audio_artifact(&first)
+            .expect("first pending insert"),
         "artifact-1"
     );
     let err = store
         .insert_audio_artifact(&second)
         .expect_err("same pending sentinel should not silently return the first artifact id");
     assert!(
-        err.to_string()
-            .to_ascii_lowercase()
-            .contains("unique"),
+        err.to_string().to_ascii_lowercase().contains("unique"),
         "unexpected pending sentinel failure: {err}"
     );
 }
@@ -166,12 +168,24 @@ fn startup_repair_reconciles_incomplete_db_rows_with_artifact_manifests_after_cr
     assert_eq!(report.recovered_artifacts, vec!["artifact-1"]);
     assert_eq!(report.recovered_jobs, vec!["job-1"]);
     assert_eq!(
-        store.artifact_recovery_status("artifact-1").expect("artifact status"),
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact status"),
         RepairStatus::Recovered
     );
     assert_eq!(
         store.job_status("job-1").expect("job status"),
         JobStatus::Recovery
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Recovered"
+    );
+    assert_eq!(
+        store.meeting_status("meeting-1").expect("meeting status"),
+        "Recovered"
     );
 }
 
@@ -201,10 +215,15 @@ fn delete_meeting_removes_private_artifacts_but_reports_exports_outside_app_cont
         "artifact-1",
         "session-1",
         ArtifactKind::RawMic,
-        private_path.strip_prefix(&root).expect("relative").to_string_lossy(),
+        private_path
+            .strip_prefix(&root)
+            .expect("relative")
+            .to_string_lossy(),
         "sha256:abc",
     );
-    store.insert_audio_artifact(&artifact).expect("insert private artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert private artifact");
 
     let exported_path = export_root.join("meeting.md");
     fs::write(&exported_path, b"# exported transcript").expect("export file");
@@ -246,12 +265,17 @@ fn delete_meeting_removes_private_artifacts_but_reports_exports_outside_app_cont
     let report: DeleteReport = store.delete_meeting("meeting-1").expect("delete meeting");
 
     assert_eq!(report.deleted_private_artifacts, vec![private_path.clone()]);
-    assert_eq!(report.exported_files_outside_app_control, vec![exported_path.clone()]);
+    assert_eq!(
+        report.exported_files_outside_app_control,
+        vec![exported_path.clone()]
+    );
     assert!(!private_path.exists());
     assert!(other_private_path.exists());
     assert!(exported_path.exists());
     assert!(store.meeting_deleted("meeting-1").expect("meeting deleted"));
-    assert!(!store.meeting_deleted("meeting-2").expect("other meeting not deleted"));
+    assert!(!store
+        .meeting_deleted("meeting-2")
+        .expect("other meeting not deleted"));
 }
 
 #[test]
@@ -271,7 +295,9 @@ fn delete_meeting_skips_absolute_artifact_paths_outside_app_storage() {
         outside_path.to_string_lossy(),
         "sha256:absolute",
     );
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
 
@@ -302,7 +328,9 @@ fn delete_meeting_skips_relative_artifact_paths_that_escape_app_storage() {
         escaped_db_path.to_string_lossy(),
         "sha256:escape",
     );
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
 
@@ -327,7 +355,9 @@ fn delete_meeting_tombstones_safe_app_artifact_rows_when_file_is_already_missing
         missing_relative_path,
         "sha256:missing",
     );
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
 
@@ -360,7 +390,9 @@ fn delete_meeting_skips_symlink_artifact_paths_that_escape_app_storage() {
         db_path.to_string_lossy(),
         "sha256:symlink",
     );
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
 
@@ -460,7 +492,9 @@ fn startup_repair_reports_manifest_db_conflicts_without_recovering_rows_or_jobs(
         assert!(report.recovered_artifacts.is_empty(), "{name}");
         assert!(report.recovered_jobs.is_empty(), "{name}");
         assert_eq!(
-            store.artifact_recovery_status("artifact-1").expect("artifact status"),
+            store
+                .artifact_recovery_status("artifact-1")
+                .expect("artifact status"),
             RepairStatus::NotNeeded,
             "{name}"
         );
@@ -470,6 +504,199 @@ fn startup_repair_reports_manifest_db_conflicts_without_recovering_rows_or_jobs(
             "{name}"
         );
     }
+}
+
+#[test]
+fn startup_repair_rejects_partial_mixed_artifact_sets_without_recovering_rows_or_jobs() {
+    let root = test_root("repair-partial-mixed");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+
+    let meeting = Meeting::new_manual("meeting-1", "Planning", 1_000);
+    store.insert_meeting(&meeting).expect("insert meeting");
+    let session = RecordingSession::start(
+        "session-1",
+        "meeting-1",
+        RecordingSource::Mixed,
+        1_010,
+        48_000,
+    );
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+
+    let mic_path = "meetings/meeting-1/audio/recording-1/raw-mic.wav";
+    let system_path = "meetings/meeting-1/audio/recording-1/raw-system.wav";
+    let absolute_mic_path = root.join(mic_path);
+    fs::create_dir_all(absolute_mic_path.parent().expect("mic parent")).expect("mic dir");
+    fs::write(&absolute_mic_path, b"partial mic wav").expect("mic artifact file");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-mic",
+            "session-1",
+            ArtifactKind::RawMic,
+            mic_path,
+            "sha256:pending:mic",
+        ))
+        .expect("insert mic artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-system",
+            "session-1",
+            ArtifactKind::RawSystem,
+            system_path,
+            "sha256:pending:system",
+        ))
+        .expect("insert system artifact");
+    store
+        .write_recoverable_artifact_manifests(
+            "meeting-1",
+            "session-1",
+            &[
+                RecoverableArtifact {
+                    artifact_id: "artifact-mic".to_string(),
+                    path: mic_path.to_string(),
+                    sha256: "sha256:pending:mic".to_string(),
+                },
+                RecoverableArtifact {
+                    artifact_id: "artifact-system".to_string(),
+                    path: system_path.to_string(),
+                    sha256: "sha256:pending:system".to_string(),
+                },
+            ],
+        )
+        .expect("write mixed manifest");
+    let job = curiosity_domain::ProcessingJob::new(
+        "job-1",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    store.insert_processing_job(&job).expect("insert job");
+
+    let report = store.repair_startup().expect("repair startup");
+
+    assert_eq!(
+        report.conflicts,
+        vec![RepairConflict::MissingFile {
+            artifact_id: "artifact-system".to_string(),
+            path: system_path.to_string(),
+        }]
+    );
+    assert!(report.recovered_artifacts.is_empty());
+    assert!(report.recovered_jobs.is_empty());
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-mic")
+            .expect("mic status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-system")
+            .expect("system status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Recording"
+    );
+    assert!(store
+        .completed_wav_artifacts_for_transcription("meeting-1")
+        .expect("transcription artifacts")
+        .is_empty());
+}
+
+#[test]
+fn startup_repair_recovers_required_mic_when_optional_system_artifact_is_missing() {
+    let root = test_root("repair-optional-system-missing");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+
+    let meeting = Meeting::new_manual("meeting-1", "Planning", 1_000);
+    store.insert_meeting(&meeting).expect("insert meeting");
+    let session = RecordingSession::start(
+        "session-1",
+        "meeting-1",
+        RecordingSource::Microphone,
+        1_010,
+        48_000,
+    );
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+
+    let mic_path = "meetings/meeting-1/audio/recording-1/raw-mic.wav";
+    let system_path = "meetings/meeting-1/audio/recording-1/raw-system.wav";
+    let absolute_mic_path = root.join(mic_path);
+    fs::create_dir_all(absolute_mic_path.parent().expect("mic parent")).expect("mic dir");
+    fs::write(&absolute_mic_path, b"recoverable mic wav").expect("mic artifact file");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-mic",
+            "session-1",
+            ArtifactKind::RawMic,
+            mic_path,
+            "sha256:pending:mic",
+        ))
+        .expect("insert mic artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-system",
+            "session-1",
+            ArtifactKind::RawSystem,
+            system_path,
+            "sha256:pending:system",
+        ))
+        .expect("insert system artifact");
+    store
+        .write_recoverable_artifact_manifests(
+            "meeting-1",
+            "session-1",
+            &[
+                RecoverableArtifact {
+                    artifact_id: "artifact-mic".to_string(),
+                    path: mic_path.to_string(),
+                    sha256: "sha256:pending:mic".to_string(),
+                },
+                RecoverableArtifact {
+                    artifact_id: "artifact-system".to_string(),
+                    path: system_path.to_string(),
+                    sha256: "sha256:pending:system".to_string(),
+                },
+            ],
+        )
+        .expect("write recoverable manifest");
+    let job = curiosity_domain::ProcessingJob::new(
+        "job-1",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    store.insert_processing_job(&job).expect("insert job");
+
+    let report = store.repair_startup().expect("repair startup");
+    let artifacts = store
+        .completed_wav_artifacts_for_transcription("meeting-1")
+        .expect("transcription artifacts");
+
+    assert!(report.conflicts.is_empty());
+    assert_eq!(report.recovered_artifacts, vec!["artifact-mic"]);
+    assert_eq!(report.recovered_jobs, vec!["job-1"]);
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-mic")
+            .expect("mic status"),
+        RepairStatus::Recovered
+    );
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].kind, "RawMic");
 }
 
 #[test]
@@ -550,16 +777,24 @@ fn seed_crashed_meeting(store: &Store, root: &Path) {
         "artifact-1",
         "session-1",
         ArtifactKind::RawMic,
-        private_path.strip_prefix(root).expect("relative").to_string_lossy(),
+        private_path
+            .strip_prefix(root)
+            .expect("relative")
+            .to_string_lossy(),
         "sha256:partial",
     );
-    store.insert_audio_artifact(&artifact).expect("insert artifact");
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
 
     ArtifactManifest::new(
         "meeting-1",
         "session-1",
         artifact.id.clone(),
-        private_path.strip_prefix(root).expect("relative").to_string_lossy(),
+        private_path
+            .strip_prefix(root)
+            .expect("relative")
+            .to_string_lossy(),
         artifact.sha256.clone(),
     )
     .mark_interrupted_recoverable()

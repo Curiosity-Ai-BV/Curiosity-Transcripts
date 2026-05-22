@@ -20,6 +20,7 @@ pub enum CommandRecordingState {
     Stopping,
     Interrupted,
     Recovering,
+    Complete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -27,6 +28,8 @@ pub enum AppPermissionState {
     Ready,
     MicrophoneDenied,
     SystemAudioDenied,
+    MicrophoneUnavailable,
+    SystemAudioUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -576,6 +579,10 @@ pub struct ManualRecordingService<C, S> {
     interrupted: Option<InterruptedRecording>,
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "recording command errors intentionally carry a trust-state DTO for the shell"
+)]
 impl<C, S> ManualRecordingService<C, S>
 where
     C: AudioCapture,

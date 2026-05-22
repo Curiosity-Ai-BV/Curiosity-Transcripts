@@ -34,16 +34,22 @@ fn fake_local_transcriber_turns_fixture_lines_into_ordered_segments_without_hard
     assert_eq!(document.model_name, "fixture-whisper");
     assert_eq!(document.source_artifact_sha256, "sha256:audio-fixture");
     assert_eq!(document.segments[0].text, "first");
-    assert_eq!(document.segments[0].source_channel, SourceChannel::Microphone);
+    assert_eq!(
+        document.segments[0].source_channel,
+        SourceChannel::Microphone
+    );
     assert_eq!(document.segments[1].text, "second");
     assert_eq!(document.segments[1].source_channel, SourceChannel::System);
     assert_eq!(document.segments[0].model_run_id, document.model_run_id);
-    assert_eq!(document.segments[0].transcript_version_id, document.transcript_version_id);
+    assert_eq!(
+        document.segments[0].transcript_version_id,
+        document.transcript_version_id
+    );
 }
 
 #[test]
 fn model_state_machine_names_local_setup_failures_without_starting_downloads_or_network() {
-    let states = vec![
+    let states = [
         ModelState::Missing,
         ModelState::Downloading {
             downloaded_bytes: 256,

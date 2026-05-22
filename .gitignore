@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+apps/desktop/node_modules/
 /.pnp
 .pnp.js
 
@@ -14,6 +15,9 @@
 
 # production
 /build
+apps/desktop/dist/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
 /target
 
 # misc

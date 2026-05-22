@@ -44,6 +44,16 @@ pub enum AnalysisClientError {
     Transport(String),
 }
 
+impl std::fmt::Display for AnalysisClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) | Self::Transport(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for AnalysisClientError {}
+
 pub trait ProviderTextClient {
     fn complete(&self, model_name: &str, prompt: &str) -> Result<String, AnalysisClientError>;
 
@@ -210,7 +220,11 @@ impl<C> OllamaAnalyzer<C>
 where
     C: ProviderTextClient,
 {
-    pub fn new(client: C, model_name: impl Into<String>, prompt_template_version: impl Into<String>) -> Self {
+    pub fn new(
+        client: C,
+        model_name: impl Into<String>,
+        prompt_template_version: impl Into<String>,
+    ) -> Self {
         Self {
             client,
             model_name: model_name.into(),

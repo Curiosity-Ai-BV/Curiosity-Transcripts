@@ -1,77 +1,249 @@
 # Curiosity Transcripts
 
-Curiosity Transcripts is a local-first transcript app foundation written as a Rust workspace.
+Curiosity Transcripts is a local-first transcript app foundation written as a Rust
+workspace with a functional macOS-first desktop MVP in `apps/desktop`.
 
-The current repository is not a finished desktop app yet. There is no full Tauri UI, no production packaging, and no real macOS audio capture path wired today. What exists is the testable service/API foundation for local recording state, durable storage, deterministic transcription/export, meeting organization, and privacy-gated analysis providers.
+The current MVP can open a Tauri 2 desktop shell, start and stop local desktop
+recordings, persist private microphone and system-audio WAV artifacts, and
+transcribe a saved meeting with a user-provided local Whisper model. Desktop
+builds include the native `whisper-rs` backend by default. System-audio meeting
+recording is available through the feature-gated ScreenCaptureKit desktop
+backend.
 
 ## Current Status
 
-Implemented foundations:
+Implemented MVP flows:
 
-- Audio capture contracts, permission/recovery types, fake capture fixtures, and an explicit manual smoke placeholder.
-- Durable SQLite store for meetings, recording sessions, audio artifacts, processing jobs, transcript versions, edits, exports, search indexes, and analysis results.
-- Fake manual recording workflow for local command/service behavior, including start, pause, stop, interruption, recoverable artifact handling, and storage failure reporting.
-- Deterministic fixture transcription and transcript export helpers for Markdown, JSON, and SRT.
-- Organizer APIs for meeting detail, list, rename, search, JSON export, and delete flows.
-- Structured summary generation with citations, decisions, action items, questions, and privacy-gated provider paths.
+- React/Vite/Tauri 2 desktop app under `apps/desktop`.
+- Tauri commands for `desktop_snapshot`, `start_microphone_recording`,
+  `stop_microphone_recording`, `transcribe_meeting`, `audio_smoke_status`, and
+  `system_audio_smoke_recording`.
+- Real macOS desktop capture through `MacosDesktopWavRecording`, `cpal`, and
+  ScreenCaptureKit, writing separate private `raw-mic.wav` and
+  `raw-system.wav` artifacts when run with the system-audio feature.
+- Real local Whisper transcription through the default `whisper-rs` desktop feature,
+  using the saved desktop setting or `CURIOSITY_WHISPER_MODEL` as the fallback
+  model path. Meetings with both mic and system WAV artifacts are transcribed as
+  one persisted transcript run with channel-tagged segments.
+- Durable SQLite store for meetings, recording sessions, audio artifacts,
+  processing jobs, transcript versions, edits, exports, search indexes, and
+  analysis results.
+- Deterministic fixture transcription and transcript export helpers for
+  Markdown, JSON, and SRT.
+- Organizer APIs for meeting detail, list, rename, search, JSON export, and
+  delete flows.
+- Structured summary generation with citations, decisions, action items,
+  questions, local Ollama wiring, and privacy-gated provider paths.
+- Desktop command wiring for transcript search, JSON export, delete, and
+  summary generation after a transcript is ready.
+- Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
+  transcript-ready local meeting without microphone, Whisper, or Ollama.
 
-Not implemented yet:
+Remaining gaps:
 
-- Full desktop UI.
-- Real macOS microphone/system-audio capture.
-- Real Whisper integration.
+- Production packaging and installer flow.
 - Calendar integration.
-- Production packaging or installer flow.
+- Model download and management UI for Whisper models.
 
 ## Workspace Layout
 
 ```text
+apps/
+  desktop/        React/Vite/Tauri 2 desktop shell and local command bridge.
 crates/
-  audio/          Audio capture contracts, fake capture, permission guidance, smoke placeholder.
+  audio/          Audio capture contracts, cpal microphone capture, smoke paths,
+                  and feature-gated ScreenCaptureKit desktop/system-audio capture.
   domain/         Shared meeting, recording, transcript, artifact, job, and analysis domain types.
   store/          SQLite persistence, migrations, search, export, delete, recovery, and analysis storage.
-  transcription/  Deterministic fixture transcriber and transcript export formats.
+  transcription/  Deterministic fixture transcriber, optional whisper-rs backend, and export formats.
   analysis/       Structured meeting analysis, provider presets, fake/Ollama/hosted provider gates.
   app/            Service/API-facing DTOs and commands over audio, store, transcription, and analysis.
 ```
 
-The workspace manifest is the top-level `Cargo.toml`, and all crates are included in `cargo test --workspace`.
+The top-level Cargo workspace covers the Rust crates under `crates/`. The Tauri
+backend for the desktop app is a separate Cargo manifest at
+`apps/desktop/src-tauri/Cargo.toml`.
 
 ## Local Setup
 
 Prerequisites:
 
 - Rust toolchain with `cargo` installed. `rustup` is the usual install path.
-- No hosted provider keys, calendar credentials, Ollama server, OpenAI key, or network access are required for the deterministic workspace tests and core local flows.
+- Node.js and npm for the desktop frontend.
+- macOS for real microphone and ScreenCaptureKit desktop capture checks.
+- CMake for default desktop builds, because they include the native
+  `whisper-rs` backend. If `cmake` is missing, the native `whisper-rs-sys`
+  build fails before local Whisper can be verified.
+- Xcode Command Line Tools and a working Swift runtime for the optional
+  ScreenCaptureKit system-audio feature.
+- macOS Microphone permission for desktop recording and Screen Recording
+  permission for ScreenCaptureKit system audio.
 
-Build and test:
+Deterministic workspace tests do not require hardware, network access, calendar
+credentials, hosted provider keys, Ollama, or a Whisper model:
 
 ```sh
 cargo test --workspace
 ```
 
-Optional formatting and linting, if the components are installed locally:
+Desktop frontend preview, build, and tests:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets
+cd apps/desktop
+npm install
+npm run test
+npm run dev
+npm run build
 ```
 
-These commands are useful for contributor hygiene, but this README does not claim they are required or currently passing in every environment.
+`npm run dev` serves the Vite frontend on `http://127.0.0.1:1420`. Outside the
+Tauri runtime it uses the preview/mock command fallback instead of local desktop
+commands.
 
-## Audio Smoke Placeholder
+Tauri desktop development run:
 
-The audio crate exposes a manual smoke binary:
+```sh
+cd apps/desktop
+npm exec -- tauri dev
+```
+
+The Tauri config uses `devUrl` `http://127.0.0.1:1420` and
+`beforeDevCommand` `npm run dev`.
+
+Full desktop recording with microphone plus system audio requires the
+ScreenCaptureKit feature:
+
+```sh
+cd apps/desktop
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
+```
+
+Plain `npm run tauri:dev` still builds the desktop shell and local Whisper
+backend. In that build, recording falls back to microphone-only capture because
+the system-audio backend is not compiled in. The normal recording flow always
+attempts mic plus system audio where the backend and macOS permissions allow it,
+then keeps a valid mic-only artifact when no system audio is available.
+
+In debug/test Tauri builds, a harness can invoke `seed_dev_fixture` to create
+one deterministic transcript-ready meeting in app-private storage. Release
+builds do not register this command, and there is no production UI control for
+it.
+
+## Hardware Smoke Checks
+
+Default smoke status does not claim hardware success:
 
 ```sh
 cargo run -p curiosity-audio --bin audio-smoke
 ```
 
-Current behavior: this is a placeholder until real hardware capture is wired. It reports `NotRun` and exits nonzero. That is intentional. Hardware smoke checks must report skipped/not-run/unavailable states honestly and must not be counted as passing until real capture exists.
+Without an explicit hardware flag this reports a skipped status and exits
+nonzero. That is intentional.
+
+Microphone smoke:
+
+```sh
+cargo run -p curiosity-audio --bin audio-smoke -- --attempt-mic --out audio-smoke-output --duration-ms 1000
+```
+
+This attempts real macOS microphone capture and only reports `Passed` after
+samples are captured and a WAV artifact is finalized. Permission denial,
+missing devices, or streams that produce no samples are reported as non-passing
+states.
+
+ScreenCaptureKit system-audio smoke:
+
+```sh
+cargo run -p curiosity-audio --features system-audio-screencapturekit --bin audio-smoke -- --attempt-system-audio --out audio-smoke-output --duration-ms 1000
+```
+
+This uses the same feature-gated ScreenCaptureKit capability required by full
+desktop recording. It requires macOS Screen Recording permission plus a working
+Swift/Xcode Command Line Tools runtime, and it should report unavailable or
+permission-denied states honestly when prerequisites are missing.
+
+## Local Whisper
+
+Local Whisper is enabled in default desktop builds. First verify that native
+prerequisites are installed:
+
+```sh
+command -v cmake
+```
+
+If that command prints nothing, install CMake before building the desktop app.
+On macOS, `brew install cmake` is one common path.
+
+Verify that the desktop backend and native Whisper dependency can compile:
+
+```sh
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-run
+```
+
+Run the real local Whisper smoke against an existing whisper.cpp model file and
+WAV artifact:
+
+```sh
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin \
+CURIOSITY_WHISPER_WAV=/absolute/path/to/audio.wav \
+cargo run -p curiosity-transcription --features whisper-rs --bin whisper-smoke
+```
+
+The smoke exits zero only when real transcription passes. Missing env paths,
+disabled native features, unreadable files, unsupported audio, and backend
+failures exit nonzero so they are not counted as success.
+
+Run the desktop app with local Whisper enabled:
+
+```sh
+cd apps/desktop
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
+```
+
+The desktop settings pane can save a local Whisper model path. If no path is
+saved, the desktop `transcribe_meeting` command falls back to
+`CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
+default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
+unavailable-backend state. If the effective model path is missing, the UI should
+show an explicit missing-model state. Model download and management are not yet
+implemented.
+
+Copy `.env.example` for the optional Whisper smoke environment variables and
+hosted/provider secret placeholders. Ollama base URL and model are configured in
+the desktop Settings pane; the values in `.env.example` are documentation of the
+current local defaults, not runtime env inputs.
+
+## Local Ollama Summaries
+
+Structured summaries can run locally through Ollama after a transcript exists.
+Start Ollama, install the selected local model, then use the Settings pane to
+test the configured server and model:
+
+```sh
+ollama serve
+ollama pull qwen3.6:27b
+```
+
+`gemma4:31b` is also listed as a local candidate. The desktop defaults are
+`http://127.0.0.1:11434` and `qwen3.6:27b`, and store settings are the runtime
+source of truth. The local Ollama path accepts localhost/loopback URLs only; use
+the hosted provider path, disclosure gate, and explicit secrets for any
+networked provider.
+
+End-to-end expectation:
+
+1. Start `ollama serve`.
+2. Pull the chosen model, such as `ollama pull qwen3.6:27b`.
+3. Open Settings, confirm the Ollama base URL/model, and run the connection
+   test.
+4. Record and transcribe a meeting.
+5. Generate the summary from the selected meeting once transcript segments are
+   present.
 
 ## Privacy And Providers
 
-The default test suite and core local service flows are deterministic and hardware/network-free. They do not require:
+The default test suite and core local service flows are deterministic and
+hardware/network-free. They do not require:
 
 - Network access.
 - Calendar access.
@@ -84,18 +256,22 @@ Local analysis presets currently include Ollama model candidates:
 - `qwen3.6:27b`
 - `gemma4:31b`
 
-Hosted or networked analysis is gated. OpenAI-compatible hosted providers require explicit key selection and explicit transcript data disclosure confirmation before any provider call is made.
+Hosted or networked analysis is gated. OpenAI-compatible hosted providers
+require explicit key selection and explicit transcript data disclosure
+confirmation before any provider call is made.
 
-`deepseek-v3.2:cloud` and DeepSeek V3.2 Speciale are not local defaults. They are network/hosted options and must stay behind the hosted disclosure and key-selection gates.
+`deepseek-v3.2:cloud` and DeepSeek V3.2 Speciale are not local defaults. They
+are network/hosted options and must stay behind the hosted disclosure and
+key-selection gates.
 
 ## Contributor Notes
 
-- Keep deterministic tests independent of hardware, network, calendars, hosted model keys, and local Ollama availability.
-- Use fake capture, fake transcriber, fake analyzer, or static provider clients for regular tests.
-- Hardware smoke tests should fail loud with `NotRun`, `Skipped`, `Unavailable`, or permission-denied status when prerequisites are missing.
+- Keep deterministic tests independent of hardware, network, calendars, hosted
+  model keys, local Ollama availability, and local Whisper model files.
+- Use fake capture, fake transcriber, fake analyzer, or static provider clients
+  for regular tests.
+- Hardware smoke tests should fail loud with skipped, unavailable,
+  permission-denied, or failed status when prerequisites are missing.
 - Do not silently convert skipped hardware/provider behavior into passing tests.
-- Prefer small, crate-local changes that preserve the current service/API contracts until the desktop UI exists.
-
-## Roadmap
-
-Near-term gaps are wiring real macOS capture, adding a real local transcription backend such as Whisper, building the desktop UI, adding calendar integration behind explicit permissions, and creating production packaging. Until those land, treat this repository as the local-first Rust foundation for Curiosity Transcripts rather than a shippable desktop application.
+- Prefer small, crate-local changes that preserve the current service/API
+  contracts while the desktop shell matures.
