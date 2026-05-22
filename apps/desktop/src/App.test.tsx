@@ -210,7 +210,7 @@ describe("desktop command-state mapping", () => {
     expect(mapAnalysisDisclosure(null)).toEqual({
       label: "No summary",
       tone: "muted",
-      detail: "Summary command is not wired into the desktop shell yet.",
+      detail: "Generate a local Ollama summary after a transcript is ready.",
     });
     expect(
       mapAnalysisDisclosure({
@@ -334,7 +334,7 @@ describe("desktop workspace shell", () => {
     );
     expect(screen.getByRole("button", { name: "Generate summary" })).toHaveAttribute(
       "title",
-      "Summary command is not wired into the desktop shell yet.",
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
     );
     expect(screen.getAllByText("No summary").length).toBeGreaterThan(0);
     expect(screen.queryByText(/fake-local \/ fixture-summary/i)).not.toBeInTheDocument();
@@ -836,6 +836,168 @@ describe("desktop workspace shell", () => {
       },
     ]);
     expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
+  });
+
+  it("tests configured Ollama reachability from settings", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return {
+        state: "Available",
+        message: "Ollama is reachable and qwen3.6:27b is installed.",
+        setupGuidance: "",
+      } as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Test Ollama" }));
+
+    expect(calls).toEqual([
+      {
+        command: "test_ollama_connection",
+        args: {
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+        },
+      },
+    ]);
+    expect(screen.getByText("Ollama is reachable and qwen3.6:27b is installed.")).toBeInTheDocument();
+  });
+
+  it("clears successful Ollama reachability feedback when tested inputs change", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        state: "Available",
+        message: "Ollama is reachable and qwen3.6:27b is installed.",
+        setupGuidance: "",
+      }) as never;
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Test Ollama" }));
+    await user.clear(screen.getByLabelText("Ollama model"));
+    await user.type(screen.getByLabelText("Ollama model"), "gemma4:31b");
+
+    expect(screen.queryByText("Ollama is reachable and qwen3.6:27b is installed.")).not.toBeInTheDocument();
+  });
+
+  it("generates a local summary for a selected meeting with transcript segments", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      meetings: initial.meetings.map((meeting) =>
+        meeting.id === "circuit-review"
+          ? {
+              ...meeting,
+              analysis: {
+                provider: "ollama",
+                modelName: "qwen3.6:27b",
+                networkUsed: false,
+                disclosureRequired: false,
+                disclosureConfirmed: false,
+                summary: "Local Ollama summary",
+                createdAtMs: 1_700_000_002_000,
+                promptTemplateVersion: "summary-v1",
+              },
+            }
+          : meeting,
+      ),
+      analysisCommand: {
+        meetingId: "circuit-review",
+        state: "Complete",
+        analysis: {
+          provider: "ollama",
+          modelName: "qwen3.6:27b",
+          networkUsed: false,
+          summary: "Local Ollama summary",
+        },
+        failure: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Generate summary" }));
+
+    expect(calls).toEqual([
+      {
+        command: "generate_summary",
+        args: { meetingId: "circuit-review" },
+      },
+    ]);
+    expect(screen.getByText("Local Ollama summary")).toBeInTheDocument();
+    expect(screen.getAllByText(/ollama \/ qwen3.6:27b/i).length).toBeGreaterThan(0);
+  });
+
+  it("shows Ollama setup failures returned by summary generation", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot();
+    const returned = connectedSnapshot({
+      analysisCommand: {
+        meetingId: "circuit-review",
+        state: "Failed",
+        analysis: null,
+        failure: {
+          code: "ollama_unavailable",
+          message: "Ollama is unavailable: connection refused",
+          setupGuidance: "Start Ollama with `ollama serve`, install the selected model, then retry.",
+        },
+      },
+    });
+    const fetchCommand: CommandFetcher = async () => returned as never;
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Generate summary" }));
+
+    expect(screen.getByText("Ollama is unavailable: connection refused")).toBeInTheDocument();
+    expect(screen.getByText("Start Ollama with `ollama serve`, install the selected model, then retry.")).toBeInTheDocument();
+  });
+
+  it("keeps summary generation disabled when the selected meeting has no transcript segments", () => {
+    const initial = connectedSnapshot({
+      meetings: [
+        {
+          ...getMockDesktopSnapshot().meetings[0],
+          segments: [],
+          transcriptText: "",
+          transcriptState: "Unavailable",
+        },
+      ],
+      selectedMeetingId: "circuit-review",
+    });
+
+    render(<App snapshot={initial} fetchCommand={async () => initial as never} />);
+
+    expect(screen.getByRole("button", { name: "Generate summary" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Generate summary" })).toHaveAttribute(
+      "title",
+      "Generate a transcript before requesting a summary.",
+    );
   });
 
   it("shows in-flight command state and prevents double submitting recording start", async () => {

@@ -49,6 +49,12 @@ export interface WhisperModelPathTestResult {
   setupGuidance: string;
 }
 
+export interface OllamaConnectionTestResult {
+  state: "Available" | "Unavailable";
+  message: string;
+  setupGuidance: string;
+}
+
 export interface ExportCommandState {
   state: "idle" | "exporting" | "exported" | "failed";
   meetingId?: string | null;
@@ -76,12 +82,27 @@ export interface AnalysisDisclosureState {
   networkUsed: boolean;
   disclosureRequired: boolean;
   disclosureConfirmed: boolean;
+  summary?: string | null;
+  createdAtMs?: number | null;
+  promptTemplateVersion?: string | null;
 }
 
 export interface CommandFailureView {
   code: string;
   message: string;
   setupGuidance: string;
+}
+
+export interface AnalysisCommandView {
+  meetingId: string;
+  state: "Complete" | "Failed";
+  analysis?: {
+    provider: string;
+    modelName: string;
+    networkUsed: boolean;
+    summary: string;
+  } | null;
+  failure?: CommandFailureView | null;
 }
 
 export interface TranscriptionCommandView {
@@ -137,6 +158,7 @@ export interface DesktopSnapshot {
   transcription: TranscriptionCommandView | null;
   exportCommand: ExportCommandState;
   deleteCommand: DeleteCommandState;
+  analysisCommand: AnalysisCommandView | null;
 }
 
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -373,7 +395,7 @@ export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): St
     return {
       label: "No summary",
       tone: "muted",
-      detail: "Summary command is not wired into the desktop shell yet.",
+      detail: "Generate a local Ollama summary after a transcript is ready.",
     };
   }
   if (state.networkUsed && state.disclosureRequired && !state.disclosureConfirmed) {
@@ -476,6 +498,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
     deleteCommand: {
       state: "idle",
     },
+    analysisCommand: null,
   };
 }
 
@@ -515,6 +538,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
     deleteCommand: {
       state: "idle",
     },
+    analysisCommand: null,
   };
 }
 

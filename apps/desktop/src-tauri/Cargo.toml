@@ -10,6 +10,7 @@ system-audio-screencapturekit = ["curiosity-audio/system-audio-screencapturekit"
 
 [dependencies]
 curiosity-app = { path = "../../../crates/app" }
+curiosity-analysis = { path = "../../../crates/analysis" }
 curiosity-audio = { path = "../../../crates/audio" }
 curiosity-domain = { path = "../../../crates/domain" }
 curiosity-store = { path = "../../../crates/store" }
@@ -17,6 +18,8 @@ curiosity-transcription = { path = "../../../crates/transcription" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+ureq = { version = "2", default-features = false, features = ["json"] }
+url = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

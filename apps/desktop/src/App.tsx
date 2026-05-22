@@ -24,6 +24,7 @@ import {
   mapRecordingState,
   mapTranscriptionState,
   MeetingSearchResult,
+  OllamaConnectionTestResult,
   searchMeetings,
   Tone,
   WhisperModelPathTestResult,
@@ -43,7 +44,9 @@ type PendingCommand =
   | "rename"
   | "export"
   | "delete"
+  | "summary"
   | "test-whisper"
+  | "test-ollama"
   | "save-whisper"
   | "save-analysis"
   | null;
@@ -190,7 +193,16 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const failedDeleteMeetingId =
     currentSnapshot.deleteCommand.state === "failed" ? currentSnapshot.deleteCommand.meetingId?.trim() : undefined;
   const analysisDisclosure = selectedMeeting ? mapAnalysisDisclosure(selectedMeeting.analysis) : null;
-  const summaryCommandUnavailable = "Summary command is not wired into the desktop shell yet.";
+  const selectedAnalysisCommand =
+    selectedMeeting && currentSnapshot.analysisCommand?.meetingId === selectedMeeting.id
+      ? currentSnapshot.analysisCommand
+      : null;
+  const summaryFailure = selectedAnalysisCommand?.state === "Failed" ? selectedAnalysisCommand.failure : null;
+  const summaryDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    commandBusy ||
+    selectedMeeting.segments.length === 0;
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
@@ -269,6 +281,15 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     });
   }
 
+  function generateSelectedSummary() {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("summary", "generate_summary", {
+      meetingId: selectedMeeting.id,
+    });
+  }
+
   function retryFailedDelete() {
     if (!failedDeleteMeetingId) {
       return;
@@ -325,6 +346,40 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     } finally {
       setPendingCommand(null);
     }
+  }
+
+  async function testOllamaConnection() {
+    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("test-ollama");
+    setCommandError(null);
+    setSettingsFeedback(null);
+    try {
+      const result = await fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", {
+        baseUrl: settingsForm.ollamaBaseUrl,
+        model: settingsForm.ollamaModel,
+      });
+      setSettingsFeedback({
+        tone: result.state === "Available" ? "ready" : "blocked",
+        message: result.message || result.setupGuidance,
+      });
+    } catch (error) {
+      setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  function updateOllamaBaseUrl(value: string) {
+    setSettingsForm((current) => ({ ...current, ollamaBaseUrl: value }));
+    setSettingsFeedback(null);
+  }
+
+  function updateOllamaModel(value: string) {
+    setSettingsForm((current) => ({ ...current, ollamaModel: value }));
+    setSettingsFeedback(null);
   }
 
   function saveWhisperModelPath() {
@@ -391,6 +446,15 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
       : selectedMeeting
         ? "Delete app-private data for the selected meeting."
         : "Select a meeting before deleting private data.";
+  const summaryButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : !selectedMeeting
+        ? "Select a meeting before requesting a summary."
+        : selectedMeeting.segments.length === 0
+          ? "Generate a transcript before requesting a summary."
+          : "Generate a local Ollama summary for the selected meeting.";
 
   return (
     <main className="app-shell">
@@ -481,6 +545,12 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 Retry delete
               </button>
             ) : null}
+          </div>
+        ) : null}
+        {summaryFailure ? (
+          <div role="status" className="command-outcome blocked">
+            <strong>{summaryFailure.message}</strong>
+            {summaryFailure.setupGuidance ? <span>{summaryFailure.setupGuidance}</span> : null}
           </div>
         ) : null}
 
@@ -583,15 +653,19 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                         value={analysisDisclosure.detail}
                         tone={analysisDisclosure.tone}
                       />
+                      {selectedMeeting.analysis?.summary ? (
+                        <p className="summary-text">{selectedMeeting.analysis.summary}</p>
+                      ) : null}
                     </div>
                     <button
                       type="button"
                       className="button"
-                      disabled
-                      title={summaryCommandUnavailable}
+                      disabled={summaryDisabled}
+                      title={summaryButtonTitle}
+                      onClick={generateSelectedSummary}
                     >
                       <FileText size={16} weight="regular" />
-                      Generate summary
+                      {pendingCommand === "summary" ? "Generating summary" : "Generate summary"}
                     </button>
                   </section>
                 ) : null}
@@ -677,9 +751,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 <input
                   id="ollama-base-url"
                   value={settingsForm.ollamaBaseUrl}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({ ...current, ollamaBaseUrl: event.target.value }))
-                  }
+                  onChange={(event) => updateOllamaBaseUrl(event.target.value)}
                   placeholder="http://127.0.0.1:11434"
                   disabled={settingsDisabled}
                 />
@@ -689,22 +761,31 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 <input
                   id="ollama-model"
                   value={settingsForm.ollamaModel}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({ ...current, ollamaModel: event.target.value }))
-                  }
+                  onChange={(event) => updateOllamaModel(event.target.value)}
                   placeholder="qwen3.6:27b"
                   disabled={settingsDisabled}
                 />
               </label>
-              <button
-                type="button"
-                className="button"
-                disabled={settingsDisabled}
-                title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
-                onClick={saveAnalysisSettings}
-              >
-                {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
-              </button>
+              <div className="settings-buttons">
+                <button
+                  type="button"
+                  className="button"
+                  disabled={settingsDisabled}
+                  title={commandSurfaceReady ? "Test the configured local Ollama server and model." : commandUnavailableTitle}
+                  onClick={testOllamaConnection}
+                >
+                  {pendingCommand === "test-ollama" ? "Testing Ollama" : "Test Ollama"}
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={settingsDisabled}
+                  title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
+                  onClick={saveAnalysisSettings}
+                >
+                  {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
+                </button>
+              </div>
               {settingsFeedback ? (
                 <p className={`settings-feedback ${settingsFeedback.tone}`} role="status">
                   {settingsFeedback.message}

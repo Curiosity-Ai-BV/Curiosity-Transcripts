@@ -1,11 +1,18 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
+use curiosity_analysis::{
+    recommended_analysis_model_presets, AnalysisClientError, AnalysisProviderKind, OllamaAnalyzer,
+    ProviderTextClient,
+};
 use curiosity_app::{
-    delete_meeting_command, export_meeting_json_command, list_meetings_dto, meeting_detail_dto,
-    rename_meeting_command, search_meetings_dto, AppPermissionState, CommandRecordingDto,
-    CommandRecordingState, DeletedMeetingDto, ExportedMeetingDto, MeetingSearchResultDto,
-    RawAudioRetentionPolicy, StorageLocationDto,
+    delete_meeting_command, export_meeting_json_command, generate_summary_command,
+    list_meetings_dto, meeting_detail_dto, rename_meeting_command, search_meetings_dto,
+    AnalysisCommandDto, AnalysisCommandState, AppPermissionState, CommandRecordingDto,
+    CommandRecordingState, DeletedMeetingDto, ExportedMeetingDto, MeetingAnalysisDto,
+    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureError, CapturePermission, MacosMicrophoneWavRecording,
@@ -25,6 +32,7 @@ use curiosity_transcription::{
 };
 use serde::Serialize;
 use tauri::Manager;
+use url::Url;
 
 fn main() {
     tauri::Builder::default()
@@ -35,10 +43,12 @@ fn main() {
             rename_meeting,
             export_meeting_json,
             delete_meeting,
+            generate_summary,
             get_settings,
             save_whisper_model_path,
             save_analysis_settings,
             test_whisper_model_path,
+            test_ollama_connection,
             audio_smoke_status,
             system_audio_smoke_recording,
             start_microphone_recording,
@@ -121,6 +131,25 @@ fn delete_meeting(
 }
 
 #[tauri::command]
+fn generate_summary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let command = generate_summary_for_app_root(&app_root, &meeting_id)?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_analysis = Some(command);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<AppSettingsView, String> {
     let app_root = app
         .path()
@@ -169,6 +198,11 @@ fn save_analysis_settings(
 #[tauri::command]
 fn test_whisper_model_path(path: String) -> WhisperModelPathTestView {
     test_whisper_model_path_value(&path)
+}
+
+#[tauri::command]
+fn test_ollama_connection(base_url: String, model: String) -> OllamaConnectionTestView {
+    test_ollama_connection_value(&base_url, &model, &UreqOllamaHttpTransport)
 }
 
 #[tauri::command]
@@ -396,6 +430,9 @@ fn desktop_snapshot_for_app_root_with_state(
                 network_used: analysis.network_used,
                 disclosure_required: analysis.network_used,
                 disclosure_confirmed: false,
+                summary: analysis.summary,
+                created_at_ms: analysis.created_at_ms,
+                prompt_template_version: analysis.prompt_template_version,
             }),
         });
     }
@@ -419,6 +456,7 @@ fn desktop_snapshot_for_app_root_with_state(
         transcription: command_state.last_transcription.clone(),
         export_command: command_state.last_export.clone().unwrap_or_default(),
         delete_command: command_state.last_delete.clone().unwrap_or_default(),
+        analysis_command: command_state.last_analysis.clone(),
     })
 }
 
@@ -514,6 +552,61 @@ fn delete_meeting_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
+fn generate_summary_for_app_root(
+    app_root: &Path,
+    meeting_id: &str,
+) -> Result<AnalysisCommandView, String> {
+    let settings = app_settings_for_app_root(app_root)?;
+    let client =
+        LocalOllamaTextClient::new(settings.ollama_base_url.clone(), UreqOllamaHttpTransport);
+    generate_summary_command_for_app_root_with_client(
+        app_root,
+        meeting_id,
+        client,
+        settings.ollama_model,
+        current_timestamp_ms(),
+    )
+}
+
+fn generate_summary_command_for_app_root_with_client<C>(
+    app_root: &Path,
+    meeting_id: &str,
+    client: C,
+    model_name: impl Into<String>,
+    created_at_ms: u64,
+) -> Result<AnalysisCommandView, String>
+where
+    C: ProviderTextClient,
+{
+    let store = open_store(app_root)?;
+    let analyzer = OllamaAnalyzer::new(client, model_name, "summary-v1");
+    generate_summary_command(&store, &analyzer, meeting_id, created_at_ms)
+        .map(AnalysisCommandView::from_command)
+        .map_err(|error| error.to_string())
+}
+
+fn generate_summary_for_app_root_with_client<C>(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+    client: C,
+    model_name: impl Into<String>,
+    created_at_ms: u64,
+) -> Result<DesktopSnapshot, String>
+where
+    C: ProviderTextClient,
+{
+    let command = generate_summary_command_for_app_root_with_client(
+        app_root,
+        meeting_id,
+        client,
+        model_name,
+        created_at_ms,
+    )?;
+    command_state.last_analysis = Some(command);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
 fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf {
     settings
         .export_directory
@@ -532,6 +625,7 @@ struct DesktopCommandState {
     last_transcription: Option<TranscriptionCommandView>,
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
+    last_analysis: Option<AnalysisCommandView>,
 }
 
 impl DesktopCommandState {
@@ -547,6 +641,7 @@ impl DesktopCommandState {
             last_transcription: self.last_transcription.clone(),
             last_export: self.last_export.clone(),
             last_delete: self.last_delete.clone(),
+            last_analysis: self.last_analysis.clone(),
         }
     }
 }
@@ -558,6 +653,7 @@ struct DesktopCommandSnapshotState {
     last_transcription: Option<TranscriptionCommandView>,
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
+    last_analysis: Option<AnalysisCommandView>,
 }
 
 #[derive(Clone)]
@@ -1243,6 +1339,262 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
     }
 }
 
+#[derive(Clone)]
+struct LocalOllamaTextClient<T> {
+    base_url: String,
+    transport: T,
+}
+
+impl<T> LocalOllamaTextClient<T> {
+    fn new(base_url: impl Into<String>, transport: T) -> Self {
+        Self {
+            base_url: base_url.into(),
+            transport,
+        }
+    }
+}
+
+impl<T> ProviderTextClient for LocalOllamaTextClient<T>
+where
+    T: OllamaHttpTransport,
+{
+    fn complete(&self, model_name: &str, prompt: &str) -> Result<String, AnalysisClientError> {
+        validate_local_ollama_model(model_name)?;
+        let url = local_ollama_endpoint(&self.base_url, "/api/generate")?;
+        let body = serde_json::json!({
+            "model": model_name,
+            "prompt": prompt,
+            "stream": false,
+            "format": "json",
+            "options": {
+                "temperature": 0,
+                "top_p": 0.1,
+                "seed": 1,
+            },
+        });
+        let response = self
+            .transport
+            .post_json(&url, body)
+            .map_err(AnalysisClientError::from)?;
+        response
+            .get("response")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                AnalysisClientError::Transport(
+                    "Ollama /api/generate response did not include a response string.".to_string(),
+                )
+            })
+    }
+}
+
+trait OllamaHttpTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, OllamaHttpError>;
+    fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OllamaHttpError {
+    Unavailable(String),
+    Http { status: u16, body: String },
+    MalformedResponse(String),
+}
+
+impl std::fmt::Display for OllamaHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) | Self::MalformedResponse(message) => write!(f, "{message}"),
+            Self::Http { status, body } => write!(f, "Ollama returned HTTP {status}: {body}"),
+        }
+    }
+}
+
+impl From<OllamaHttpError> for AnalysisClientError {
+    fn from(error: OllamaHttpError) -> Self {
+        match error {
+            OllamaHttpError::Unavailable(message) => Self::Unavailable(message),
+            OllamaHttpError::Http { .. } | OllamaHttpError::MalformedResponse(_) => {
+                Self::Transport(error.to_string())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UreqOllamaHttpTransport;
+
+impl OllamaHttpTransport for UreqOllamaHttpTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, OllamaHttpError> {
+        ollama_ureq_agent()
+            .post(url)
+            .send_json(body)
+            .map_err(ollama_http_error_from_ureq)?
+            .into_json()
+            .map_err(|error| {
+                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
+            })
+    }
+
+    fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError> {
+        ollama_ureq_agent()
+            .get(url)
+            .call()
+            .map_err(ollama_http_error_from_ureq)?
+            .into_json()
+            .map_err(|error| {
+                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
+            })
+    }
+}
+
+fn ollama_ureq_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_write(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(120))
+        .build()
+}
+
+fn ollama_http_error_from_ureq(error: ureq::Error) -> OllamaHttpError {
+    match error {
+        ureq::Error::Status(code, response) => {
+            let status_text = response.status_text().to_string();
+            let body = response.into_string().unwrap_or_else(|error| {
+                format!("{status_text}; read response body failed: {error}")
+            });
+            let body = body.trim();
+            OllamaHttpError::Http {
+                status: code,
+                body: if body.is_empty() {
+                    status_text
+                } else {
+                    body.to_string()
+                },
+            }
+        }
+        ureq::Error::Transport(error) => OllamaHttpError::Unavailable(error.to_string()),
+    }
+}
+
+fn test_ollama_connection_value<T>(
+    base_url: &str,
+    model_name: &str,
+    transport: &T,
+) -> OllamaConnectionTestView
+where
+    T: OllamaHttpTransport,
+{
+    if let Err(error) = validate_local_ollama_model(model_name) {
+        return OllamaConnectionTestView::unavailable(
+            error.to_string(),
+            "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
+        );
+    }
+    let url = match local_ollama_endpoint(base_url, "/api/tags") {
+        Ok(url) => url,
+        Err(error) => {
+            return OllamaConnectionTestView::unavailable(
+                error.to_string(),
+                "Use a local Ollama base URL such as http://127.0.0.1:11434.",
+            );
+        }
+    };
+    let response = match transport.get_json(&url) {
+        Ok(response) => response,
+        Err(error) => {
+            return OllamaConnectionTestView::unavailable(
+                format!("Ollama is unavailable: {error}"),
+                "Start Ollama with `ollama serve`, then retry.",
+            );
+        }
+    };
+    let installed = response
+        .get("models")
+        .and_then(|models| models.as_array())
+        .map(|models| {
+            models.iter().any(|model| {
+                model
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .map(|name| name == model_name)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if installed {
+        OllamaConnectionTestView {
+            state: "Available".to_string(),
+            message: format!("Ollama is reachable and {model_name} is installed."),
+            setup_guidance: String::new(),
+        }
+    } else {
+        OllamaConnectionTestView::unavailable(
+            format!("Ollama is reachable, but {model_name} is not installed."),
+            format!("Install the selected model with `ollama pull {model_name}`, then retry."),
+        )
+    }
+}
+
+fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientError> {
+    let trimmed = model_name.trim();
+    if trimmed.is_empty() {
+        return Err(AnalysisClientError::Transport(
+            "Choose a local Ollama model before requesting analysis.".to_string(),
+        ));
+    }
+    let is_hosted = trimmed.ends_with(":cloud")
+        || recommended_analysis_model_presets().iter().any(|preset| {
+            preset.provider_kind != AnalysisProviderKind::OllamaLocal
+                && (preset.model_tag == trimmed || preset.id == trimmed)
+        });
+    if is_hosted {
+        return Err(AnalysisClientError::Transport(
+            "hosted or cloud model tags cannot use the local Ollama privacy path.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisClientError> {
+    let mut url = Url::parse(base_url.trim()).map_err(|error| {
+        AnalysisClientError::Transport(format!("Ollama base URL is invalid: {error}"))
+    })?;
+    let is_loopback = match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host
+            .parse::<IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false),
+        None => false,
+    };
+    if !is_loopback {
+        return Err(AnalysisClientError::Transport(
+            "Ollama base URL must use localhost or a loopback IP address for local analysis."
+                .to_string(),
+        ));
+    }
+    match url.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(AnalysisClientError::Transport(
+                "Ollama base URL must use http or https.".to_string(),
+            ))
+        }
+    }
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
 fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1336,6 +1688,7 @@ struct DesktopSnapshot {
     transcription: Option<TranscriptionCommandView>,
     export_command: ExportCommandState,
     delete_command: DeleteCommandState,
+    analysis_command: Option<AnalysisCommandView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1377,6 +1730,24 @@ impl WhisperModelPathTestView {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaConnectionTestView {
+    state: String,
+    message: String,
+    setup_guidance: String,
+}
+
+impl OllamaConnectionTestView {
+    fn unavailable(message: impl Into<String>, setup_guidance: impl Into<String>) -> Self {
+        Self {
+            state: "Unavailable".to_string(),
+            message: message.into(),
+            setup_guidance: setup_guidance.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CaptureStatus {
@@ -1412,6 +1783,50 @@ struct CommandFailureView {
     code: String,
     message: String,
     setup_guidance: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisCommandView {
+    meeting_id: String,
+    state: AnalysisCommandState,
+    analysis: Option<AnalysisResultView>,
+    failure: Option<CommandFailureView>,
+}
+
+impl AnalysisCommandView {
+    fn from_command(command: AnalysisCommandDto) -> Self {
+        Self {
+            meeting_id: command.meeting_id,
+            state: command.state,
+            analysis: command.analysis.map(AnalysisResultView::from_analysis),
+            failure: command.failure.map(|failure| CommandFailureView {
+                code: failure.code,
+                message: failure.message,
+                setup_guidance: failure.setup_guidance,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisResultView {
+    provider: String,
+    model_name: String,
+    network_used: bool,
+    summary: String,
+}
+
+impl AnalysisResultView {
+    fn from_analysis(analysis: MeetingAnalysisDto) -> Self {
+        Self {
+            provider: analysis.provider,
+            model_name: analysis.model_name,
+            network_used: analysis.network_used,
+            summary: analysis.summary,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1563,6 +1978,9 @@ struct AnalysisDisclosureState {
     network_used: bool,
     disclosure_required: bool,
     disclosure_confirmed: bool,
+    summary: String,
+    created_at_ms: u64,
+    prompt_template_version: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1670,6 +2088,233 @@ mod tests {
         assert_eq!(settings.ollama_model, "gemma4:31b");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_ollama_client_posts_non_streaming_json_generate_request() {
+        let transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Local summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[]}"}"#,
+        );
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport.clone());
+
+        let response = client
+            .complete("qwen3.6:27b", "summarize locally")
+            .expect("complete with fake local transport");
+
+        assert!(response.contains("Local summary"));
+        let request = transport.last_generate_request().expect("generate request");
+        assert_eq!(request.url, "http://127.0.0.1:11434/api/generate");
+        assert_eq!(request.body["model"], "qwen3.6:27b");
+        assert_eq!(request.body["prompt"], "summarize locally");
+        assert_eq!(request.body["stream"], false);
+        assert_eq!(request.body["format"], "json");
+        assert_eq!(request.body["options"]["temperature"], 0);
+    }
+
+    #[test]
+    fn local_ollama_client_rejects_non_loopback_base_url_before_transport_call() {
+        let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
+        let client = LocalOllamaTextClient::new("http://192.168.1.20:11434", transport.clone());
+
+        let error = client
+            .complete("qwen3.6:27b", "summarize locally")
+            .expect_err("non-loopback Ollama should be rejected");
+
+        assert!(error.to_string().contains("loopback"));
+        assert_eq!(transport.generate_call_count(), 0);
+    }
+
+    #[test]
+    fn local_ollama_client_rejects_cloud_model_tags_before_transport_call() {
+        let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
+        let client = LocalOllamaTextClient::new("http://localhost:11434", transport.clone());
+
+        let error = client
+            .complete("deepseek-v3.2:cloud", "summarize locally")
+            .expect_err("cloud tags cannot use the local privacy path");
+
+        assert!(error.to_string().contains("hosted"));
+        assert_eq!(transport.generate_call_count(), 0);
+    }
+
+    #[test]
+    fn test_ollama_connection_reports_reachable_configured_model_without_live_server() {
+        let transport = RecordingOllamaTransport::tags_response(
+            r#"{"models":[{"name":"qwen3.6:27b"},{"name":"gemma4:31b"}]}"#,
+        );
+
+        let result =
+            test_ollama_connection_value("http://127.0.0.1:11434", "qwen3.6:27b", &transport);
+
+        assert_eq!(result.state, "Available");
+        assert!(result.message.contains("qwen3.6:27b"));
+    }
+
+    #[test]
+    fn test_ollama_connection_reports_missing_model_without_live_server() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#);
+
+        let result =
+            test_ollama_connection_value("http://127.0.0.1:11434", "qwen3.6:27b", &transport);
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result.setup_guidance.contains("ollama pull qwen3.6:27b"));
+    }
+
+    #[test]
+    fn test_ollama_connection_includes_status_body_when_tags_returns_http_error() {
+        let transport =
+            RecordingOllamaTransport::tags_http_error(500, r#"{"error":"tags unavailable"}"#);
+
+        let result =
+            test_ollama_connection_value("http://127.0.0.1:11434", "qwen3.6:27b", &transport);
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result.message.contains("HTTP 500"));
+        assert!(result.message.contains("tags unavailable"));
+    }
+
+    #[test]
+    fn generate_summary_command_persists_local_ollama_summary_in_snapshot() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "We decided to keep summaries local.",
+        );
+        let transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Local Ollama summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport);
+
+        let snapshot = generate_summary_for_app_root_with_client(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            client,
+            "qwen3.6:27b",
+            1_700_000_002_000,
+        )
+        .expect("generate summary snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["analysisCommand"]["state"], "Complete");
+        assert_eq!(
+            json["meetings"][0]["analysis"]["summary"],
+            "Local Ollama summary"
+        );
+        assert_eq!(json["meetings"][0]["analysis"]["networkUsed"], false);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn generate_summary_command_shows_unavailable_ollama_without_persisting_analysis() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Unavailable Summary",
+            "We need a visible setup failure.",
+        );
+        let transport = RecordingOllamaTransport::generate_error("connection refused");
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport);
+
+        let snapshot = generate_summary_for_app_root_with_client(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            client,
+            "qwen3.6:27b",
+            1_700_000_002_000,
+        )
+        .expect("failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "ollama_unavailable"
+        );
+        assert!(json["meetings"][0]["analysis"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn generate_summary_command_preserves_ollama_http_status_body_as_transport_failure() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Missing Model Summary",
+            "We need model-missing guidance from Ollama.",
+        );
+        let transport = RecordingOllamaTransport::generate_http_error(
+            404,
+            r#"{"error":"model 'qwen3.6:27b' not found"}"#,
+        );
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport);
+
+        let snapshot = generate_summary_for_app_root_with_client(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            client,
+            "qwen3.6:27b",
+            1_700_000_002_000,
+        )
+        .expect("failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "provider_transport_error"
+        );
+        assert!(json["analysisCommand"]["failure"]["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("model 'qwen3.6:27b' not found"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn generate_summary_command_rejects_missing_transcript_before_ollama_call() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "No Transcript", 1_000))
+            .expect("insert meeting");
+        drop(store);
+        let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport.clone());
+
+        let snapshot = generate_summary_for_app_root_with_client(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            client,
+            "qwen3.6:27b",
+            1_700_000_002_000,
+        )
+        .expect("missing transcript snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "no_transcript_segments"
+        );
+        assert_eq!(transport.generate_call_count(), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -2445,6 +3090,129 @@ mod tests {
                 )],
             )
             .expect("persist transcript");
+    }
+
+    #[derive(Clone)]
+    struct RecordingOllamaTransport {
+        state: std::sync::Arc<Mutex<RecordingOllamaTransportState>>,
+    }
+
+    #[derive(Default)]
+    struct RecordingOllamaTransportState {
+        generate_response: Option<Result<serde_json::Value, OllamaHttpError>>,
+        tags_response: Option<Result<serde_json::Value, OllamaHttpError>>,
+        generate_requests: Vec<RecordedOllamaRequest>,
+    }
+
+    #[derive(Clone)]
+    struct RecordedOllamaRequest {
+        url: String,
+        body: serde_json::Value,
+    }
+
+    impl RecordingOllamaTransport {
+        fn generate_response(json: &str) -> Self {
+            Self::new_with_generate(
+                serde_json::from_str(json)
+                    .map_err(|error| OllamaHttpError::MalformedResponse(error.to_string())),
+            )
+        }
+
+        fn generate_error(error: &str) -> Self {
+            Self::new_with_generate(Err(OllamaHttpError::Unavailable(error.to_string())))
+        }
+
+        fn generate_http_error(status: u16, body: &str) -> Self {
+            Self::new_with_generate(Err(OllamaHttpError::Http {
+                status,
+                body: body.to_string(),
+            }))
+        }
+
+        fn tags_response(json: &str) -> Self {
+            let state = RecordingOllamaTransportState {
+                tags_response: Some(
+                    serde_json::from_str(json)
+                        .map_err(|error| OllamaHttpError::MalformedResponse(error.to_string())),
+                ),
+                ..RecordingOllamaTransportState::default()
+            };
+            Self {
+                state: std::sync::Arc::new(Mutex::new(state)),
+            }
+        }
+
+        fn tags_http_error(status: u16, body: &str) -> Self {
+            let state = RecordingOllamaTransportState {
+                tags_response: Some(Err(OllamaHttpError::Http {
+                    status,
+                    body: body.to_string(),
+                })),
+                ..RecordingOllamaTransportState::default()
+            };
+            Self {
+                state: std::sync::Arc::new(Mutex::new(state)),
+            }
+        }
+
+        fn new_with_generate(response: Result<serde_json::Value, OllamaHttpError>) -> Self {
+            let state = RecordingOllamaTransportState {
+                generate_response: Some(response),
+                ..RecordingOllamaTransportState::default()
+            };
+            Self {
+                state: std::sync::Arc::new(Mutex::new(state)),
+            }
+        }
+
+        fn last_generate_request(&self) -> Option<RecordedOllamaRequest> {
+            self.state
+                .lock()
+                .expect("transport state")
+                .generate_requests
+                .last()
+                .cloned()
+        }
+
+        fn generate_call_count(&self) -> usize {
+            self.state
+                .lock()
+                .expect("transport state")
+                .generate_requests
+                .len()
+        }
+    }
+
+    impl OllamaHttpTransport for RecordingOllamaTransport {
+        fn post_json(
+            &self,
+            url: &str,
+            body: serde_json::Value,
+        ) -> Result<serde_json::Value, OllamaHttpError> {
+            let mut state = self.state.lock().expect("transport state");
+            state.generate_requests.push(RecordedOllamaRequest {
+                url: url.to_string(),
+                body,
+            });
+            state.generate_response.clone().unwrap_or_else(|| {
+                Err(OllamaHttpError::Unavailable(
+                    "missing generate response".to_string(),
+                ))
+            })
+        }
+
+        fn get_json(&self, _url: &str) -> Result<serde_json::Value, OllamaHttpError> {
+            self.state
+                .lock()
+                .expect("transport state")
+                .tags_response
+                .clone()
+                .unwrap_or_else(|| {
+                    Err(OllamaHttpError::Unavailable(
+                        "missing tags response".to_string(),
+                    ))
+                })
+        }
     }
 
     fn unique_test_root() -> std::path::PathBuf {
