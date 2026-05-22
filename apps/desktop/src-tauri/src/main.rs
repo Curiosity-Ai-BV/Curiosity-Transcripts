@@ -16,8 +16,8 @@ use curiosity_app::{
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
-    ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus, ScreenCaptureKitSystemAudioAdapter,
-    StreamKind, SystemAudioAdapterStatus,
+    MacosMicrophoneWavRecording, ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus,
+    ScreenCaptureKitSystemAudioAdapter, StreamKind, SystemAudioAdapterStatus,
 };
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
@@ -1009,18 +1009,50 @@ impl MicrophoneRecorderFactory for RealMicrophoneRecorderFactory {
         recording_id: &str,
         started_at_ms: u64,
     ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
-        let recorder = MacosDesktopWavRecording::start(audio_root, recording_id, started_at_ms)
-            .map_err(MicrophoneStartFailure::from_capture_error)?;
-        let sample_rate_hz = recorder.sample_rate_hz();
-        Ok(StartedMicrophoneRecording {
-            sample_rate_hz,
-            streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
-            recorder: Box::new(recorder),
-        })
+        match MacosDesktopWavRecording::start(audio_root, recording_id, started_at_ms) {
+            Ok(recorder) => {
+                let sample_rate_hz = recorder.sample_rate_hz();
+                Ok(StartedMicrophoneRecording {
+                    sample_rate_hz,
+                    streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
+                    recorder: Box::new(recorder),
+                })
+            }
+            Err(error) if can_fallback_to_microphone_recording(&error) => {
+                let recorder =
+                    MacosMicrophoneWavRecording::start(audio_root, recording_id, started_at_ms)
+                        .map_err(MicrophoneStartFailure::from_capture_error)?;
+                let sample_rate_hz = recorder.sample_rate_hz();
+                Ok(StartedMicrophoneRecording {
+                    sample_rate_hz,
+                    streams: vec![StreamKind::Microphone],
+                    recorder: Box::new(recorder),
+                })
+            }
+            Err(error) => Err(MicrophoneStartFailure::from_capture_error(error)),
+        }
     }
 }
 
+fn can_fallback_to_microphone_recording(error: &CaptureError) -> bool {
+    matches!(
+        error,
+        CaptureError::Unavailable(unavailable)
+            if unavailable.capability == CaptureCapability::SystemAudio
+    ) || matches!(
+        error,
+        CaptureError::PermissionDenied(permission)
+            if permission.permission == CapturePermission::SystemAudioScreenRecording
+    )
+}
+
 impl ActiveMicrophoneRecording for MacosDesktopWavRecording {
+    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
+        (*self).stop(ended_at_ms).map_err(|error| error.to_string())
+    }
+}
+
+impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
     fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
         (*self).stop(ended_at_ms).map_err(|error| error.to_string())
     }
@@ -1056,7 +1088,7 @@ fn start_microphone_recording_for_app_root(
     let session = RecordingSession::start(
         &recording_id,
         &meeting_id,
-        recording_source_for_streams(&streams),
+        required_recording_source_for_streams(&streams),
         started_at_ms,
         sample_rate_hz,
     );
@@ -1208,49 +1240,61 @@ fn complete_active_microphone_recording(
     let manifest = active.recorder.stop(ended_at_ms)?;
     let store = open_store(app_root)?;
     let mut completed_artifacts = Vec::new();
-    for stream in &active.streams {
-        let artifact = manifest
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.stream == *stream)
-            .ok_or_else(|| {
-                format!(
-                    "{} recording stopped without a WAV artifact",
-                    stream_label(*stream)
-                )
-            })?;
+    let mut completed_streams = Vec::new();
+    for artifact in &manifest.artifacts {
+        if !active.streams.contains(&artifact.stream) {
+            return Err(format!(
+                "{} artifact was not part of the active recording",
+                stream_label(artifact.stream)
+            ));
+        }
         let relative_path = artifact
             .path
             .strip_prefix(app_root)
             .map_err(|_| {
                 format!(
                     "{} artifact was written outside private app storage",
-                    stream_label(*stream)
+                    stream_label(artifact.stream)
                 )
             })?
             .to_string_lossy()
             .to_string();
-        let expected_path =
-            artifact_relative_path_for_stream(&active.meeting_id, &active.recording_id, *stream);
+        let expected_path = artifact_relative_path_for_stream(
+            &active.meeting_id,
+            &active.recording_id,
+            artifact.stream,
+        );
         if relative_path != expected_path {
             return Err(format!(
                 "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
-                stream_label(*stream)
+                stream_label(artifact.stream)
             ));
         }
+        completed_streams.push(artifact.stream);
         completed_artifacts.push(CompletedAudioArtifact {
-            artifact_id: artifact_id_for_stream(&active.recording_id, *stream),
+            artifact_id: artifact_id_for_stream(&active.recording_id, artifact.stream),
             sha256: artifact.sha256.clone(),
         });
     }
+    if !completed_streams.contains(&StreamKind::Microphone) {
+        return Err("microphone recording stopped without a WAV artifact".to_string());
+    }
+    let recording_source = recording_source_for_streams(&completed_streams);
     store
         .complete_recording_session_with_artifacts(
             &active.meeting_id,
             &active.recording_id,
             ended_at_ms,
+            recording_source,
             &completed_artifacts,
         )
         .map_err(|error| error.to_string())?;
+
+    let recovery_action = if completed_streams.contains(&StreamKind::SystemAudio) {
+        "Finalized local microphone and system audio WAV artifacts."
+    } else {
+        "Finalized local microphone WAV artifact."
+    };
 
     Ok(recording_dto(
         &active.meeting_id,
@@ -1258,7 +1302,7 @@ fn complete_active_microphone_recording(
         CommandRecordingState::Complete,
         AppPermissionState::Ready,
         microphone_storage_path(&active.meeting_id),
-        "Finalized local microphone and system audio WAV artifacts.",
+        recovery_action,
     ))
 }
 
@@ -1605,6 +1649,14 @@ fn recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
         (true, true) => RecordingSource::Mixed,
         (false, true) => RecordingSource::System,
         _ => RecordingSource::Microphone,
+    }
+}
+
+fn required_recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
+    if streams.contains(&StreamKind::Microphone) {
+        RecordingSource::Microphone
+    } else {
+        recording_source_for_streams(streams)
     }
 }
 
@@ -2403,8 +2455,8 @@ struct CaptureProbeStatus {
 mod tests {
     use super::*;
     use curiosity_audio::{
-        ArtifactManifest, AudioArtifactMetadata, DeviceIdentity, ManifestStatus, RecordingMetadata,
-        StreamKind,
+        ArtifactManifest, AudioArtifactMetadata, CapturePermissionError, CaptureUnavailable,
+        DeviceIdentity, ManifestStatus, RecordingMetadata, StreamKind,
     };
     use curiosity_domain::{
         AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,
@@ -3344,7 +3396,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_missing_system_artifact_does_not_leave_transcribable_mic_only_bundle() {
+    fn stop_missing_system_artifact_completes_transcribable_mic_only_recording() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
         let factory = PartialMixedRecorderFactory;
@@ -3365,21 +3417,45 @@ mod tests {
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
         let store = open_store(&root).expect("open store");
 
-        assert_eq!(json["recording"]["state"], "Interrupted");
-        assert_eq!(
-            json["recording"]["permission_state"],
-            "SystemAudioUnavailable"
-        );
+        assert_eq!(json["recording"]["state"], "Complete");
+        assert_eq!(json["recording"]["permission_state"], "Ready");
         assert_eq!(
             store.meeting_status(&meeting_id).expect("meeting status"),
-            "Failed"
+            "Complete"
         );
-        assert!(store
+        let artifacts = store
             .completed_wav_artifacts_for_transcription(&meeting_id)
             .expect("completed artifacts")
-            .is_empty());
+            .into_iter()
+            .map(|artifact| artifact.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts, vec!["RawMic"]);
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn system_audio_startup_errors_allow_microphone_fallback() {
+        let system_unavailable = CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "ScreenCaptureKit adapter unavailable",
+        ));
+        let system_permission = CaptureError::PermissionDenied(CapturePermissionError::denied(
+            CapturePermission::SystemAudioScreenRecording,
+        ));
+        let microphone_unavailable =
+            CaptureError::Unavailable(CaptureUnavailable::microphone("no input device"));
+        let microphone_permission = CaptureError::PermissionDenied(CapturePermissionError::denied(
+            CapturePermission::Microphone,
+        ));
+
+        assert!(can_fallback_to_microphone_recording(&system_unavailable));
+        assert!(can_fallback_to_microphone_recording(&system_permission));
+        assert!(!can_fallback_to_microphone_recording(
+            &microphone_unavailable
+        ));
+        assert!(!can_fallback_to_microphone_recording(
+            &microphone_permission
+        ));
     }
 
     #[test]

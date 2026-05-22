@@ -281,7 +281,7 @@ Capture spike acceptance:
 - On macOS, record `raw-mic.wav` and `raw-system.wav` when permissions allow.
 - Record sample rate, channel count, device identity, start time, and drift measurement metadata.
 - Show actionable failures for missing microphone or screen recording permission.
-- Prove system-audio failures are visible and actionable instead of silently producing microphone-only meeting transcripts.
+- Prove system-audio failures are visible and actionable while still preserving a microphone-only recording when the mic stream is usable.
 
 ### macOS
 
@@ -505,7 +505,7 @@ Acceptance:
 
 - On macOS hardware, manual capture can produce `raw-mic.wav` and, where permissions allow, `raw-system.wav`.
 - Metadata records device identity, sample rate, channel count, start time, and drift measurement.
-- Recording fails loudly when system audio is denied or unavailable; the MVP does not create mic-only meeting transcripts from the desktop flow.
+- Recording attempts microphone plus system audio, completes with both artifacts when available, and keeps a valid mic-only artifact when system audio is denied, unavailable, or silent.
 - Skipped hardware checks report "not run", never "passed".
 
 ### Phase 1: Minimal Workspace And Durable Store
@@ -674,7 +674,7 @@ Rules:
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| macOS system audio capture permissions are brittle | Core recording feature fails | Start with clear permission diagnostics and avoid silent microphone-only fallback |
+| macOS system audio capture permissions are brittle | Full-meeting capture degrades to microphone only | Start with clear permission diagnostics and preserve microphone-only recording when system capture is unavailable |
 | Capture drift or duplicated mic/system audio corrupts transcripts | Bad transcript quality | Record sync metadata, preserve raw channels, transcribe one selected/mixed stream, test duplicate speech fixtures |
 | Crash during recording loses meeting audio | Trust loss | DB-backed job state, chunk manifests, startup repair, idempotent processing |
 | Plain exported files conflict with privacy expectations | Accidental disclosure | Private storage by default, explicit export/vault mode, visible retention and deletion state |

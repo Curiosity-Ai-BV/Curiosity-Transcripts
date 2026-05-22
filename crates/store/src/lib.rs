@@ -538,6 +538,7 @@ impl Store {
         meeting_id: &str,
         recording_id: &str,
         ended_at_ms: u64,
+        recording_source: RecordingSource,
         artifacts: &[CompletedAudioArtifact],
     ) -> StoreResult<()> {
         if artifacts.is_empty() {
@@ -554,6 +555,7 @@ impl Store {
             meeting_id,
             recording_id,
             ended_at_ms,
+            recording_source,
             artifacts,
         );
         match result {
@@ -576,6 +578,7 @@ impl Store {
         meeting_id: &str,
         recording_id: &str,
         ended_at_ms: u64,
+        recording_source: RecordingSource,
         artifacts: &[CompletedAudioArtifact],
     ) -> StoreResult<()> {
         for artifact in artifacts {
@@ -603,10 +606,16 @@ impl Store {
             UPDATE recording_sessions
             SET status = 'Complete',
                 ended_at_ms = ?3,
+                source = ?4,
                 recovery_note = NULL
             WHERE id = ?1 AND meeting_id = ?2
             ",
-            params![recording_id, meeting_id, ended_at_ms],
+            params![
+                recording_id,
+                meeting_id,
+                ended_at_ms,
+                enum_name(recording_source)
+            ],
         )?;
         if self.conn.changes() == 0 {
             return Err(format!("recording session not found: {recording_id}").into());
@@ -780,7 +789,10 @@ impl Store {
                     continue;
                 };
                 if !artifact_path.exists() {
-                    if entries.len() > 1 {
+                    if artifact_kind_required_for_recording_source(
+                        &db_artifact.recording_source,
+                        &db_artifact.kind,
+                    ) {
                         report.conflicts.push(RepairConflict::MissingFile {
                             artifact_id: entry.artifact_id.clone(),
                             path: entry.path.clone(),
@@ -2678,5 +2690,15 @@ fn artifact_kinds_satisfy_recording_source(recording_source: &str, kinds: &[&str
         "System" => has_kind("RawSystem"),
         "Imported" => has_kind("Imported"),
         _ => false,
+    }
+}
+
+fn artifact_kind_required_for_recording_source(recording_source: &str, kind: &str) -> bool {
+    match recording_source {
+        "Mixed" => matches!(kind, "Mixed" | "RawMic" | "RawSystem"),
+        "Microphone" => kind == "RawMic",
+        "System" => kind == "RawSystem",
+        "Imported" => kind == "Imported",
+        _ => true,
     }
 }

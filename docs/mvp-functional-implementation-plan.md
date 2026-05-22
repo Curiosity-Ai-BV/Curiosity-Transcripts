@@ -10,7 +10,7 @@ This plan turns the current Rust foundation into a usable macOS-first MVP. It is
 - The desktop app uses Tauri 2 with a React/Vite frontend.
 - Default automated tests stay deterministic and do not require microphone hardware, Screen Recording permission, Whisper model files, Ollama, hosted keys, or network access.
 - Hardware and model checks are explicit smoke paths and must report `NotRun`, `Skipped`, `Unavailable`, or `PermissionDenied` honestly when prerequisites are missing.
-- System audio is implemented through a macOS-specific adapter where available. Full meeting recording should fail visibly when system audio is unavailable or denied, rather than silently falling back to microphone-only capture.
+- System audio is implemented through a macOS-specific adapter where available. Recording should always attempt microphone plus system audio, then complete with a valid mic-only artifact when system audio is unavailable, denied, or silent.
 - Local Whisper uses a user-provided model path first. Model download/management is separate from transcription execution.
 
 ## MVP Acceptance
@@ -55,7 +55,7 @@ Acceptance:
 
 - On macOS hardware, mic capture can write `raw-mic.wav` with sample rate, channel count, device identity, start time, duration, and sha256.
 - System-audio capture is wired through a macOS adapter where feasible; denied/unavailable states are typed and visible.
-- System-audio failures are typed and visible so the app does not silently create microphone-only meeting transcripts.
+- System-audio failures are typed and visible while recording still preserves a usable microphone-only transcript path.
 - Existing fake recording tests continue to pass.
 
 ## Slice 3: Desktop UI

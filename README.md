@@ -119,9 +119,10 @@ CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:sys
 ```
 
 Plain `npm run tauri:dev` still builds the desktop shell and local Whisper
-backend, but recording will fail loudly if the system-audio backend is not
-compiled in. That is intentional so the app does not silently create transcripts
-that only contain your microphone side of the meeting.
+backend. In that build, recording falls back to microphone-only capture because
+the system-audio backend is not compiled in. The normal recording flow always
+attempts mic plus system audio where the backend and macOS permissions allow it,
+then keeps a valid mic-only artifact when no system audio is available.
 
 In debug/test Tauri builds, a harness can invoke `seed_dev_fixture` to create
 one deterministic transcript-ready meeting in app-private storage. Release

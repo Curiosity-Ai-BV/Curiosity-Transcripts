@@ -614,6 +614,92 @@ fn startup_repair_rejects_partial_mixed_artifact_sets_without_recovering_rows_or
 }
 
 #[test]
+fn startup_repair_recovers_required_mic_when_optional_system_artifact_is_missing() {
+    let root = test_root("repair-optional-system-missing");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+
+    let meeting = Meeting::new_manual("meeting-1", "Planning", 1_000);
+    store.insert_meeting(&meeting).expect("insert meeting");
+    let session = RecordingSession::start(
+        "session-1",
+        "meeting-1",
+        RecordingSource::Microphone,
+        1_010,
+        48_000,
+    );
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+
+    let mic_path = "meetings/meeting-1/audio/recording-1/raw-mic.wav";
+    let system_path = "meetings/meeting-1/audio/recording-1/raw-system.wav";
+    let absolute_mic_path = root.join(mic_path);
+    fs::create_dir_all(absolute_mic_path.parent().expect("mic parent")).expect("mic dir");
+    fs::write(&absolute_mic_path, b"recoverable mic wav").expect("mic artifact file");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-mic",
+            "session-1",
+            ArtifactKind::RawMic,
+            mic_path,
+            "sha256:pending:mic",
+        ))
+        .expect("insert mic artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-system",
+            "session-1",
+            ArtifactKind::RawSystem,
+            system_path,
+            "sha256:pending:system",
+        ))
+        .expect("insert system artifact");
+    store
+        .write_recoverable_artifact_manifests(
+            "meeting-1",
+            "session-1",
+            &[
+                RecoverableArtifact {
+                    artifact_id: "artifact-mic".to_string(),
+                    path: mic_path.to_string(),
+                    sha256: "sha256:pending:mic".to_string(),
+                },
+                RecoverableArtifact {
+                    artifact_id: "artifact-system".to_string(),
+                    path: system_path.to_string(),
+                    sha256: "sha256:pending:system".to_string(),
+                },
+            ],
+        )
+        .expect("write recoverable manifest");
+    let job = curiosity_domain::ProcessingJob::new(
+        "job-1",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    store.insert_processing_job(&job).expect("insert job");
+
+    let report = store.repair_startup().expect("repair startup");
+    let artifacts = store
+        .completed_wav_artifacts_for_transcription("meeting-1")
+        .expect("transcription artifacts");
+
+    assert!(report.conflicts.is_empty());
+    assert_eq!(report.recovered_artifacts, vec!["artifact-mic"]);
+    assert_eq!(report.recovered_jobs, vec!["job-1"]);
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-mic")
+            .expect("mic status"),
+        RepairStatus::Recovered
+    );
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].kind, "RawMic");
+}
+
+#[test]
 fn processing_jobs_round_trip_all_phase_one_statuses() {
     let root = test_root("jobs");
     let store = Store::open(root.join("app.db"), root).expect("open store");

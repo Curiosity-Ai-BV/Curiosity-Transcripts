@@ -2093,7 +2093,9 @@ fn run_desktop_audio_writer(
                     .map(|errors| errors.clone())
                     .unwrap_or_default();
                 microphone_capture_stream_result(wrote_mic_samples, &mic_errors)?;
-                system_audio_capture_stream_result(wrote_system_samples, &system_errors)?;
+                if wrote_system_samples || !system_errors.is_empty() {
+                    system_audio_capture_stream_result(wrote_system_samples, &system_errors)?;
+                }
                 return recorder.stop(ended_at_ms).map_err(CaptureError::from);
             }
         }
