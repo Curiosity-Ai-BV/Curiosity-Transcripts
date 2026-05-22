@@ -49,7 +49,7 @@ fn fake_local_transcriber_turns_fixture_lines_into_ordered_segments_without_hard
 
 #[test]
 fn model_state_machine_names_local_setup_failures_without_starting_downloads_or_network() {
-    let states = vec![
+    let states = [
         ModelState::Missing,
         ModelState::Downloading {
             downloaded_bytes: 256,

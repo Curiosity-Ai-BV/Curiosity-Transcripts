@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
@@ -760,8 +760,8 @@ fn completed_wav_artifact_for_transcription_excludes_incomplete_and_tombstoned_r
     assert_eq!(artifact.sha256, "sha256:complete");
 }
 
-fn migrated_store(root: &PathBuf) -> Store {
-    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+fn migrated_store(root: &Path) -> Store {
+    let store = Store::open(root.join("app.db"), root.to_path_buf()).expect("open store");
     store.migrate().expect("migrate");
     store
 }

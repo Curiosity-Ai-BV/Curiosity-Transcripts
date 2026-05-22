@@ -579,6 +579,10 @@ pub struct ManualRecordingService<C, S> {
     interrupted: Option<InterruptedRecording>,
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "recording command errors intentionally carry a trust-state DTO for the shell"
+)]
 impl<C, S> ManualRecordingService<C, S>
 where
     C: AudioCapture,

@@ -360,6 +360,10 @@ impl TranscriptSegment {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "metadata constructor mirrors persisted transcript segment fields"
+    )]
     pub fn with_metadata(
         id: impl Into<String>,
         meeting_id: impl Into<String>,

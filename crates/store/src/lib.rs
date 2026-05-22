@@ -1937,11 +1937,11 @@ fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
 }
 
 trait StoreEnum {
-    fn as_store_str(self) -> &'static str;
+    fn as_store_str(&self) -> &'static str;
 }
 
 impl StoreEnum for MeetingStatus {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             MeetingStatus::Created => "Created",
             MeetingStatus::Recording => "Recording",
@@ -1958,7 +1958,7 @@ impl StoreEnum for MeetingStatus {
 }
 
 impl StoreEnum for TranscriptState {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             TranscriptState::NotStarted => "NotStarted",
             TranscriptState::Transcribing => "Transcribing",
@@ -1968,7 +1968,7 @@ impl StoreEnum for TranscriptState {
 }
 
 impl StoreEnum for RecordingSource {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             RecordingSource::Microphone => "Microphone",
             RecordingSource::System => "System",
@@ -1979,7 +1979,7 @@ impl StoreEnum for RecordingSource {
 }
 
 impl StoreEnum for RecordingStatus {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             RecordingStatus::Recording => "Recording",
             RecordingStatus::Paused => "Paused",
@@ -1993,7 +1993,7 @@ impl StoreEnum for RecordingStatus {
 }
 
 impl StoreEnum for ArtifactKind {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             ArtifactKind::RawMic => "RawMic",
             ArtifactKind::RawSystem => "RawSystem",
@@ -2004,7 +2004,7 @@ impl StoreEnum for ArtifactKind {
 }
 
 impl StoreEnum for SourceChannel {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             SourceChannel::Microphone => "Microphone",
             SourceChannel::System => "System",
@@ -2015,7 +2015,7 @@ impl StoreEnum for SourceChannel {
 }
 
 impl StoreEnum for curiosity_domain::JobKind {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             curiosity_domain::JobKind::Transcribe => "Transcribe",
             curiosity_domain::JobKind::Summarize => "Summarize",
@@ -2026,7 +2026,7 @@ impl StoreEnum for curiosity_domain::JobKind {
 }
 
 impl StoreEnum for JobStatus {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             JobStatus::Queued => "Queued",
             JobStatus::Running => "Running",
@@ -2040,7 +2040,7 @@ impl StoreEnum for JobStatus {
 }
 
 impl StoreEnum for WriteStatus {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             WriteStatus::Writing => "Writing",
             WriteStatus::Complete => "Complete",
@@ -2049,7 +2049,7 @@ impl StoreEnum for WriteStatus {
 }
 
 impl StoreEnum for RepairStatus {
-    fn as_store_str(self) -> &'static str {
+    fn as_store_str(&self) -> &'static str {
         match self {
             RepairStatus::NotNeeded => "NotNeeded",
             RepairStatus::Recoverable => "Recoverable",

@@ -869,10 +869,9 @@ impl StreamingWavRecorder {
             let bytes_written = fs::metadata(&artifact.path)?.len();
             writeln!(
                 file,
-                "artifact={},{},{},{}",
+                "artifact={},{},Writing,{}",
                 stream.as_manifest_str(),
                 artifact.file_name,
-                "Writing",
                 bytes_written
             )?;
             writeln!(file, "artifact_started_at_ms={}", artifact.started_at_ms)?;
@@ -1144,7 +1143,7 @@ fn decode_system_audio_buffer(
 ) -> Result<Vec<i16>, CaptureError> {
     match encoding {
         SystemAudioSampleEncoding::Float32Le => {
-            if data.len() % std::mem::size_of::<f32>() != 0 {
+            if !data.len().is_multiple_of(std::mem::size_of::<f32>()) {
                 return Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
                     "system audio float buffer was not aligned to 32-bit samples",
                 )));
