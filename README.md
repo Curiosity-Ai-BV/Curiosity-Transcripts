@@ -30,7 +30,9 @@ Implemented MVP flows:
 - Organizer APIs for meeting detail, list, rename, search, JSON export, and
   delete flows.
 - Structured summary generation with citations, decisions, action items,
-  questions, and privacy-gated provider paths.
+  questions, local Ollama wiring, and privacy-gated provider paths.
+- Desktop command wiring for transcript search, JSON export, delete, and
+  summary generation after a transcript is ready.
 
 Remaining gaps:
 
@@ -38,8 +40,8 @@ Remaining gaps:
 - Calendar integration.
 - System-audio recording in the main desktop recording UI.
 - Model download and management UI for Whisper models.
-- Desktop command wiring for some service foundations, including summary,
-  export, and delete actions.
+- Deterministic desktop fixture/import path for repeatable end-to-end
+  transcription demos, if real microphone capture is not desired.
 
 ## Workspace Layout
 
@@ -141,8 +143,35 @@ honestly when prerequisites are missing.
 ## Local Whisper
 
 Local Whisper is optional and is not enabled in default tests or default desktop
-builds. Provide a local whisper.cpp model file and build the desktop backend
-with the feature enabled:
+builds. First verify that native prerequisites are installed:
+
+```sh
+command -v cmake
+```
+
+If that command prints nothing, install CMake before building the native
+`whisper-rs` feature. On macOS, `brew install cmake` is one common path.
+
+Verify that the desktop backend and native Whisper dependency can compile:
+
+```sh
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features whisper-rs --no-run
+```
+
+Run the real local Whisper smoke against an existing whisper.cpp model file and
+WAV artifact:
+
+```sh
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin \
+CURIOSITY_WHISPER_WAV=/absolute/path/to/audio.wav \
+cargo run -p curiosity-transcription --features whisper-rs --bin whisper-smoke
+```
+
+The smoke exits zero only when real transcription passes. Missing env paths,
+disabled native features, unreadable files, unsupported audio, and backend
+failures exit nonzero so they are not counted as success.
+
+Run the desktop app with local Whisper enabled:
 
 ```sh
 cd apps/desktop
@@ -155,9 +184,37 @@ saved, the desktop `transcribe_meeting` command falls back to
 missing, the UI should show an explicit unavailable/missing-model state. Model
 download and management are not yet implemented.
 
-Copy `.env.example` for local environment defaults if you prefer env-based
-setup. Hosted/provider secret placeholders are optional and intentionally unset
-there.
+Copy `.env.example` for the optional Whisper smoke environment variables and
+hosted/provider secret placeholders. Ollama base URL and model are configured in
+the desktop Settings pane; the values in `.env.example` are documentation of the
+current local defaults, not runtime env inputs.
+
+## Local Ollama Summaries
+
+Structured summaries can run locally through Ollama after a transcript exists.
+Start Ollama, install the selected local model, then use the Settings pane to
+test the configured server and model:
+
+```sh
+ollama serve
+ollama pull qwen3.6:27b
+```
+
+`gemma4:31b` is also listed as a local candidate. The desktop defaults are
+`http://127.0.0.1:11434` and `qwen3.6:27b`, and store settings are the runtime
+source of truth. The local Ollama path accepts localhost/loopback URLs only; use
+the hosted provider path, disclosure gate, and explicit secrets for any
+networked provider.
+
+End-to-end expectation:
+
+1. Start `ollama serve`.
+2. Pull the chosen model, such as `ollama pull qwen3.6:27b`.
+3. Open Settings, confirm the Ollama base URL/model, and run the connection
+   test.
+4. Record and transcribe a meeting.
+5. Generate the summary from the selected meeting once transcript segments are
+   present.
 
 ## Privacy And Providers
 
