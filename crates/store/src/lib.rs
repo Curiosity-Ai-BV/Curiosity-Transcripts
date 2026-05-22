@@ -13,8 +13,15 @@ use serde::{Deserialize, Serialize};
 
 pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-const SCHEMA_VERSION: u32 = 1;
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
+
+const SCHEMA_VERSION: u32 = 2;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
+const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
+const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
+const SETTING_OLLAMA_MODEL: &str = "ollama_model";
+const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
 
 /// SQLite-backed local store.
 ///
@@ -25,6 +32,14 @@ pub struct Store {
     conn: Connection,
     app_root: PathBuf,
     canonical_app_root: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppSettings {
+    pub whisper_model_path: String,
+    pub ollama_base_url: String,
+    pub ollama_model: String,
+    pub export_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,6 +201,11 @@ impl Store {
                 prompt_template_version TEXT NOT NULL,
                 result_json TEXT NOT NULL,
                 UNIQUE(meeting_id, provider, model_name, prompt_template_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS meeting_search
@@ -360,6 +380,59 @@ impl Store {
         Ok(())
     }
 
+    pub fn app_settings(&self) -> StoreResult<AppSettings> {
+        let export_directory = self
+            .setting_value(SETTING_EXPORT_DIRECTORY)?
+            .filter(|value| !value.trim().is_empty());
+        Ok(AppSettings {
+            whisper_model_path: self
+                .setting_value(SETTING_WHISPER_MODEL_PATH)?
+                .unwrap_or_default(),
+            ollama_base_url: self
+                .setting_value(SETTING_OLLAMA_BASE_URL)?
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_OLLAMA_BASE_URL.to_string()),
+            ollama_model: self
+                .setting_value(SETTING_OLLAMA_MODEL)?
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string()),
+            export_directory,
+        })
+    }
+
+    pub fn save_whisper_model_path(&self, whisper_model_path: &str) -> StoreResult<AppSettings> {
+        self.upsert_setting(SETTING_WHISPER_MODEL_PATH, whisper_model_path.trim())?;
+        self.app_settings()
+    }
+
+    pub fn save_analysis_settings(
+        &self,
+        ollama_base_url: &str,
+        ollama_model: &str,
+    ) -> StoreResult<AppSettings> {
+        let ollama_base_url = default_if_blank(ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
+        let ollama_model = default_if_blank(ollama_model, DEFAULT_OLLAMA_MODEL);
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = (|| {
+            self.upsert_setting(SETTING_OLLAMA_BASE_URL, ollama_base_url)?;
+            self.upsert_setting(SETTING_OLLAMA_MODEL, ollama_model)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                self.app_settings()
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
     pub fn count(&self, table: &str) -> StoreResult<u64> {
         let allowed = [
             "meetings",
@@ -372,6 +445,7 @@ impl Store {
             "transcript_segments",
             "transcript_segment_edits",
             "analysis_results",
+            "app_settings",
         ];
         if !allowed.contains(&table) {
             return Err(format!("unsupported count table: {table}").into());
@@ -1637,6 +1711,29 @@ impl Store {
             .map_err(Into::into)
     }
 
+    fn setting_value(&self, key: &str) -> StoreResult<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn upsert_setting(&self, key: &str, value: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            INSERT INTO app_settings (key, value)
+            VALUES (?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     fn private_app_path(&self, path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         if path.is_absolute() || path.components().any(|component| component == Component::ParentDir)
@@ -2046,6 +2143,15 @@ fn fts_query(query: &str) -> StoreResult<String> {
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>();
     Ok(tokens.join(" "))
+}
+
+fn default_if_blank<'a>(value: &'a str, default: &'static str) -> &'a str {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default
+    } else {
+        trimmed
+    }
 }
 
 fn nearest_existing_path(path: &Path) -> Option<PathBuf> {

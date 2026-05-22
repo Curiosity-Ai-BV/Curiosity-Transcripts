@@ -20,7 +20,8 @@ Implemented MVP flows:
 - Real macOS microphone capture through `MacosMicrophoneWavRecording` and
   `cpal`, writing private local WAV artifacts.
 - Optional real local Whisper transcription behind the `whisper-rs` feature,
-  using `CURIOSITY_WHISPER_MODEL` as the model path.
+  using the saved desktop setting or `CURIOSITY_WHISPER_MODEL` as the fallback
+  model path.
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
   processing jobs, transcript versions, edits, exports, search indexes, and
   analysis results.
@@ -148,10 +149,15 @@ cd apps/desktop
 CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm exec -- tauri dev --features whisper-rs
 ```
 
-The desktop `transcribe_meeting` command reads `CURIOSITY_WHISPER_MODEL`. If the
-feature is disabled or the path is missing, the UI should show an explicit
-unavailable/missing-model state. Model download and management are not yet
-implemented.
+The desktop settings pane can save a local Whisper model path. If no path is
+saved, the desktop `transcribe_meeting` command falls back to
+`CURIOSITY_WHISPER_MODEL`. If the feature is disabled or the effective path is
+missing, the UI should show an explicit unavailable/missing-model state. Model
+download and management are not yet implemented.
+
+Copy `.env.example` for local environment defaults if you prefer env-based
+setup. Hosted/provider secret placeholders are optional and intentionally unset
+there.
 
 ## Privacy And Providers
 

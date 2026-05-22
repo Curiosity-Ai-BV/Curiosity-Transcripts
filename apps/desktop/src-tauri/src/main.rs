@@ -14,7 +14,7 @@ use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, MeetingStatus, ModelRun, RecordingSession,
     RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
 };
-use curiosity_store::Store;
+use curiosity_store::{AppSettings, Store};
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
 use curiosity_transcription::{
@@ -29,6 +29,10 @@ fn main() {
         .manage(Mutex::new(DesktopCommandState::default()))
         .invoke_handler(tauri::generate_handler![
             desktop_snapshot,
+            get_settings,
+            save_whisper_model_path,
+            save_analysis_settings,
+            test_whisper_model_path,
             audio_smoke_status,
             system_audio_smoke_recording,
             start_microphone_recording,
@@ -53,6 +57,57 @@ fn desktop_snapshot(
         command_state.snapshot_state()
     };
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> Result<AppSettingsView, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    get_settings_for_app_root(&app_root)
+}
+
+#[tauri::command]
+fn save_whisper_model_path(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    whisper_model_path: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    save_whisper_model_path_for_app_root(&app_root, whisper_model_path)?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn save_analysis_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    ollama_base_url: String,
+    ollama_model: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    save_analysis_settings_for_app_root(&app_root, ollama_base_url, ollama_model)?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn test_whisper_model_path(path: String) -> WhisperModelPathTestView {
+    test_whisper_model_path_value(&path)
 }
 
 #[tauri::command]
@@ -163,12 +218,9 @@ fn transcribe_meeting(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let model_path = std::env::var("CURIOSITY_WHISPER_MODEL").unwrap_or_default();
-    let model_name = PathBuf::from(&model_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("local-whisper")
-        .to_string();
+    let settings = app_settings_for_app_root(&app_root)?;
+    let model_path = resolved_whisper_model_path(&settings);
+    let model_name = model_name_for_path(&model_path);
 
     #[cfg(feature = "whisper-rs")]
     {
@@ -217,6 +269,9 @@ fn desktop_snapshot_for_app_root_with_state(
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
     let store = open_store(app_root)?;
+    let settings = store
+        .app_settings()
+        .map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
 
@@ -286,7 +341,8 @@ fn desktop_snapshot_for_app_root_with_state(
         meetings,
         selected_meeting_id,
         recording: recording_snapshot(app_root, command_state),
-        model: model_status_from_env(),
+        model: model_status_from_settings(&settings),
+        settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
             system_audio: DesktopPermissionState::SystemAudioUnavailable,
@@ -301,6 +357,39 @@ fn open_store(app_root: &Path) -> Result<Store, String> {
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
     Ok(store)
+}
+
+fn app_settings_for_app_root(app_root: &Path) -> Result<AppSettings, String> {
+    open_store(app_root)?
+        .app_settings()
+        .map_err(|error| error.to_string())
+}
+
+fn get_settings_for_app_root(app_root: &Path) -> Result<AppSettingsView, String> {
+    app_settings_for_app_root(app_root).map(app_settings_view)
+}
+
+fn save_whisper_model_path_for_app_root(
+    app_root: &Path,
+    whisper_model_path: String,
+) -> Result<AppSettingsView, String> {
+    let store = open_store(app_root)?;
+    store
+        .save_whisper_model_path(&whisper_model_path)
+        .map(app_settings_view)
+        .map_err(|error| error.to_string())
+}
+
+fn save_analysis_settings_for_app_root(
+    app_root: &Path,
+    ollama_base_url: String,
+    ollama_model: String,
+) -> Result<AppSettingsView, String> {
+    let store = open_store(app_root)?;
+    store
+        .save_analysis_settings(&ollama_base_url, &ollama_model)
+        .map(app_settings_view)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Default)]
@@ -938,8 +1027,8 @@ fn microphone_artifact_relative_path(meeting_id: &str, recording_id: &str) -> St
     )
 }
 
-fn model_status_from_env() -> ModelStatus {
-    let configured_path = std::env::var("CURIOSITY_WHISPER_MODEL").unwrap_or_default();
+fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
+    let configured_path = resolved_whisper_model_path(settings);
     let kind = if !configured_path.is_empty() && PathBuf::from(&configured_path).is_file() {
         "ready"
     } else {
@@ -948,6 +1037,69 @@ fn model_status_from_env() -> ModelStatus {
     ModelStatus {
         kind: kind.to_string(),
         configured_path,
+    }
+}
+
+fn resolved_whisper_model_path(settings: &AppSettings) -> String {
+    let saved_path = settings.whisper_model_path.trim();
+    if saved_path.is_empty() {
+        std::env::var("CURIOSITY_WHISPER_MODEL").unwrap_or_default()
+    } else {
+        saved_path.to_string()
+    }
+}
+
+fn model_name_for_path(model_path: &str) -> String {
+    PathBuf::from(model_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("local-whisper")
+        .to_string()
+}
+
+fn app_settings_view(settings: AppSettings) -> AppSettingsView {
+    AppSettingsView {
+        whisper_model_path: settings.whisper_model_path,
+        ollama_base_url: settings.ollama_base_url,
+        ollama_model: settings.ollama_model,
+        export_directory: settings.export_directory,
+    }
+}
+
+fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return WhisperModelPathTestView::invalid(
+            "No Whisper model path is configured.",
+            "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
+        );
+    }
+    let path = PathBuf::from(trimmed);
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return WhisperModelPathTestView::invalid(
+                format!("Whisper model path does not exist or cannot be inspected: {error}"),
+                "Check the path and choose a readable local Whisper model file.",
+            );
+        }
+    };
+    if !metadata.is_file() {
+        return WhisperModelPathTestView::invalid(
+            "Whisper model path must point to a file.",
+            "Choose a readable local Whisper model file, not a directory.",
+        );
+    }
+    match std::fs::File::open(&path) {
+        Ok(_) => WhisperModelPathTestView {
+            state: "Valid".to_string(),
+            message: "Whisper model path is readable.".to_string(),
+            setup_guidance: "Save this path, then transcribe with the whisper-rs desktop feature enabled.".to_string(),
+        },
+        Err(error) => WhisperModelPathTestView::invalid(
+            format!("Whisper model path is not readable: {error}"),
+            "Check file permissions and choose a readable local Whisper model file.",
+        ),
     }
 }
 
@@ -1039,6 +1191,7 @@ struct DesktopSnapshot {
     selected_meeting_id: Option<String>,
     recording: CommandRecordingDto,
     model: ModelStatus,
+    settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
 }
@@ -1053,6 +1206,33 @@ struct CommandSurfaceState {
 struct ModelStatus {
     kind: String,
     configured_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettingsView {
+    whisper_model_path: String,
+    ollama_base_url: String,
+    ollama_model: String,
+    export_directory: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperModelPathTestView {
+    state: String,
+    message: String,
+    setup_guidance: String,
+}
+
+impl WhisperModelPathTestView {
+    fn invalid(message: impl Into<String>, setup_guidance: impl Into<String>) -> Self {
+        Self {
+            state: "Invalid".to_string(),
+            message: message.into(),
+            setup_guidance: setup_guidance.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1196,13 +1376,18 @@ mod tests {
     use curiosity_transcription::{FakeWhisperBackend, WhisperBackendSegment};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEST_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn empty_desktop_snapshot_serializes_frontend_shape() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
@@ -1228,8 +1413,124 @@ mod tests {
         assert_eq!(json["model"]["kind"], "missing");
         assert_eq!(json["capture"]["microphone"], "MicrophoneUnavailable");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
+        assert_eq!(
+            json["settings"]["ollamaBaseUrl"],
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(json["settings"]["ollamaModel"], "qwen3.6:27b");
         assert!(json["transcription"].is_null());
 
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn get_settings_returns_default_local_analysis_settings() {
+        let root = unique_test_root();
+
+        let settings = get_settings_for_app_root(&root).expect("settings");
+
+        assert_eq!(settings.whisper_model_path, "");
+        assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11434");
+        assert_eq!(settings.ollama_model, "qwen3.6:27b");
+        assert_eq!(settings.export_directory, None);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_settings_commands_persist_whisper_and_analysis_values() {
+        let root = unique_test_root();
+
+        save_whisper_model_path_for_app_root(&root, "/models/ggml-base.en.bin".to_string())
+            .expect("save whisper");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11435".to_string(),
+            "gemma4:31b".to_string(),
+        )
+        .expect("save analysis");
+        let settings = get_settings_for_app_root(&root).expect("settings");
+
+        assert_eq!(settings.whisper_model_path, "/models/ggml-base.en.bin");
+        assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11435");
+        assert_eq!(settings.ollama_model, "gemma4:31b");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_whisper_model_path_accepts_readable_file_without_loading_model() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("model file");
+
+        let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
+
+        assert_eq!(result.state, "Valid");
+        assert!(result.message.contains("readable"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_whisper_model_path_rejects_missing_path_with_guidance() {
+        let result = test_whisper_model_path_value("");
+
+        assert_eq!(result.state, "Invalid");
+        assert!(result.setup_guidance.contains("local Whisper model path"));
+    }
+
+    #[test]
+    fn desktop_snapshot_uses_env_whisper_path_when_settings_path_is_empty() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("env-whisper.bin");
+        fs::write(&model_path, b"fixture").expect("model file");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::set_var("CURIOSITY_WHISPER_MODEL", &model_path);
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["model"]["kind"], "ready");
+        assert_eq!(
+            json["model"]["configuredPath"],
+            model_path.to_string_lossy().as_ref()
+        );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_prefers_persisted_whisper_path_over_env_fallback() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let env_model_path = root.join("env-whisper.bin");
+        let saved_model_path = root.join("saved-whisper.bin");
+        fs::write(&env_model_path, b"fixture").expect("env model file");
+        fs::write(&saved_model_path, b"fixture").expect("saved model file");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::set_var("CURIOSITY_WHISPER_MODEL", &env_model_path);
+        save_whisper_model_path_for_app_root(
+            &root,
+            saved_model_path.to_string_lossy().to_string(),
+        )
+        .expect("save whisper");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["model"]["configuredPath"],
+            saved_model_path.to_string_lossy().as_ref()
+        );
+
+        restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1764,5 +2065,13 @@ mod tests {
             .as_nanos();
         let suffix = TEST_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("curiosity-desktop-command-test-{nanos}-{suffix}"))
+    }
+
+    fn restore_whisper_env(previous: Option<String>) {
+        if let Some(previous) = previous {
+            std::env::set_var("CURIOSITY_WHISPER_MODEL", previous);
+        } else {
+            std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        }
     }
 }

@@ -24,6 +24,7 @@ import {
   mapTranscriptionState,
   searchMeetings,
   Tone,
+  WhisperModelPathTestResult,
 } from "./commandAdapter";
 
 import "./styles.css";
@@ -33,7 +34,18 @@ interface AppProps {
   fetchCommand?: CommandFetcher;
 }
 
-type PendingCommand = "start" | "stop" | "transcribe" | null;
+type PendingCommand = "start" | "stop" | "transcribe" | "test-whisper" | "save-whisper" | "save-analysis" | null;
+
+interface SettingsFormState {
+  whisperModelPath: string;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
+}
+
+interface SettingsFeedback {
+  tone: Tone;
+  message: string;
+}
 
 const connectedCommandSurface = "Connected to local desktop commands.";
 
@@ -43,12 +55,16 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const [query, setQuery] = useState("");
   const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
   const [recordingTitle, setRecordingTitle] = useState("");
+  const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromSnapshot(initialSnapshot));
+  const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
 
   useEffect(() => {
     if (snapshot) {
       setCurrentSnapshot(snapshot);
+      setSettingsForm(settingsFormFromSnapshot(snapshot));
+      setSettingsFeedback(null);
       setCommandError(null);
       setPendingCommand(null);
     }
@@ -57,14 +73,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const meetings = useMemo(() => searchMeetings(currentSnapshot.meetings, query), [currentSnapshot.meetings, query]);
   useEffect(() => {
     setSelectedMeetingId((current) => {
-      const backendSelected = currentSnapshot.selectedMeetingId;
-      if (backendSelected && currentSnapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
-        return backendSelected;
-      }
-      if (current && currentSnapshot.meetings.some((meeting) => meeting.id === current)) {
-        return current;
-      }
-      return currentSnapshot.meetings[0]?.id ?? null;
+      return resolveSelectedMeetingId(currentSnapshot, current);
     });
   }, [currentSnapshot.meetings, currentSnapshot.selectedMeetingId]);
 
@@ -94,6 +103,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const settingsDisabled = !commandSurfaceReady || commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -120,6 +130,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     try {
       const nextSnapshot = await fetchCommand<DesktopSnapshot>(command, args);
       setCurrentSnapshot(nextSnapshot);
+      setSelectedMeetingId((current) => resolveSelectedMeetingId(nextSnapshot, current));
       setRecordingTitle("");
     } catch (error) {
       setCommandError(commandErrorMessage(error));
@@ -148,6 +159,76 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     void runSnapshotCommand("transcribe", "transcribe_meeting", {
       meetingId: selectedMeeting.id,
     });
+  }
+
+  async function runSettingsSnapshotCommand(
+    pending: Exclude<PendingCommand, null>,
+    command: string,
+    args: Record<string, unknown>,
+    successMessage: string,
+  ) {
+    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand(pending);
+    setCommandError(null);
+    setSettingsFeedback(null);
+    try {
+      const nextSnapshot = await fetchCommand<DesktopSnapshot>(command, args);
+      setCurrentSnapshot(nextSnapshot);
+      setSelectedMeetingId((current) => resolveSelectedMeetingId(nextSnapshot, current));
+      setSettingsForm(settingsFormFromSnapshot(nextSnapshot));
+      setSettingsFeedback({ tone: "ready", message: successMessage });
+    } catch (error) {
+      setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  async function testWhisperModelPath() {
+    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("test-whisper");
+    setCommandError(null);
+    setSettingsFeedback(null);
+    try {
+      const result = await fetchCommand<WhisperModelPathTestResult>("test_whisper_model_path", {
+        path: settingsForm.whisperModelPath,
+      });
+      setSettingsFeedback({
+        tone: result.state === "Valid" ? "ready" : "blocked",
+        message: result.message || result.setupGuidance,
+      });
+    } catch (error) {
+      setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  function saveWhisperModelPath() {
+    void runSettingsSnapshotCommand(
+      "save-whisper",
+      "save_whisper_model_path",
+      { whisperModelPath: settingsForm.whisperModelPath },
+      "Whisper model path saved.",
+    );
+  }
+
+  function saveAnalysisSettings() {
+    void runSettingsSnapshotCommand(
+      "save-analysis",
+      "save_analysis_settings",
+      {
+        ollamaBaseUrl: settingsForm.ollamaBaseUrl,
+        ollamaModel: settingsForm.ollamaModel,
+      },
+      "Analysis settings saved.",
+    );
   }
 
   const busyCommandTitle = "A desktop command is already running.";
@@ -373,6 +454,78 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
 
           <aside className="settings-pane" aria-label="Settings and model status">
             <h2>Settings</h2>
+            <div className="settings-form" aria-label="Local settings">
+              <label className="settings-field" htmlFor="whisper-model-path">
+                <span>Whisper model path</span>
+                <input
+                  id="whisper-model-path"
+                  value={settingsForm.whisperModelPath}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
+                  }
+                  placeholder="/absolute/path/to/ggml-base.en.bin"
+                  disabled={settingsDisabled}
+                />
+              </label>
+              <div className="settings-buttons">
+                <button
+                  type="button"
+                  className="button"
+                  disabled={settingsDisabled}
+                  title={commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle}
+                  onClick={testWhisperModelPath}
+                >
+                  {pendingCommand === "test-whisper" ? "Testing path" : "Test path"}
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={settingsDisabled}
+                  title={commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle}
+                  onClick={saveWhisperModelPath}
+                >
+                  {pendingCommand === "save-whisper" ? "Saving Whisper" : "Save Whisper"}
+                </button>
+              </div>
+              <label className="settings-field" htmlFor="ollama-base-url">
+                <span>Ollama base URL</span>
+                <input
+                  id="ollama-base-url"
+                  value={settingsForm.ollamaBaseUrl}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({ ...current, ollamaBaseUrl: event.target.value }))
+                  }
+                  placeholder="http://127.0.0.1:11434"
+                  disabled={settingsDisabled}
+                />
+              </label>
+              <label className="settings-field" htmlFor="ollama-model">
+                <span>Ollama model</span>
+                <input
+                  id="ollama-model"
+                  value={settingsForm.ollamaModel}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({ ...current, ollamaModel: event.target.value }))
+                  }
+                  placeholder="qwen3.6:27b"
+                  disabled={settingsDisabled}
+                />
+              </label>
+              <button
+                type="button"
+                className="button"
+                disabled={settingsDisabled}
+                title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
+                onClick={saveAnalysisSettings}
+              >
+                {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
+              </button>
+              {settingsFeedback ? (
+                <p className={`settings-feedback ${settingsFeedback.tone}`} role="status">
+                  {settingsFeedback.message}
+                </p>
+              ) : null}
+            </div>
             <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
             <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
             <StatusLine
@@ -441,6 +594,25 @@ function SkeletonList() {
       <span />
     </div>
   );
+}
+
+function settingsFormFromSnapshot(snapshot: DesktopSnapshot): SettingsFormState {
+  return {
+    whisperModelPath: snapshot.settings.whisperModelPath,
+    ollamaBaseUrl: snapshot.settings.ollamaBaseUrl,
+    ollamaModel: snapshot.settings.ollamaModel,
+  };
+}
+
+function resolveSelectedMeetingId(snapshot: DesktopSnapshot, current: string | null): string | null {
+  const backendSelected = snapshot.selectedMeetingId;
+  if (backendSelected && snapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
+    return backendSelected;
+  }
+  if (current && snapshot.meetings.some((meeting) => meeting.id === current)) {
+    return current;
+  }
+  return snapshot.meetings[0]?.id ?? null;
 }
 
 function captureLabel(state: DesktopSnapshot["capture"]["microphone"]) {

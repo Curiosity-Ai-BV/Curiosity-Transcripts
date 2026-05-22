@@ -243,6 +243,32 @@ describe("desktop workspace shell", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
+  it("renders editable local settings from the desktop snapshot", () => {
+    const snapshot = connectedSnapshot({
+      settings: {
+        whisperModelPath: "/models/ggml-base.en.bin",
+        ollamaBaseUrl: "http://127.0.0.1:11435",
+        ollamaModel: "gemma4:31b",
+        exportDirectory: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async () => snapshot as never;
+
+    render(
+      <App
+        snapshot={snapshot}
+        fetchCommand={fetchCommand}
+      />,
+    );
+
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/models/ggml-base.en.bin");
+    expect(screen.getByLabelText("Ollama base URL")).toHaveValue("http://127.0.0.1:11435");
+    expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
+    expect(screen.getByRole("button", { name: "Test path" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save Whisper" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save analysis" })).toBeEnabled();
+  });
+
   it("renders loading, empty, unavailable, permission-denied, transcribing, and ready states", () => {
     render(<App snapshot={getMockDesktopSnapshot("state-matrix")} />);
 
@@ -516,6 +542,106 @@ describe("desktop workspace shell", () => {
     expect(calls).toEqual([{ command: "transcribe_meeting", args: { meetingId: "circuit-review" } }]);
     expect(screen.getAllByText("Transcription failed").length).toBeGreaterThan(0);
     expect(screen.getByText("Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.")).toBeInTheDocument();
+  });
+
+  it("tests and saves the configured Whisper path through desktop commands", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const saved = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+      settings: {
+        whisperModelPath: "/models/ggml-base.en.bin",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      if (command === "test_whisper_model_path") {
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+        } as never;
+      }
+      return saved as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.type(screen.getByLabelText("Whisper model path"), "/models/ggml-base.en.bin");
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+    expect(await screen.findByText("Whisper model path is readable.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save Whisper" }));
+
+    expect(calls).toEqual([
+      {
+        command: "test_whisper_model_path",
+        args: { path: "/models/ggml-base.en.bin" },
+      },
+      {
+        command: "save_whisper_model_path",
+        args: { whisperModelPath: "/models/ggml-base.en.bin" },
+      },
+    ]);
+    expect(screen.getByText("Whisper model path saved.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/models/ggml-base.en.bin");
+  });
+
+  it("saves local analysis settings through the desktop command", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const returned = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11435",
+        ollamaModel: "gemma4:31b",
+        exportDirectory: null,
+      },
+    });
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.clear(screen.getByLabelText("Ollama base URL"));
+    await user.type(screen.getByLabelText("Ollama base URL"), "http://127.0.0.1:11435");
+    await user.clear(screen.getByLabelText("Ollama model"));
+    await user.type(screen.getByLabelText("Ollama model"), "gemma4:31b");
+    await user.click(screen.getByRole("button", { name: "Save analysis" }));
+
+    expect(calls).toEqual([
+      {
+        command: "save_analysis_settings",
+        args: {
+          ollamaBaseUrl: "http://127.0.0.1:11435",
+          ollamaModel: "gemma4:31b",
+        },
+      },
+    ]);
+    expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
   });
 
   it("shows in-flight command state and prevents double submitting recording start", async () => {

@@ -36,6 +36,19 @@ export interface ModelStatus {
   configuredPath: string;
 }
 
+export interface AppSettings {
+  whisperModelPath: string;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
+  exportDirectory: string | null;
+}
+
+export interface WhisperModelPathTestResult {
+  state: "Valid" | "Invalid";
+  message: string;
+  setupGuidance: string;
+}
+
 export interface ExportCommandState {
   state: "idle" | "exporting" | "exported" | "failed";
   path?: string;
@@ -111,6 +124,7 @@ export interface DesktopSnapshot {
   selectedMeetingId: string | null;
   recording: CommandRecordingDto;
   model: ModelStatus;
+  settings: AppSettings;
   capture: CaptureStatus;
   transcription: TranscriptionCommandView | null;
 }
@@ -419,6 +433,13 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       variant === "state-matrix"
         ? { kind: "transcribing", configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin" }
         : { kind: "missing", configuredPath: "" },
+    settings: {
+      whisperModelPath:
+        variant === "state-matrix" ? "~/Library/Application Support/Curiosity/models/base.en.bin" : "",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3.6:27b",
+      exportDirectory: null,
+    },
     capture:
       variant === "state-matrix"
         ? {
@@ -452,6 +473,12 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       recovery_action: "Load the desktop command surface before recording.",
     },
     model: { kind: "missing", configuredPath: "" },
+    settings: {
+      whisperModelPath: "",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3.6:27b",
+      exportDirectory: null,
+    },
     capture: {
       microphone: "MicrophoneUnavailable",
       systemAudio: "SystemAudioUnavailable",
