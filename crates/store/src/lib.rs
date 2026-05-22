@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +11,7 @@ use curiosity_domain::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -623,13 +625,20 @@ impl Store {
             if !artifact_path.exists() {
                 continue;
             }
+            let recovered_sha256 = if is_pending_sha256(&manifest.sha256) {
+                sha256_file(&artifact_path)?
+            } else {
+                manifest.sha256.clone()
+            };
             self.conn.execute(
                 "
                 UPDATE audio_artifacts
-                SET write_status = 'Complete', recovery_status = 'Recovered'
+                SET sha256 = ?2,
+                    write_status = 'Complete',
+                    recovery_status = 'Recovered'
                 WHERE id = ?1
                 ",
-                params![manifest.artifact_id],
+                params![manifest.artifact_id, recovered_sha256],
             )?;
             if self.conn.changes() > 0 {
                 report.recovered_artifacts.push(manifest.artifact_id.clone());
@@ -2112,6 +2121,20 @@ fn is_pending_sha256(sha256: &str) -> bool {
     // pending hashes became artifact-scoped. New app writes use the prefixed
     // `sha256:pending:<artifact-id>` form.
     sha256 == PENDING_SHA_PREFIX || sha256.starts_with("sha256:pending:")
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn is_safe_meeting_id(meeting_id: &str) -> bool {

@@ -63,13 +63,13 @@ Passing checks from the completed slices:
 | `npm test -- --run` in `apps/desktop` | Passed |
 | `npm run build` in `apps/desktop` | Passed |
 | `git diff --check` | Passed |
-| `cargo clippy --all-targets --all-features --locked -- -D warnings` | Not run: `cargo-clippy` is not installed for `stable-aarch64-apple-darwin`. |
-| `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features whisper-rs --no-run` | Blocked locally: `cmake` is not installed. |
+| `cargo clippy --all-targets --all-features --locked -- -D warnings` | Passed after installing the Rust clippy component. |
+| `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-run` | Passed with the default `whisper-rs` desktop backend. |
 
 Not verified in this environment:
 
 - Real microphone permission and capture.
-- Real local Whisper transcription with a model file.
+- Full system-audio meeting capture in the main recording UI.
 - Live Ollama summary generation against a running local Ollama server.
 - Packaged app behavior.
 

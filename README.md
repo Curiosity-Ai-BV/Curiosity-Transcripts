@@ -5,9 +5,10 @@ workspace with a functional macOS-first desktop MVP in `apps/desktop`.
 
 The current MVP can open a Tauri 2 desktop shell, start and stop local microphone
 recordings, persist private WAV artifacts and meeting metadata, and transcribe a
-saved meeting with a user-provided local Whisper model when the optional
-`whisper-rs` feature is enabled. System-audio capture exists as a feature-gated
-ScreenCaptureKit smoke path; the main recording UI is still microphone-only.
+saved meeting with a user-provided local Whisper model. Desktop builds include
+the native `whisper-rs` backend by default. System-audio capture exists as a
+feature-gated ScreenCaptureKit smoke path; the main recording UI is still
+microphone-only.
 
 ## Current Status
 
@@ -19,7 +20,7 @@ Implemented MVP flows:
   `system_audio_smoke_recording`.
 - Real macOS microphone capture through `MacosMicrophoneWavRecording` and
   `cpal`, writing private local WAV artifacts.
-- Optional real local Whisper transcription behind the `whisper-rs` feature,
+- Real local Whisper transcription through the default `whisper-rs` desktop feature,
   using the saved desktop setting or `CURIOSITY_WHISPER_MODEL` as the fallback
   model path.
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
@@ -69,8 +70,9 @@ Prerequisites:
 - Rust toolchain with `cargo` installed. `rustup` is the usual install path.
 - Node.js and npm for the desktop frontend.
 - macOS for real microphone and ScreenCaptureKit smoke checks.
-- CMake when building the optional `whisper-rs` feature. If `cmake` is missing,
-  the native `whisper-rs-sys` build fails before local Whisper can be verified.
+- CMake for default desktop builds, because they include the native
+  `whisper-rs` backend. If `cmake` is missing, the native `whisper-rs-sys`
+  build fails before local Whisper can be verified.
 - Xcode Command Line Tools and a working Swift runtime for the optional
   ScreenCaptureKit system-audio feature.
 - macOS Microphone permission for microphone recording and Screen Recording
@@ -147,15 +149,15 @@ honestly when prerequisites are missing.
 
 ## Local Whisper
 
-Local Whisper is optional and is not enabled in default tests or default desktop
-builds. First verify that native prerequisites are installed:
+Local Whisper is enabled in default desktop builds. First verify that native
+prerequisites are installed:
 
 ```sh
 command -v cmake
 ```
 
-If that command prints nothing, install CMake before building the native
-`whisper-rs` feature. On macOS, `brew install cmake` is one common path.
+If that command prints nothing, install CMake before building the desktop app.
+On macOS, `brew install cmake` is one common path.
 
 Verify that the desktop backend and native Whisper dependency can compile:
 

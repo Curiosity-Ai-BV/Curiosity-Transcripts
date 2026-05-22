@@ -502,6 +502,7 @@ fn open_store(app_root: &Path) -> Result<Store, String> {
     let store = Store::open(app_root.join("curiosity.sqlite3"), app_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
+    store.repair_startup().map_err(|error| error.to_string())?;
     Ok(store)
 }
 
@@ -1059,6 +1060,20 @@ fn start_microphone_recording_for_app_root(
     );
 
     if let Err(error) = store.insert_recording_start(&meeting, &session, &artifact) {
+        return Err(metadata_persistence_failure(
+            error.to_string(),
+            recorder,
+            started_at_ms,
+            audio_root.join(&recording_id),
+        ));
+    }
+    if let Err(error) = store.write_recoverable_artifact_manifest(
+        &meeting_id,
+        &recording_id,
+        &artifact.id,
+        &artifact.path,
+        &artifact.sha256,
+    ) {
         return Err(metadata_persistence_failure(
             error.to_string(),
             recorder,
@@ -3011,6 +3026,47 @@ mod tests {
         assert_eq!(json["meetings"][0]["status"], "Complete");
         assert_eq!(artifact.sha256.len(), 64);
         assert!(root.join(&artifact.path).is_file());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn startup_repair_recovers_crashed_microphone_wav_for_transcription() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Crash recovery".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        let recording_id = start_snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let artifact_path = root.join(microphone_artifact_relative_path(&meeting_id, &recording_id));
+        fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
+        write_minimal_wav(&artifact_path);
+
+        let restarted_store = open_store(&root).expect("open repaired store");
+        let artifact = restarted_store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .expect("recovered artifact");
+
+        assert_eq!(
+            artifact.path,
+            microphone_artifact_relative_path(&meeting_id, &recording_id)
+        );
+        assert_eq!(artifact.sha256.len(), 64);
+        assert!(!artifact.sha256.starts_with("sha256:pending"));
 
         fs::remove_dir_all(root).expect("cleanup");
     }
