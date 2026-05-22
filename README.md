@@ -3,12 +3,12 @@
 Curiosity Transcripts is a local-first transcript app foundation written as a Rust
 workspace with a functional macOS-first desktop MVP in `apps/desktop`.
 
-The current MVP can open a Tauri 2 desktop shell, start and stop local microphone
-recordings, persist private WAV artifacts and meeting metadata, and transcribe a
-saved meeting with a user-provided local Whisper model. Desktop builds include
-the native `whisper-rs` backend by default. System-audio capture exists as a
-feature-gated ScreenCaptureKit smoke path; the main recording UI is still
-microphone-only.
+The current MVP can open a Tauri 2 desktop shell, start and stop local desktop
+recordings, persist private microphone and system-audio WAV artifacts, and
+transcribe a saved meeting with a user-provided local Whisper model. Desktop
+builds include the native `whisper-rs` backend by default. System-audio meeting
+recording is available through the feature-gated ScreenCaptureKit desktop
+backend.
 
 ## Current Status
 
@@ -18,11 +18,13 @@ Implemented MVP flows:
 - Tauri commands for `desktop_snapshot`, `start_microphone_recording`,
   `stop_microphone_recording`, `transcribe_meeting`, `audio_smoke_status`, and
   `system_audio_smoke_recording`.
-- Real macOS microphone capture through `MacosMicrophoneWavRecording` and
-  `cpal`, writing private local WAV artifacts.
+- Real macOS desktop capture through `MacosDesktopWavRecording`, `cpal`, and
+  ScreenCaptureKit, writing separate private `raw-mic.wav` and
+  `raw-system.wav` artifacts when run with the system-audio feature.
 - Real local Whisper transcription through the default `whisper-rs` desktop feature,
   using the saved desktop setting or `CURIOSITY_WHISPER_MODEL` as the fallback
-  model path.
+  model path. Meetings with both mic and system WAV artifacts are transcribed as
+  one persisted transcript run with channel-tagged segments.
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
   processing jobs, transcript versions, edits, exports, search indexes, and
   analysis results.
@@ -41,7 +43,6 @@ Remaining gaps:
 
 - Production packaging and installer flow.
 - Calendar integration.
-- System-audio recording in the main desktop recording UI.
 - Model download and management UI for Whisper models.
 
 ## Workspace Layout
@@ -51,7 +52,7 @@ apps/
   desktop/        React/Vite/Tauri 2 desktop shell and local command bridge.
 crates/
   audio/          Audio capture contracts, cpal microphone capture, smoke paths,
-                  and feature-gated ScreenCaptureKit system-audio capture.
+                  and feature-gated ScreenCaptureKit desktop/system-audio capture.
   domain/         Shared meeting, recording, transcript, artifact, job, and analysis domain types.
   store/          SQLite persistence, migrations, search, export, delete, recovery, and analysis storage.
   transcription/  Deterministic fixture transcriber, optional whisper-rs backend, and export formats.
@@ -69,13 +70,13 @@ Prerequisites:
 
 - Rust toolchain with `cargo` installed. `rustup` is the usual install path.
 - Node.js and npm for the desktop frontend.
-- macOS for real microphone and ScreenCaptureKit smoke checks.
+- macOS for real microphone and ScreenCaptureKit desktop capture checks.
 - CMake for default desktop builds, because they include the native
   `whisper-rs` backend. If `cmake` is missing, the native `whisper-rs-sys`
   build fails before local Whisper can be verified.
 - Xcode Command Line Tools and a working Swift runtime for the optional
   ScreenCaptureKit system-audio feature.
-- macOS Microphone permission for microphone recording and Screen Recording
+- macOS Microphone permission for desktop recording and Screen Recording
   permission for ScreenCaptureKit system audio.
 
 Deterministic workspace tests do not require hardware, network access, calendar
@@ -108,6 +109,19 @@ npm exec -- tauri dev
 
 The Tauri config uses `devUrl` `http://127.0.0.1:1420` and
 `beforeDevCommand` `npm run dev`.
+
+Full desktop recording with microphone plus system audio requires the
+ScreenCaptureKit feature:
+
+```sh
+cd apps/desktop
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
+```
+
+Plain `npm run tauri:dev` still builds the desktop shell and local Whisper
+backend, but recording will fail loudly if the system-audio backend is not
+compiled in. That is intentional so the app does not silently create transcripts
+that only contain your microphone side of the meeting.
 
 In debug/test Tauri builds, a harness can invoke `seed_dev_fixture` to create
 one deterministic transcript-ready meeting in app-private storage. Release
@@ -142,10 +156,10 @@ ScreenCaptureKit system-audio smoke:
 cargo run -p curiosity-audio --features system-audio-screencapturekit --bin audio-smoke -- --attempt-system-audio --out audio-smoke-output --duration-ms 1000
 ```
 
-This is a feature-gated smoke path, not the main desktop recording flow. It
-requires macOS Screen Recording permission plus a working Swift/Xcode Command
-Line Tools runtime, and it should report unavailable or permission-denied states
-honestly when prerequisites are missing.
+This uses the same feature-gated ScreenCaptureKit capability required by full
+desktop recording. It requires macOS Screen Recording permission plus a working
+Swift/Xcode Command Line Tools runtime, and it should report unavailable or
+permission-denied states honestly when prerequisites are missing.
 
 ## Local Whisper
 
@@ -182,7 +196,7 @@ Run the desktop app with local Whisper enabled:
 
 ```sh
 cd apps/desktop
-CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
 ```
 
 The desktop settings pane can save a local Whisper model path. If no path is

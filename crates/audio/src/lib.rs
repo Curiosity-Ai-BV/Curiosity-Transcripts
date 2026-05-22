@@ -1619,6 +1619,503 @@ pub fn record_macos_system_audio_to_wav(
     )))
 }
 
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+pub struct MacosDesktopWavRecording {
+    mic_stream: cpal::Stream,
+    system_stream: screencapturekit::prelude::SCStream,
+    mic_sample_tx: Option<std::sync::mpsc::SyncSender<MicrophoneWriterMessage>>,
+    sample_tx: Option<std::sync::mpsc::SyncSender<DesktopWriterMessage>>,
+    mic_bridge: Option<std::thread::JoinHandle<()>>,
+    writer: Option<std::thread::JoinHandle<Result<ArtifactManifest, CaptureError>>>,
+    system_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    sample_rate_hz: u32,
+}
+
+#[cfg(not(all(target_os = "macos", feature = "system-audio-screencapturekit")))]
+pub struct MacosDesktopWavRecording;
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+enum DesktopWriterMessage {
+    MicrophoneSamples(Vec<i16>),
+    SystemSamples(Vec<i16>),
+    Stop { ended_at_ms: u64 },
+}
+
+impl MacosDesktopWavRecording {
+    #[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+    pub fn start(root: &Path, session_id: &str, started_at_ms: u64) -> Result<Self, CaptureError> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use screencapturekit::prelude::*;
+        use std::sync::{mpsc, Arc, Mutex};
+
+        let host = cpal::default_host();
+        let device = host.default_input_device().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "no default macOS input device is available",
+            ))
+        })?;
+        let device_name = device
+            .description()
+            .map(|description| description.name().to_string())
+            .unwrap_or_else(|_| "Default input device".to_string());
+        let supported_config = device
+            .default_input_config()
+            .map_err(|error| microphone_error_from_message(error.to_string()))?;
+        let sample_format = supported_config.sample_format();
+        let stream_config: cpal::StreamConfig = supported_config.clone().into();
+        let mic_sample_rate_hz = stream_config.sample_rate;
+        let mic_channel_count = stream_config.channels;
+        let (mic_sample_tx, mic_sample_rx) = mpsc::sync_channel::<MicrophoneWriterMessage>(32);
+        let mic_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mic_stream = build_macos_input_stream(
+            &device,
+            &stream_config,
+            sample_format,
+            mic_sample_tx.clone(),
+            Arc::clone(&mic_errors),
+        )?;
+
+        let content = SCShareableContent::get()
+            .map_err(|error| system_audio_error_from_message(error.to_string()))?;
+        let display = content.displays().into_iter().next().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "ScreenCaptureKit did not report any capturable displays",
+            ))
+        })?;
+        let display_id = display.display_id();
+        let filter = SCContentFilter::create()
+            .with_display(&display)
+            .with_excluding_windows(&[])
+            .build();
+        let system_sample_rate_hz = 48_000;
+        let system_channel_count = 2;
+        let session_dir = root.join(session_id);
+        let config = SCStreamConfiguration::new()
+            .with_width(display.width())
+            .with_height(display.height())
+            .with_captures_audio(true)
+            .with_sample_rate(system_sample_rate_hz as i32)
+            .with_channel_count(i32::from(system_channel_count));
+
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<DesktopWriterMessage>(64);
+        let system_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let snapshot = DeviceSnapshot {
+            captured_at_ms: started_at_ms,
+            mic: Some(StreamMetadata {
+                stream: StreamKind::Microphone,
+                sample_rate_hz: mic_sample_rate_hz,
+                channel_count: mic_channel_count,
+                identity: DeviceIdentity::new("macos-default-input", &device_name, "cpal"),
+                start_time_ms: started_at_ms,
+            }),
+            system: Some(StreamMetadata {
+                stream: StreamKind::SystemAudio,
+                sample_rate_hz: system_sample_rate_hz,
+                channel_count: system_channel_count,
+                identity: DeviceIdentity::new(
+                    &format!("screencapturekit-display-{display_id}"),
+                    "macOS system audio",
+                    "ScreenCaptureKit",
+                ),
+                start_time_ms: started_at_ms,
+            }),
+        };
+        let recorder = StreamingWavRecorder::start(
+            root,
+            RecordingMetadata::new(session_id, started_at_ms),
+            CaptureConfiguration::mixed()?,
+            snapshot,
+        )?;
+
+        let writer_mic_errors = Arc::clone(&mic_errors);
+        let writer_system_errors = Arc::clone(&system_errors);
+        let writer = std::thread::spawn(move || {
+            run_desktop_audio_writer(
+                recorder,
+                sample_rx,
+                writer_mic_errors,
+                writer_system_errors,
+                started_at_ms,
+                mic_sample_rate_hz,
+                mic_channel_count,
+                system_sample_rate_hz,
+                system_channel_count,
+            )
+        });
+
+        let bridge_tx = sample_tx.clone();
+        let bridge_errors = Arc::clone(&mic_errors);
+        let mic_bridge = std::thread::spawn(move || {
+            for message in mic_sample_rx {
+                match message {
+                    MicrophoneWriterMessage::Samples(samples) => {
+                        if let Err(error) =
+                            bridge_tx.try_send(DesktopWriterMessage::MicrophoneSamples(samples))
+                        {
+                            if let Ok(mut errors) = bridge_errors.lock() {
+                                errors.push(format!(
+                                    "desktop microphone writer backpressure: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    MicrophoneWriterMessage::Stop { .. } => break,
+                }
+            }
+        });
+
+        let handler_tx = sample_tx.clone();
+        let handler_errors = Arc::clone(&system_errors);
+        let delegate_errors = Arc::clone(&system_errors);
+        let delegate_stop_errors = Arc::clone(&system_errors);
+        let delegate = screencapturekit::stream::delegate_trait::StreamCallbacks::new()
+            .on_error(move |error| {
+                record_system_audio_stream_error(&delegate_errors, error.to_string());
+            })
+            .on_stop(move |error| {
+                if let Some(error) = error {
+                    record_system_audio_stream_error(&delegate_stop_errors, error);
+                }
+            });
+        let mut system_stream = SCStream::new_with_delegate(&filter, &config, delegate);
+        if system_stream
+            .add_output_handler(
+                move |sample: CMSampleBuffer, of_type: SCStreamOutputType| {
+                    if of_type != SCStreamOutputType::Audio {
+                        return;
+                    }
+                    let encoding = match system_audio_sample_encoding(
+                        &sample,
+                        system_sample_rate_hz,
+                        system_channel_count,
+                    ) {
+                        Ok(encoding) => encoding,
+                        Err(error) => {
+                            record_system_audio_stream_error(&handler_errors, error.to_string());
+                            return;
+                        }
+                    };
+                    let Some(audio_buffers) = sample.audio_buffer_list() else {
+                        record_system_audio_stream_error(
+                            &handler_errors,
+                            "system audio sample did not include audio buffers",
+                        );
+                        return;
+                    };
+                    let raw_buffers = audio_buffers
+                        .iter()
+                        .map(|buffer| SystemAudioRawBuffer {
+                            channel_count: buffer.number_channels as u16,
+                            data: buffer.data(),
+                        })
+                        .collect::<Vec<_>>();
+                    match system_audio_buffers_to_i16(&raw_buffers, encoding, system_channel_count)
+                    {
+                        Ok(samples) => {
+                            if !samples.is_empty() {
+                                send_desktop_system_audio_samples(
+                                    &handler_tx,
+                                    &handler_errors,
+                                    samples,
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            record_system_audio_stream_error(&handler_errors, error.to_string());
+                        }
+                    }
+                },
+                SCStreamOutputType::Audio,
+            )
+            .is_none()
+        {
+            let cleanup_note = cleanup_failed_desktop_recording_start(
+                &session_dir,
+                &mic_sample_tx,
+                sample_tx,
+                mic_bridge,
+                writer,
+                started_at_ms,
+            );
+            return Err(capture_error_with_start_cleanup_note(
+                CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                    "ScreenCaptureKit did not accept a system audio output handler",
+                )),
+                cleanup_note,
+            ));
+        }
+
+        if let Err(error) = system_stream.start_capture() {
+            let cleanup_note = cleanup_failed_desktop_recording_start(
+                &session_dir,
+                &mic_sample_tx,
+                sample_tx,
+                mic_bridge,
+                writer,
+                started_at_ms,
+            );
+            return Err(capture_error_with_start_cleanup_note(
+                system_audio_error_from_message(error.to_string()),
+                cleanup_note,
+            ));
+        }
+
+        if let Err(error) = mic_stream.play() {
+            let _ = system_stream.stop_capture();
+            let cleanup_note = cleanup_failed_desktop_recording_start(
+                &session_dir,
+                &mic_sample_tx,
+                sample_tx,
+                mic_bridge,
+                writer,
+                started_at_ms,
+            );
+            return Err(capture_error_with_start_cleanup_note(
+                microphone_error_from_message(error.to_string()),
+                cleanup_note,
+            ));
+        }
+
+        Ok(Self {
+            mic_stream,
+            system_stream,
+            mic_sample_tx: Some(mic_sample_tx),
+            sample_tx: Some(sample_tx),
+            mic_bridge: Some(mic_bridge),
+            writer: Some(writer),
+            system_errors,
+            sample_rate_hz: mic_sample_rate_hz,
+        })
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "system-audio-screencapturekit")))]
+    pub fn start(
+        _root: &Path,
+        _session_id: &str,
+        _started_at_ms: u64,
+    ) -> Result<Self, CaptureError> {
+        Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "Desktop recording requires macOS and the system-audio-screencapturekit feature for system audio capture",
+        )))
+    }
+
+    #[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate_hz
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "system-audio-screencapturekit")))]
+    pub fn sample_rate_hz(&self) -> u32 {
+        0
+    }
+
+    #[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+    pub fn stop(mut self, ended_at_ms: u64) -> Result<ArtifactManifest, CaptureError> {
+        if let Err(error) = self.system_stream.stop_capture() {
+            if let Ok(mut errors) = self.system_errors.lock() {
+                errors.push(error.to_string());
+            }
+        }
+        drop(self.mic_stream);
+        let mic_sample_tx = self.mic_sample_tx.take().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::microphone(
+                "microphone writer channel is unavailable",
+            ))
+        })?;
+        mic_sample_tx
+            .send(MicrophoneWriterMessage::Stop { ended_at_ms })
+            .map_err(|_| {
+                CaptureError::Unavailable(CaptureUnavailable::microphone(
+                    "microphone writer stopped before finalizing the WAV artifact",
+                ))
+            })?;
+        drop(mic_sample_tx);
+        if let Some(mic_bridge) = self.mic_bridge.take() {
+            let _ = mic_bridge.join();
+        }
+        let sample_tx = self.sample_tx.take().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "desktop audio writer channel is unavailable",
+            ))
+        })?;
+        sample_tx
+            .send(DesktopWriterMessage::Stop { ended_at_ms })
+            .map_err(|_| {
+                CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                    "desktop audio writer stopped before finalizing WAV artifacts",
+                ))
+            })?;
+        drop(sample_tx);
+        let writer = self.writer.take().ok_or_else(|| {
+            CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "desktop audio writer task is unavailable",
+            ))
+        })?;
+        writer.join().map_err(|_| {
+            CaptureError::Unavailable(CaptureUnavailable::system_audio(
+                "desktop audio writer task panicked while finalizing WAV artifacts",
+            ))
+        })?
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "system-audio-screencapturekit")))]
+    pub fn stop(self, _ended_at_ms: u64) -> Result<ArtifactManifest, CaptureError> {
+        Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+            "Desktop recording requires macOS and the system-audio-screencapturekit feature for system audio capture",
+        )))
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+fn cleanup_failed_desktop_recording_start(
+    session_dir: &Path,
+    mic_sample_tx: &std::sync::mpsc::SyncSender<MicrophoneWriterMessage>,
+    sample_tx: std::sync::mpsc::SyncSender<DesktopWriterMessage>,
+    mic_bridge: std::thread::JoinHandle<()>,
+    writer: std::thread::JoinHandle<Result<ArtifactManifest, CaptureError>>,
+    ended_at_ms: u64,
+) -> Option<String> {
+    let _ = mic_sample_tx.send(MicrophoneWriterMessage::Stop { ended_at_ms });
+    let _ = sample_tx.send(DesktopWriterMessage::Stop { ended_at_ms });
+    drop(sample_tx);
+    let bridge_note = if mic_bridge.join().is_err() {
+        Some("microphone bridge panicked while cleaning up failed start".to_string())
+    } else {
+        None
+    };
+    let writer_note = match writer.join() {
+        Ok(Ok(_)) => None,
+        Ok(Err(CaptureError::Recording(error))) => Some(format!(
+            "desktop writer failed while cleaning up failed start: {error}"
+        )),
+        Ok(Err(_)) => None,
+        Err(_) => Some("desktop writer panicked while cleaning up failed start".to_string()),
+    };
+    let remove_note = if session_dir.exists() {
+        fs::remove_dir_all(session_dir)
+            .err()
+            .map(|error| format!("could not remove {}: {error}", session_dir.display()))
+    } else {
+        None
+    };
+    let notes = [bridge_note, writer_note, remove_note]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if notes.is_empty() {
+        None
+    } else {
+        Some(notes.join("; "))
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+fn capture_error_with_start_cleanup_note(
+    error: CaptureError,
+    cleanup_note: Option<String>,
+) -> CaptureError {
+    let Some(cleanup_note) = cleanup_note.filter(|note| !note.is_empty()) else {
+        return error;
+    };
+    match error {
+        CaptureError::Unavailable(mut unavailable) => {
+            unavailable.reason = format!("{}. Startup cleanup: {cleanup_note}", unavailable.reason);
+            CaptureError::Unavailable(unavailable)
+        }
+        CaptureError::PermissionDenied(mut permission) => {
+            permission.message = format!("{}. Startup cleanup: {cleanup_note}", permission.message);
+            CaptureError::PermissionDenied(permission)
+        }
+        CaptureError::Configuration(error) => CaptureError::Configuration(error),
+        CaptureError::Recording(error) => CaptureError::Recording(error),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "writer owns stream-specific capture metadata"
+)]
+fn run_desktop_audio_writer(
+    mut recorder: StreamingWavRecorder,
+    sample_rx: std::sync::mpsc::Receiver<DesktopWriterMessage>,
+    mic_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    system_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    started_at_ms: u64,
+    mic_sample_rate_hz: u32,
+    mic_channel_count: u16,
+    system_sample_rate_hz: u32,
+    system_channel_count: u16,
+) -> Result<ArtifactManifest, CaptureError> {
+    let mut wrote_mic_samples = false;
+    let mut wrote_system_samples = false;
+    let mut mic_frame_start_ms = started_at_ms;
+    let mut system_frame_start_ms = started_at_ms;
+    for message in sample_rx {
+        match message {
+            DesktopWriterMessage::MicrophoneSamples(pcm_i16) => {
+                if pcm_i16.is_empty() {
+                    continue;
+                }
+                wrote_mic_samples = true;
+                let frame = AudioFrame {
+                    stream: StreamKind::Microphone,
+                    start_time_ms: mic_frame_start_ms,
+                    sample_rate_hz: mic_sample_rate_hz,
+                    channel_count: mic_channel_count,
+                    pcm_i16,
+                };
+                mic_frame_start_ms = frame_end_time_ms(&frame);
+                recorder.write_frame(&frame)?;
+            }
+            DesktopWriterMessage::SystemSamples(pcm_i16) => {
+                if pcm_i16.is_empty() {
+                    continue;
+                }
+                wrote_system_samples = true;
+                let frame = AudioFrame {
+                    stream: StreamKind::SystemAudio,
+                    start_time_ms: system_frame_start_ms,
+                    sample_rate_hz: system_sample_rate_hz,
+                    channel_count: system_channel_count,
+                    pcm_i16,
+                };
+                system_frame_start_ms = frame_end_time_ms(&frame);
+                recorder.write_frame(&frame)?;
+            }
+            DesktopWriterMessage::Stop { ended_at_ms } => {
+                let mic_errors = mic_errors
+                    .lock()
+                    .map(|errors| errors.clone())
+                    .unwrap_or_default();
+                let system_errors = system_errors
+                    .lock()
+                    .map(|errors| errors.clone())
+                    .unwrap_or_default();
+                microphone_capture_stream_result(wrote_mic_samples, &mic_errors)?;
+                system_audio_capture_stream_result(wrote_system_samples, &system_errors)?;
+                return recorder.stop(ended_at_ms).map_err(CaptureError::from);
+            }
+        }
+    }
+    Err(CaptureError::Unavailable(CaptureUnavailable::system_audio(
+        "desktop audio writer stopped before finalizing WAV artifacts",
+    )))
+}
+
+#[cfg(all(target_os = "macos", feature = "system-audio-screencapturekit"))]
+fn send_desktop_system_audio_samples(
+    tx: &std::sync::mpsc::SyncSender<DesktopWriterMessage>,
+    errors: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    samples: Vec<i16>,
+) {
+    if let Err(error) = tx.try_send(DesktopWriterMessage::SystemSamples(samples)) {
+        if let Ok(mut errors) = errors.lock() {
+            errors.push(format!("desktop system audio writer backpressure: {error}"));
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub struct MacosMicrophoneWavRecording {
     stream: cpal::Stream,

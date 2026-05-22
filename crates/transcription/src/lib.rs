@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use curiosity_domain::{SourceChannel, TranscriptSegment};
 use hound::{SampleFormat, WavReader};
+use sha2::{Digest, Sha256};
 
 #[cfg(feature = "whisper-rs")]
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -79,6 +80,7 @@ pub struct TranscriptionDocument {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TranscriptionError {
     MissingModelPath { path: PathBuf, guidance: String },
+    EmptyAudioInput { guidance: String },
     AudioInputUnavailable { path: PathBuf, guidance: String },
     UnsupportedAudioInput { path: PathBuf, guidance: String },
     BackendUnavailable { provider: String, guidance: String },
@@ -94,6 +96,9 @@ impl fmt::Display for TranscriptionError {
                     "Whisper model path does not exist: {}. {guidance}",
                     path.display()
                 )
+            }
+            Self::EmptyAudioInput { guidance } => {
+                write!(formatter, "No audio input was provided. {guidance}")
             }
             Self::AudioInputUnavailable { path, guidance } => {
                 write!(
@@ -269,6 +274,108 @@ where
             segments,
         })
     }
+
+    pub fn transcribe_wav_bundle(
+        &self,
+        requests: &[WhisperTranscriptionRequest],
+    ) -> Result<TranscriptionDocument, TranscriptionError> {
+        if requests.is_empty() {
+            return Err(TranscriptionError::EmptyAudioInput {
+                guidance: AUDIO_UNAVAILABLE_GUIDANCE.to_string(),
+            });
+        }
+        if requests.len() == 1 {
+            return self.transcribe_wav(&requests[0]);
+        }
+        if !self.model_path.is_file() {
+            return Err(TranscriptionError::MissingModelPath {
+                path: self.model_path.clone(),
+                guidance: MISSING_MODEL_GUIDANCE.to_string(),
+            });
+        }
+
+        let meeting_id = &requests[0].meeting_id;
+        for request in requests {
+            if request.meeting_id != *meeting_id {
+                return Err(TranscriptionError::UnsupportedAudioInput {
+                    path: request.audio_path.clone(),
+                    guidance: "Bundled transcription requires all audio artifacts to belong to the same meeting.".to_string(),
+                });
+            }
+            validate_wav_input(&request.audio_path)?;
+        }
+
+        let source_artifact_sha256 = bundled_source_artifact_sha256(requests);
+        let model_run_id = model_run_id(
+            self.backend.provider(),
+            &self.model_name,
+            meeting_id,
+            &source_artifact_sha256,
+        );
+        let transcript_version_id = format!("{model_run_id}-v1");
+        let mut bundle_segments = Vec::new();
+        for (source_index, request) in requests.iter().enumerate() {
+            let mut backend_segments = self
+                .backend
+                .transcribe(&self.model_path, &request.audio_path)?;
+            backend_segments.sort_by_key(|segment| (segment.start_ms, segment.end_ms));
+            for (segment_index, segment) in backend_segments.into_iter().enumerate() {
+                bundle_segments.push(BundleSegment {
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms,
+                    text: segment.text,
+                    source_channel: request.source_channel,
+                    source_index,
+                    segment_index,
+                });
+            }
+        }
+        bundle_segments.sort_by_key(|segment| {
+            (
+                segment.start_ms,
+                segment.end_ms,
+                source_channel_rank(segment.source_channel),
+                segment.source_index,
+                segment.segment_index,
+            )
+        });
+
+        let segments = bundle_segments
+            .into_iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                TranscriptSegment::with_metadata(
+                    format!("{transcript_version_id}-segment-{index}"),
+                    meeting_id.clone(),
+                    segment.start_ms,
+                    segment.end_ms,
+                    segment.text,
+                    segment.source_channel,
+                    model_run_id.clone(),
+                    transcript_version_id.clone(),
+                )
+            })
+            .collect();
+
+        Ok(TranscriptionDocument {
+            provider: self.backend.provider().to_string(),
+            model_name: self.model_name.clone(),
+            model_run_id,
+            transcript_version_id,
+            source_artifact_sha256,
+            segments,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BundleSegment {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+    source_channel: SourceChannel,
+    source_index: usize,
+    segment_index: usize,
 }
 
 #[cfg(feature = "whisper-rs")]
@@ -611,6 +718,37 @@ fn model_run_id(provider: &str, model_name: &str, meeting_id: &str, source_hash:
         sanitize_id(source_hash),
         identity_hash
     )
+}
+
+fn bundled_source_artifact_sha256(requests: &[WhisperTranscriptionRequest]) -> String {
+    let mut hasher = Sha256::new();
+    for request in requests {
+        hasher.update(request.meeting_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(source_channel_name(request.source_channel).as_bytes());
+        hasher.update([0]);
+        hasher.update(request.source_artifact_sha256.as_bytes());
+        hasher.update([0]);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn source_channel_name(source_channel: SourceChannel) -> &'static str {
+    match source_channel {
+        SourceChannel::Microphone => "Microphone",
+        SourceChannel::System => "System",
+        SourceChannel::Mixed => "Mixed",
+        SourceChannel::Imported => "Imported",
+    }
+}
+
+fn source_channel_rank(source_channel: SourceChannel) -> u8 {
+    match source_channel {
+        SourceChannel::Microphone => 0,
+        SourceChannel::System => 1,
+        SourceChannel::Mixed => 2,
+        SourceChannel::Imported => 3,
+    }
 }
 
 fn sanitize_id(value: &str) -> String {

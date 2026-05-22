@@ -692,6 +692,7 @@ dependencies = [
  "curiosity-domain",
  "hound",
  "serde_json",
+ "sha2",
  "whisper-rs",
 ]
 

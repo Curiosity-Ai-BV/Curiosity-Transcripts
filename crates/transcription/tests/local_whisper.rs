@@ -183,6 +183,59 @@ fn fake_whisper_backend_maps_timestamped_output_into_ordered_metadata_segments()
 }
 
 #[test]
+fn fake_whisper_backend_transcribes_wav_bundle_into_one_mixed_document() {
+    let dir = unique_test_dir("fake-backend-bundle");
+    fs::create_dir_all(&dir).expect("test dir");
+    let model_path = dir.join("model.bin");
+    fs::write(&model_path, b"test model placeholder").expect("model placeholder");
+    let mic_path = dir.join("raw-mic.wav");
+    let system_path = dir.join("raw-system.wav");
+    write_minimal_wav(&mic_path);
+    write_minimal_wav(&system_path);
+
+    let transcriber = WhisperTranscriber::new(
+        model_path,
+        "fixture-whisper",
+        FakeWhisperBackend::new(vec![WhisperBackendSegment::new(0, 1_200, "spoken text")]),
+    );
+    let document = transcriber
+        .transcribe_wav_bundle(&[
+            WhisperTranscriptionRequest::new(
+                "meeting-1",
+                &mic_path,
+                "sha256:mic",
+                SourceChannel::Microphone,
+            ),
+            WhisperTranscriptionRequest::new(
+                "meeting-1",
+                &system_path,
+                "sha256:system",
+                SourceChannel::System,
+            ),
+        ])
+        .expect("bundle transcription");
+
+    assert!(document.source_artifact_sha256.starts_with("sha256:"));
+    assert_ne!(document.source_artifact_sha256, "sha256:mic");
+    assert_eq!(document.segments.len(), 2);
+    assert_eq!(
+        document.segments[0].source_channel,
+        SourceChannel::Microphone
+    );
+    assert_eq!(document.segments[1].source_channel, SourceChannel::System);
+    assert_eq!(document.segments[0].model_run_id, document.model_run_id);
+    assert_eq!(document.segments[1].model_run_id, document.model_run_id);
+    assert_eq!(
+        document.segments[0].transcript_version_id,
+        document.transcript_version_id
+    );
+    assert_eq!(
+        document.segments[1].transcript_version_id,
+        document.transcript_version_id
+    );
+}
+
+#[test]
 fn optional_real_whisper_smoke_is_skipped_without_explicit_paths_and_not_counted_as_passed() {
     let status = run_optional_real_whisper_smoke(None::<PathBuf>, None::<PathBuf>);
 

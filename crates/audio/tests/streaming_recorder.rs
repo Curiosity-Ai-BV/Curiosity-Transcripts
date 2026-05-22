@@ -36,13 +36,13 @@ fn write_frame_updates_manifest_with_recoverable_in_progress_wav_artifact() {
 
     recorder.write_frame(&frame).expect("write frame");
 
-    let manifest_text = fs::read_to_string(
-        root.join("session-in-progress").join("manifest.txt"),
-    )
-    .expect("manifest text");
+    let manifest_text = fs::read_to_string(root.join("session-in-progress").join("manifest.txt"))
+        .expect("manifest text");
     assert!(manifest_text.contains("status=Recording"));
     assert!(manifest_text.contains("recoverable=true"));
-    assert!(manifest_text.contains("recovery_reason=recording active; WAV artifact can be recovered if interrupted"));
+    assert!(manifest_text.contains(
+        "recovery_reason=recording active; WAV artifact can be recovered if interrupted"
+    ));
     let artifact_line = manifest_text
         .lines()
         .find(|line| line.starts_with("artifact=Microphone,raw-mic.wav,Writing,"))
@@ -121,4 +121,38 @@ fn stop_writes_recoverable_wav_artifact_metadata_and_complete_manifest() {
     assert!(manifest_text.contains("device_display_name=Fake Microphone"));
     assert!(manifest_text.contains("device_transport=test"));
     assert!(manifest_text.contains("sha256="));
+}
+
+#[test]
+fn stop_writes_mixed_microphone_and_system_wav_artifacts() {
+    let root = test_dir("stop-mixed-wav");
+    let capture = FakeAudioCapture::new_deterministic(48_000, 2, 1_700_000_000_000);
+    let snapshot = capture.device_snapshot().expect("fake snapshot");
+    let mut recorder = StreamingWavRecorder::start(
+        &root,
+        RecordingMetadata::new("session-mixed", 1_700_000_000_000),
+        CaptureConfiguration::mixed().expect("mixed config"),
+        snapshot,
+    )
+    .expect("start recorder");
+
+    for frame in capture.capture_frames().expect("fake frames") {
+        recorder.write_frame(&frame).expect("write frame");
+    }
+    let manifest = recorder.stop(1_700_000_000_001).expect("stop");
+    let streams = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.stream, artifact.file_name.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        streams,
+        vec![
+            (StreamKind::Microphone, "raw-mic.wav"),
+            (StreamKind::SystemAudio, "raw-system.wav")
+        ]
+    );
+    assert!(root.join("session-mixed").join("raw-mic.wav").is_file());
+    assert!(root.join("session-mixed").join("raw-system.wav").is_file());
 }

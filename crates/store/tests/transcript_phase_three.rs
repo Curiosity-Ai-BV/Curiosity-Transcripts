@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
-    SourceChannel, TranscriptSegment, TranscriptVersion,
+    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
 };
 use curiosity_store::Store;
 
@@ -72,7 +72,8 @@ fn transcript_persistence_keeps_timing_source_model_run_and_version_metadata() {
 }
 
 #[test]
-fn importing_same_audio_and_transcript_twice_is_idempotent_by_meeting_artifact_provider_model_and_version() {
+fn importing_same_audio_and_transcript_twice_is_idempotent_by_meeting_artifact_provider_model_and_version(
+) {
     let root = test_root("idempotent");
     let store = migrated_store(&root);
     seed_meeting_with_audio(&store);
@@ -105,14 +106,8 @@ fn importing_same_audio_and_transcript_twice_is_idempotent_by_meeting_artifact_p
         .expect("second import");
 
     assert_eq!(store.count("model_runs").expect("model runs"), 1);
-    assert_eq!(
-        store.count("transcript_versions").expect("versions"),
-        1
-    );
-    assert_eq!(
-        store.count("transcript_segments").expect("segments"),
-        1
-    );
+    assert_eq!(store.count("transcript_versions").expect("versions"), 1);
+    assert_eq!(store.count("transcript_segments").expect("segments"), 1);
 }
 
 #[test]
@@ -264,7 +259,8 @@ fn transcript_idempotency_uses_content_key_not_generated_run_or_segment_ids() {
         false,
         2_500,
     );
-    let second_version = TranscriptVersion::new("version-second", "meeting-1", "run-second", 1, 2_510);
+    let second_version =
+        TranscriptVersion::new("version-second", "meeting-1", "run-second", 1, 2_510);
 
     store
         .persist_transcript(
@@ -303,10 +299,7 @@ fn transcript_idempotency_uses_content_key_not_generated_run_or_segment_ids() {
         .transcript_segments("meeting-1")
         .expect("read transcript");
     assert_eq!(store.count("model_runs").expect("model runs"), 1);
-    assert_eq!(
-        store.count("transcript_versions").expect("versions"),
-        1
-    );
+    assert_eq!(store.count("transcript_versions").expect("versions"), 1);
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].id, "segment-first");
     assert_eq!(stored[0].model_run_id, "run-first");
@@ -314,7 +307,8 @@ fn transcript_idempotency_uses_content_key_not_generated_run_or_segment_ids() {
 }
 
 #[test]
-fn replaying_same_transcript_key_with_changed_segments_returns_conflict_instead_of_silently_ignoring() {
+fn replaying_same_transcript_key_with_changed_segments_returns_conflict_instead_of_silently_ignoring(
+) {
     let root = test_root("divergent-transcript-replay");
     let store = migrated_store(&root);
     seed_meeting_with_audio(&store);
@@ -425,10 +419,7 @@ fn replaying_same_transcript_key_with_changed_segment_count_returns_conflict() {
         .expect_err("changed segment count should conflict");
 
     assert!(err.to_string().contains("transcript replay conflict"));
-    assert_eq!(
-        store.count("transcript_segments").expect("segments"),
-        1
-    );
+    assert_eq!(store.count("transcript_segments").expect("segments"), 1);
 }
 
 #[test]
@@ -540,14 +531,8 @@ fn failed_transcript_persist_rolls_back_version_and_partial_segments_so_retry_ca
         .persist_transcript(&run, &version, &duplicate_segment_ids)
         .expect_err("duplicate segment id should fail mid-persist");
 
-    assert_eq!(
-        store.count("transcript_versions").expect("versions"),
-        0
-    );
-    assert_eq!(
-        store.count("transcript_segments").expect("segments"),
-        0
-    );
+    assert_eq!(store.count("transcript_versions").expect("versions"), 0);
+    assert_eq!(store.count("transcript_segments").expect("segments"), 0);
     assert!(store
         .transcript_segments("meeting-1")
         .expect("visible transcript after failed persist")
@@ -748,6 +733,30 @@ fn completed_wav_artifact_for_transcription_excludes_incomplete_and_tombstoned_r
     store
         .tombstone_audio_artifact("artifact-tombstoned")
         .expect("mark tombstoned");
+    store
+        .update_recording_session_status(
+            "session-complete",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete selected session");
+    store
+        .update_recording_session_status(
+            "session-cross-meeting-path",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete cross-path session");
+    store
+        .update_recording_session_status(
+            "session-tombstoned",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete tombstoned session");
 
     let artifact = store
         .completed_wav_artifact_for_transcription("meeting-1")
@@ -758,6 +767,140 @@ fn completed_wav_artifact_for_transcription_excludes_incomplete_and_tombstoned_r
     assert_eq!(artifact.recording_session_id, "session-complete");
     assert_eq!(artifact.path, "meetings/meeting-1/audio/raw-mic.wav");
     assert_eq!(artifact.sha256, "sha256:complete");
+}
+
+#[test]
+fn completed_wav_artifacts_for_transcription_returns_latest_private_mic_then_system_pair() {
+    let root = test_root("completed-wav-bundle-for-transcription");
+    let store = migrated_store(&root);
+    seed_meeting_session(&store);
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-mixed",
+            "meeting-1",
+            RecordingSource::Mixed,
+            1_001,
+            48_000,
+        ))
+        .expect("mixed session");
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-newer-unsafe",
+            "meeting-1",
+            RecordingSource::Microphone,
+            1_002,
+            48_000,
+        ))
+        .expect("unsafe session");
+
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-system",
+            "session-mixed",
+            ArtifactKind::RawSystem,
+            "meetings/meeting-1/audio/recording-1/raw-system.wav",
+            "sha256:pending:system",
+        ))
+        .expect("system artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-mic",
+            "session-mixed",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/recording-1/raw-mic.wav",
+            "sha256:pending:mic",
+        ))
+        .expect("mic artifact");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-unsafe",
+            "session-newer-unsafe",
+            ArtifactKind::RawMic,
+            "../escape.wav",
+            "sha256:pending:unsafe",
+        ))
+        .expect("unsafe artifact");
+    store
+        .complete_audio_artifact("artifact-system", "sha256:system")
+        .expect("complete system");
+    store
+        .complete_audio_artifact("artifact-mic", "sha256:mic")
+        .expect("complete mic");
+    store
+        .complete_audio_artifact("artifact-unsafe", "sha256:unsafe")
+        .expect("complete unsafe");
+    store
+        .update_recording_session_status(
+            "session-mixed",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete mixed session");
+    store
+        .update_recording_session_status(
+            "session-newer-unsafe",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete unsafe session");
+
+    let artifacts = store
+        .completed_wav_artifacts_for_transcription("meeting-1")
+        .expect("select artifacts");
+
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["artifact-mic", "artifact-system"]
+    );
+    assert_eq!(artifacts[0].kind, "RawMic");
+    assert_eq!(artifacts[1].kind, "RawSystem");
+}
+
+#[test]
+fn completed_wav_artifacts_for_transcription_rejects_partial_mixed_session() {
+    let root = test_root("completed-wav-partial-mixed");
+    let store = migrated_store(&root);
+    seed_meeting_session(&store);
+    store
+        .insert_recording_session(&RecordingSession::start(
+            "session-mixed",
+            "meeting-1",
+            RecordingSource::Mixed,
+            1_001,
+            48_000,
+        ))
+        .expect("mixed session");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-mic",
+            "session-mixed",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/recording-1/raw-mic.wav",
+            "sha256:pending:mic",
+        ))
+        .expect("mic artifact");
+    store
+        .complete_audio_artifact("artifact-mic", "sha256:mic")
+        .expect("complete mic");
+    store
+        .update_recording_session_status(
+            "session-mixed",
+            RecordingStatus::Complete,
+            Some(1_100),
+            None,
+        )
+        .expect("complete mixed session");
+
+    let artifacts = store
+        .completed_wav_artifacts_for_transcription("meeting-1")
+        .expect("select artifacts");
+
+    assert!(artifacts.is_empty());
 }
 
 fn migrated_store(root: &Path) -> Store {

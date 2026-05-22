@@ -406,18 +406,18 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const busyCommandTitle = "A desktop command is already running.";
   const startButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop the active recording before starting another one."
-        : "Start microphone recording.";
+      : commandBusy
+        ? busyCommandTitle
+        : isRecordingActive
+          ? "Stop the active recording before starting another one."
+        : "Start desktop recording.";
   const stopButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop microphone recording."
-        : "No active microphone recording to stop.";
+      : commandBusy
+        ? busyCommandTitle
+        : isRecordingActive
+        ? "Stop desktop recording."
+        : "No active desktop recording to stop.";
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy

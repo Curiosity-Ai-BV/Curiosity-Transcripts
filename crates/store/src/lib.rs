@@ -4,10 +4,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
-    ArtifactKind,
-    AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun, ProcessingJob,
-    RecordingSession, RecordingSource, RecordingStatus, SourceChannel, TranscriptSegment,
-    TranscriptState, TranscriptVersion,
+    ArtifactKind, AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun,
+    ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
+    TranscriptSegment, TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -66,6 +65,12 @@ pub struct TranscriptionAudioArtifact {
     pub recording_session_id: String,
     pub kind: String,
     pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletedAudioArtifact {
+    pub artifact_id: String,
     pub sha256: String,
 }
 
@@ -306,16 +311,30 @@ impl Store {
         session: &RecordingSession,
         artifact: &AudioArtifact,
     ) -> StoreResult<()> {
+        self.insert_recording_start_with_artifacts(meeting, session, std::slice::from_ref(artifact))
+    }
+
+    pub fn insert_recording_start_with_artifacts(
+        &self,
+        meeting: &Meeting,
+        session: &RecordingSession,
+        artifacts: &[AudioArtifact],
+    ) -> StoreResult<()> {
+        if artifacts.is_empty() {
+            return Err("recording start requires at least one audio artifact".into());
+        }
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let result = (|| {
             self.insert_meeting(meeting)?;
             self.insert_recording_session(session)?;
-            let inserted_artifact_id = self.insert_audio_artifact(artifact)?;
-            if inserted_artifact_id != artifact.id {
-                return Err(format!(
-                    "recording start reused unexpected audio artifact: {inserted_artifact_id}"
-                )
-                .into());
+            for artifact in artifacts {
+                let inserted_artifact_id = self.insert_audio_artifact(artifact)?;
+                if inserted_artifact_id != artifact.id {
+                    return Err(format!(
+                        "recording start reused unexpected audio artifact: {inserted_artifact_id}"
+                    )
+                    .into());
+                }
             }
             Ok(())
         })();
@@ -514,6 +533,100 @@ impl Store {
         Ok(())
     }
 
+    pub fn complete_recording_session_with_artifacts(
+        &self,
+        meeting_id: &str,
+        recording_id: &str,
+        ended_at_ms: u64,
+        artifacts: &[CompletedAudioArtifact],
+    ) -> StoreResult<()> {
+        if artifacts.is_empty() {
+            return Err("completed recording requires at least one audio artifact".into());
+        }
+        for artifact in artifacts {
+            if is_pending_sha256(&artifact.sha256) {
+                return Err("completed audio artifacts require a final sha256".into());
+            }
+        }
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.complete_recording_session_with_artifacts_in_transaction(
+            meeting_id,
+            recording_id,
+            ended_at_ms,
+            artifacts,
+        );
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_recording_session_with_artifacts_in_transaction(
+        &self,
+        meeting_id: &str,
+        recording_id: &str,
+        ended_at_ms: u64,
+        artifacts: &[CompletedAudioArtifact],
+    ) -> StoreResult<()> {
+        for artifact in artifacts {
+            self.conn.execute(
+                "
+                UPDATE audio_artifacts
+                SET sha256 = ?3,
+                    write_status = 'Complete',
+                    recovery_status = 'NotNeeded'
+                WHERE id = ?1 AND recording_session_id = ?2
+                ",
+                params![artifact.artifact_id, recording_id, artifact.sha256],
+            )?;
+            if self.conn.changes() == 0 {
+                return Err(format!(
+                    "audio artifact not found for recording {recording_id}: {}",
+                    artifact.artifact_id
+                )
+                .into());
+            }
+        }
+
+        self.conn.execute(
+            "
+            UPDATE recording_sessions
+            SET status = 'Complete',
+                ended_at_ms = ?3,
+                recovery_note = NULL
+            WHERE id = ?1 AND meeting_id = ?2
+            ",
+            params![recording_id, meeting_id, ended_at_ms],
+        )?;
+        if self.conn.changes() == 0 {
+            return Err(format!("recording session not found: {recording_id}").into());
+        }
+
+        self.conn.execute(
+            "
+            UPDATE meetings
+            SET status = 'Complete',
+                ended_at_ms = ?2
+            WHERE id = ?1
+            ",
+            params![meeting_id, ended_at_ms],
+        )?;
+        if self.conn.changes() == 0 {
+            return Err(format!("meeting not found: {meeting_id}").into());
+        }
+        Ok(())
+    }
+
     pub fn tombstone_audio_artifact(&self, artifact_id: &str) -> StoreResult<()> {
         self.conn.execute(
             "
@@ -534,6 +647,16 @@ impl Store {
         &self,
         meeting_id: &str,
     ) -> StoreResult<Option<TranscriptionAudioArtifact>> {
+        Ok(self
+            .completed_wav_artifacts_for_transcription(meeting_id)?
+            .into_iter()
+            .next())
+    }
+
+    pub fn completed_wav_artifacts_for_transcription(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Vec<TranscriptionAudioArtifact>> {
         let meeting_path_prefix = format!("meetings/{meeting_id}/");
         let mut stmt = self.conn.prepare(
             "
@@ -542,7 +665,8 @@ impl Store {
                 audio_artifacts.recording_session_id,
                 audio_artifacts.kind,
                 audio_artifacts.path,
-                audio_artifacts.sha256
+                audio_artifacts.sha256,
+                recording_sessions.source
             FROM audio_artifacts
             JOIN recording_sessions
               ON recording_sessions.id = audio_artifacts.recording_session_id
@@ -550,25 +674,54 @@ impl Store {
               AND audio_artifacts.retained = 1
               AND audio_artifacts.write_status = 'Complete'
               AND audio_artifacts.tombstoned = 0
+              AND recording_sessions.status IN ('Complete', 'Recovered')
               AND lower(audio_artifacts.path) LIKE '%.wav'
-            ORDER BY recording_sessions.started_at_ms DESC, audio_artifacts.id DESC
+            ORDER BY recording_sessions.started_at_ms DESC,
+                     audio_artifacts.id ASC
             ",
         )?;
         let artifacts = stmt
             .query_map(params![meeting_id], |row| {
-                Ok(TranscriptionAudioArtifact {
-                    artifact_id: row.get(0)?,
-                    recording_session_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    path: row.get(3)?,
-                    sha256: row.get(4)?,
-                })
+                Ok((
+                    TranscriptionAudioArtifact {
+                        artifact_id: row.get(0)?,
+                        recording_session_id: row.get(1)?,
+                        kind: row.get(2)?,
+                        path: row.get(3)?,
+                        sha256: row.get(4)?,
+                    },
+                    row.get::<_, String>(5)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(artifacts.into_iter().find(|artifact| {
-            artifact.path.starts_with(&meeting_path_prefix)
-                && self.private_app_path(&artifact.path).is_some()
-        }))
+        let mut artifacts = artifacts
+            .into_iter()
+            .filter(|(artifact, _source)| {
+                artifact.path.starts_with(&meeting_path_prefix)
+                    && self.private_app_path(&artifact.path).is_some()
+            })
+            .collect::<Vec<_>>();
+        let Some((first_artifact, recording_source)) = artifacts.first() else {
+            return Ok(Vec::new());
+        };
+        let recording_session_id = first_artifact.recording_session_id.clone();
+        let recording_source = recording_source.clone();
+        artifacts
+            .retain(|(artifact, _source)| artifact.recording_session_id == recording_session_id);
+        let mut artifacts = artifacts
+            .into_iter()
+            .map(|(artifact, _source)| artifact)
+            .collect::<Vec<_>>();
+        if !transcription_artifacts_satisfy_recording_source(&recording_source, &artifacts) {
+            return Ok(Vec::new());
+        }
+        artifacts.sort_by_key(|artifact| {
+            (
+                transcription_artifact_kind_rank(&artifact.kind),
+                artifact.artifact_id.clone(),
+            )
+        });
+        Ok(artifacts)
     }
 
     pub fn meeting_status(&self, meeting_id: &str) -> StoreResult<String> {
@@ -587,10 +740,7 @@ impl Store {
         )?)
     }
 
-    pub fn recording_session_ended_at_ms(
-        &self,
-        recording_id: &str,
-    ) -> StoreResult<Option<u64>> {
+    pub fn recording_session_ended_at_ms(&self, recording_id: &str) -> StoreResult<Option<u64>> {
         Ok(self.conn.query_row(
             "SELECT ended_at_ms FROM recording_sessions WHERE id = ?1",
             params![recording_id],
@@ -605,61 +755,154 @@ impl Store {
             if manifest.recovery_status != RepairStatus::Recoverable {
                 continue;
             }
-            let Some(db_artifact) = self.db_artifact_for_repair(&manifest.artifact_id)? else {
-                report.conflicts.push(RepairConflict::MissingArtifact {
-                    artifact_id: manifest.artifact_id,
+            let mut manifest_had_conflict = false;
+            let entries = recoverable_artifact_entries(&manifest);
+            let mut recovery_plan = Vec::new();
+            for entry in &entries {
+                let Some(db_artifact) = self.db_artifact_for_repair(&entry.artifact_id)? else {
+                    report.conflicts.push(RepairConflict::MissingArtifact {
+                        artifact_id: entry.artifact_id.clone(),
+                    });
+                    manifest_had_conflict = true;
+                    continue;
+                };
+                if let Some(conflict) = repair_conflict(entry, &db_artifact) {
+                    report.conflicts.push(conflict);
+                    manifest_had_conflict = true;
+                    continue;
+                }
+                let Some(artifact_path) = self.private_app_path(&entry.path) else {
+                    report.conflicts.push(RepairConflict::UnsafePath {
+                        artifact_id: entry.artifact_id.clone(),
+                        path: entry.path.clone(),
+                    });
+                    manifest_had_conflict = true;
+                    continue;
+                };
+                if !artifact_path.exists() {
+                    if entries.len() > 1 {
+                        report.conflicts.push(RepairConflict::MissingFile {
+                            artifact_id: entry.artifact_id.clone(),
+                            path: entry.path.clone(),
+                        });
+                        manifest_had_conflict = true;
+                    }
+                    continue;
+                }
+                let recovered_sha256 = if is_pending_sha256(&entry.sha256) {
+                    sha256_file(&artifact_path)?
+                } else {
+                    entry.sha256.clone()
+                };
+                recovery_plan.push(RepairArtifactRecovery {
+                    artifact_id: entry.artifact_id.clone(),
+                    sha256: recovered_sha256,
+                    kind: db_artifact.kind,
+                    recording_source: db_artifact.recording_source,
                 });
-                continue;
-            };
-            if let Some(conflict) = repair_conflict(&manifest, &db_artifact) {
-                report.conflicts.push(conflict);
+            }
+            if manifest_had_conflict || recovery_plan.is_empty() {
                 continue;
             }
-            let Some(artifact_path) = self.private_app_path(&manifest.path) else {
-                report.conflicts.push(RepairConflict::UnsafePath {
-                    artifact_id: manifest.artifact_id,
-                    path: manifest.path,
-                });
+            let recording_source = recovery_plan
+                .first()
+                .map(|artifact| artifact.recording_source.clone())
+                .unwrap_or_default();
+            let artifact_kinds = recovery_plan
+                .iter()
+                .map(|artifact| artifact.kind.as_str())
+                .collect::<Vec<_>>();
+            if !artifact_kinds_satisfy_recording_source(&recording_source, &artifact_kinds) {
+                report
+                    .conflicts
+                    .push(RepairConflict::IncompleteArtifactSet {
+                        session_id: manifest.session_id.clone(),
+                        recording_source,
+                    });
                 continue;
-            };
-            if !artifact_path.exists() {
-                continue;
-            }
-            let recovered_sha256 = if is_pending_sha256(&manifest.sha256) {
-                sha256_file(&artifact_path)?
-            } else {
-                manifest.sha256.clone()
-            };
-            self.conn.execute(
-                "
-                UPDATE audio_artifacts
-                SET sha256 = ?2,
-                    write_status = 'Complete',
-                    recovery_status = 'Recovered'
-                WHERE id = ?1
-                ",
-                params![manifest.artifact_id, recovered_sha256],
-            )?;
-            if self.conn.changes() > 0 {
-                report.recovered_artifacts.push(manifest.artifact_id.clone());
             }
 
-            let mut stmt = self.conn.prepare(
-                "
-                SELECT id FROM processing_jobs
-                WHERE meeting_id = ?1 AND status = 'Running'
-                ORDER BY id
-                ",
-            )?;
-            let job_ids = stmt
-                .query_map(params![manifest.meeting_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for job_id in job_ids {
+            self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+            let recovery_result = (|| -> StoreResult<(Vec<String>, Vec<String>)> {
+                let mut recovered_artifacts = Vec::new();
+                for artifact in &recovery_plan {
+                    self.conn.execute(
+                        "
+                        UPDATE audio_artifacts
+                        SET sha256 = ?2,
+                            write_status = 'Complete',
+                            recovery_status = 'Recovered'
+                        WHERE id = ?1
+                        ",
+                        params![artifact.artifact_id, artifact.sha256],
+                    )?;
+                    if self.conn.changes() > 0 {
+                        recovered_artifacts.push(artifact.artifact_id.clone());
+                    }
+                }
                 self.conn.execute(
-                    "UPDATE processing_jobs SET status = 'Recovery' WHERE id = ?1",
-                    params![job_id],
+                    "
+                    UPDATE recording_sessions
+                    SET status = 'Recovered',
+                        recovery_note = COALESCE(
+                            recovery_note,
+                            'recovered completed audio artifacts during startup repair'
+                        )
+                    WHERE id = ?1
+                    ",
+                    params![manifest.session_id],
                 )?;
-                report.recovered_jobs.push(job_id);
+                if self.conn.changes() == 0 {
+                    return Err(
+                        format!("recording session not found: {}", manifest.session_id).into(),
+                    );
+                }
+                self.conn.execute(
+                    "
+                    UPDATE meetings
+                    SET status = CASE
+                            WHEN status IN ('Complete', 'Deleted') THEN status
+                            ELSE 'Recovered'
+                        END
+                    WHERE id = ?1
+                    ",
+                    params![manifest.meeting_id],
+                )?;
+                if self.conn.changes() == 0 {
+                    return Err(format!("meeting not found: {}", manifest.meeting_id).into());
+                }
+
+                let mut stmt = self.conn.prepare(
+                    "
+                    SELECT id FROM processing_jobs
+                    WHERE meeting_id = ?1 AND status = 'Running'
+                    ORDER BY id
+                    ",
+                )?;
+                let job_ids = stmt
+                    .query_map(params![manifest.meeting_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for job_id in &job_ids {
+                    self.conn.execute(
+                        "UPDATE processing_jobs SET status = 'Recovery' WHERE id = ?1",
+                        params![job_id],
+                    )?;
+                }
+                Ok((recovered_artifacts, job_ids))
+            })();
+            match recovery_result {
+                Ok((recovered_artifacts, recovered_jobs)) => {
+                    if let Err(err) = self.conn.execute_batch("COMMIT") {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        return Err(err.into());
+                    }
+                    report.recovered_artifacts.extend(recovered_artifacts);
+                    report.recovered_jobs.extend(recovered_jobs);
+                }
+                Err(err) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err);
+                }
             }
         }
         report.recovered_artifacts.sort();
@@ -714,24 +957,55 @@ impl Store {
         artifact_path: &str,
         sha256: &str,
     ) -> StoreResult<()> {
+        self.write_recoverable_artifact_manifests(
+            meeting_id,
+            session_id,
+            &[RecoverableArtifact {
+                artifact_id: artifact_id.to_string(),
+                path: artifact_path.to_string(),
+                sha256: sha256.to_string(),
+            }],
+        )
+    }
+
+    pub fn write_recoverable_artifact_manifests(
+        &self,
+        meeting_id: &str,
+        session_id: &str,
+        artifacts: &[RecoverableArtifact],
+    ) -> StoreResult<()> {
         if !is_safe_meeting_id(meeting_id) {
-            return Err(
-                format!("meeting id is not safe for private storage: {meeting_id}").into(),
-            );
+            return Err(format!("meeting id is not safe for private storage: {meeting_id}").into());
         }
-        if self.private_app_path(artifact_path).is_none() {
-            return Err(
-                format!("artifact path is not safe for private storage: {artifact_path}").into(),
-            );
+        let Some(first_artifact) = artifacts.first() else {
+            return Err("recoverable manifest requires at least one audio artifact".into());
+        };
+        for artifact in artifacts {
+            if self.private_app_path(&artifact.path).is_none() {
+                return Err(format!(
+                    "artifact path is not safe for private storage: {}",
+                    artifact.path
+                )
+                .into());
+            }
         }
         let manifest_path = self
             .app_root
             .join("meetings")
             .join(meeting_id)
             .join("manifest.json");
-        ArtifactManifest::new(meeting_id, session_id, artifact_id, artifact_path, sha256)
-            .mark_interrupted_recoverable()
-            .write(manifest_path)
+        let mut manifest = ArtifactManifest::new(
+            meeting_id,
+            session_id,
+            &first_artifact.artifact_id,
+            &first_artifact.path,
+            &first_artifact.sha256,
+        )
+        .mark_interrupted_recoverable();
+        if artifacts.len() > 1 {
+            manifest.artifacts = artifacts.to_vec();
+        }
+        manifest.write(manifest_path)
     }
 
     pub fn list_meetings(&self) -> StoreResult<Vec<MeetingSummary>> {
@@ -801,7 +1075,9 @@ impl Store {
             ",
         )?;
         let meetings = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         for (meeting_id, title) in meetings {
             let transcript_text = self.searchable_transcript_text(&meeting_id)?;
@@ -872,7 +1148,11 @@ impl Store {
         Ok(results)
     }
 
-    pub fn export_meeting_json(&self, meeting_id: &str, export_root: &Path) -> StoreResult<PathBuf> {
+    pub fn export_meeting_json(
+        &self,
+        meeting_id: &str,
+        export_root: &Path,
+    ) -> StoreResult<PathBuf> {
         let export = self.meeting_export(meeting_id)?;
         fs::create_dir_all(export_root)?;
         let path = export_root.join(safe_export_filename(meeting_id)?);
@@ -915,7 +1195,9 @@ impl Store {
 
         for artifact_path in self.private_artifacts_for_delete(meeting_id)? {
             let Some(path) = self.private_app_path(&artifact_path) else {
-                report.skipped_private_artifacts.push(self.reported_path(&artifact_path));
+                report
+                    .skipped_private_artifacts
+                    .push(self.reported_path(&artifact_path));
                 continue;
             };
             if path.exists() {
@@ -1049,31 +1331,34 @@ impl Store {
                 model_run.id.clone()
             }
         };
-        let transcript_version_id =
-            match self.transcript_version_by_identity(&version.meeting_id, &model_run_id, version.version)? {
-                Some(existing_id) => {
-                    self.ensure_transcript_replay_matches(&existing_id, segments)?;
-                    existing_id
-                }
-                None => {
-                    self.conn.execute(
-                        "
+        let transcript_version_id = match self.transcript_version_by_identity(
+            &version.meeting_id,
+            &model_run_id,
+            version.version,
+        )? {
+            Some(existing_id) => {
+                self.ensure_transcript_replay_matches(&existing_id, segments)?;
+                existing_id
+            }
+            None => {
+                self.conn.execute(
+                    "
                         INSERT INTO transcript_versions (
                             id, meeting_id, model_run_id, version, created_at_ms, edited_at_ms
                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                         ",
-                        params![
-                            version.id,
-                            version.meeting_id,
-                            model_run_id,
-                            version.version,
-                            version.created_at_ms,
-                            version.edited_at_ms,
-                        ],
-                    )?;
-                    version.id.clone()
-                }
-            };
+                    params![
+                        version.id,
+                        version.meeting_id,
+                        model_run_id,
+                        version.version,
+                        version.created_at_ms,
+                        version.edited_at_ms,
+                    ],
+                )?;
+                version.id.clone()
+            }
+        };
         if self.transcript_segment_count_for_version(&transcript_version_id)? > 0 {
             self.conn.execute(
                 "UPDATE meetings SET transcript_state = 'Complete' WHERE id = ?1",
@@ -1117,7 +1402,10 @@ impl Store {
         self.transcript_segments_for_version(&version_id)
     }
 
-    fn transcript_segments_for_version(&self, version_id: &str) -> StoreResult<Vec<TranscriptSegment>> {
+    fn transcript_segments_for_version(
+        &self,
+        version_id: &str,
+    ) -> StoreResult<Vec<TranscriptSegment>> {
         let mut stmt = self.conn.prepare(
             "
             SELECT
@@ -1153,7 +1441,10 @@ impl Store {
         Ok(segments)
     }
 
-    pub fn transcript_segment_edits(&self, segment_id: &str) -> StoreResult<Vec<TranscriptSegmentEdit>> {
+    pub fn transcript_segment_edits(
+        &self,
+        segment_id: &str,
+    ) -> StoreResult<Vec<TranscriptSegmentEdit>> {
         let mut stmt = self.conn.prepare(
             "
             SELECT segment_id, transcript_version_id, edited_at_ms, previous_text, corrected_text
@@ -1194,7 +1485,10 @@ impl Store {
         }
     }
 
-    fn persist_analysis_result_in_transaction(&self, analysis: &MeetingAnalysis) -> StoreResult<()> {
+    fn persist_analysis_result_in_transaction(
+        &self,
+        analysis: &MeetingAnalysis,
+    ) -> StoreResult<()> {
         self.ensure_active_meeting_exists(&analysis.meeting_id)?;
         if let Some(existing) = self.analysis_result_by_identity(analysis)? {
             if existing == *analysis {
@@ -1293,7 +1587,13 @@ impl Store {
                 segment_id, transcript_version_id, edited_at_ms, previous_text, corrected_text
             ) VALUES (?1, ?2, ?3, ?4, ?5)
             ",
-            params![segment_id, version_id, edited_at_ms, previous_text, corrected_text],
+            params![
+                segment_id,
+                version_id,
+                edited_at_ms,
+                previous_text,
+                corrected_text
+            ],
         )?;
         self.conn.execute(
             "
@@ -1489,8 +1789,7 @@ impl Store {
             ORDER BY edited_at_ms, id
             ",
         )?;
-        for corrected_text in edits.query_map(params![version_id], |row| row.get::<_, String>(0))?
-        {
+        for corrected_text in edits.query_map(params![version_id], |row| row.get::<_, String>(0))? {
             parts.push(corrected_text?);
         }
         Ok(parts.join("\n"))
@@ -1677,7 +1976,8 @@ impl Store {
                 let Some(relative_path) = manifest_path.strip_prefix(&self.app_root).ok() else {
                     continue;
                 };
-                let Some(safe_path) = self.private_app_path(&relative_path.to_string_lossy()) else {
+                let Some(safe_path) = self.private_app_path(&relative_path.to_string_lossy())
+                else {
                     continue;
                 };
                 if safe_path.exists() {
@@ -1688,13 +1988,18 @@ impl Store {
         Ok(())
     }
 
-    fn db_artifact_for_repair(&self, artifact_id: &str) -> StoreResult<Option<DbArtifactForRepair>> {
+    fn db_artifact_for_repair(
+        &self,
+        artifact_id: &str,
+    ) -> StoreResult<Option<DbArtifactForRepair>> {
         self.conn
             .query_row(
                 "
                 SELECT
                     audio_artifacts.recording_session_id,
                     recording_sessions.meeting_id,
+                    audio_artifacts.kind,
+                    recording_sessions.source,
                     audio_artifacts.path,
                     audio_artifacts.sha256,
                     audio_artifacts.write_status,
@@ -1709,10 +2014,12 @@ impl Store {
                     Ok(DbArtifactForRepair {
                         session_id: row.get(0)?,
                         meeting_id: row.get(1)?,
-                        path: row.get(2)?,
-                        sha256: row.get(3)?,
-                        write_status: row.get(4)?,
-                        recovery_status: row.get(5)?,
+                        kind: row.get(2)?,
+                        recording_source: row.get(3)?,
+                        path: row.get(4)?,
+                        sha256: row.get(5)?,
+                        write_status: row.get(6)?,
+                        recovery_status: row.get(7)?,
                     })
                 },
             )
@@ -1745,7 +2052,10 @@ impl Store {
 
     fn private_app_path(&self, path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
-        if path.is_absolute() || path.components().any(|component| component == Component::ParentDir)
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| component == Component::ParentDir)
         {
             return None;
         }
@@ -1780,6 +2090,14 @@ pub struct RepairReport {
 pub enum RepairConflict {
     MissingArtifact {
         artifact_id: String,
+    },
+    MissingFile {
+        artifact_id: String,
+        path: String,
+    },
+    IncompleteArtifactSet {
+        session_id: String,
+        recording_source: String,
     },
     MismatchedMeeting {
         artifact_id: String,
@@ -1884,8 +2202,17 @@ pub struct ArtifactManifest {
     pub artifact_id: String,
     pub path: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<RecoverableArtifact>,
     pub write_status: WriteStatus,
     pub recovery_status: RepairStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RecoverableArtifact {
+    pub artifact_id: String,
+    pub path: String,
+    pub sha256: String,
 }
 
 impl ArtifactManifest {
@@ -1903,6 +2230,7 @@ impl ArtifactManifest {
             artifact_id: artifact_id.to_string(),
             path: path.to_string(),
             sha256: sha256.to_string(),
+            artifacts: Vec::new(),
             write_status: WriteStatus::Writing,
             recovery_status: RepairStatus::NotNeeded,
         }
@@ -1927,6 +2255,24 @@ impl ArtifactManifest {
     pub fn read(path: impl AsRef<Path>) -> StoreResult<Self> {
         Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
+}
+
+fn recoverable_artifact_entries(manifest: &ArtifactManifest) -> Vec<ArtifactManifest> {
+    if manifest.artifacts.is_empty() {
+        return vec![manifest.clone()];
+    }
+    manifest
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let mut entry = manifest.clone();
+            entry.artifact_id = artifact.artifact_id.clone();
+            entry.path = artifact.path.clone();
+            entry.sha256 = artifact.sha256.clone();
+            entry.artifacts = Vec::new();
+            entry
+        })
+        .collect()
 }
 
 fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
@@ -2153,10 +2499,7 @@ fn manifest_update_temp_path(path: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    path.with_extension(format!(
-        "json.rename-tmp-{}-{nonce}",
-        std::process::id(),
-    ))
+    path.with_extension(format!("json.rename-tmp-{}-{nonce}", std::process::id(),))
 }
 
 fn fts_query(query: &str) -> StoreResult<String> {
@@ -2193,10 +2536,20 @@ fn nearest_existing_path(path: &Path) -> Option<PathBuf> {
 struct DbArtifactForRepair {
     session_id: String,
     meeting_id: String,
+    kind: String,
+    recording_source: String,
     path: String,
     sha256: String,
     write_status: String,
     recovery_status: String,
+}
+
+#[derive(Clone, Debug)]
+struct RepairArtifactRecovery {
+    artifact_id: String,
+    sha256: String,
+    kind: String,
+    recording_source: String,
 }
 
 fn repair_conflict(
@@ -2240,7 +2593,9 @@ fn repair_conflict(
         });
     }
     let manifest_recovery_status = enum_name(manifest.recovery_status);
-    if db_artifact.recovery_status != "NotNeeded" && manifest_recovery_status != db_artifact.recovery_status {
+    if db_artifact.recovery_status != "NotNeeded"
+        && manifest_recovery_status != db_artifact.recovery_status
+    {
         return Some(RepairConflict::MismatchedRecoveryStatus {
             artifact_id: manifest.artifact_id.clone(),
             manifest_status: manifest_recovery_status.to_string(),
@@ -2291,5 +2646,37 @@ fn parse_source_channel(channel: &str) -> Result<SourceChannel, String> {
         "Mixed" => Ok(SourceChannel::Mixed),
         "Imported" => Ok(SourceChannel::Imported),
         other => Err(format!("unknown source channel: {other}")),
+    }
+}
+
+fn transcription_artifact_kind_rank(kind: &str) -> u8 {
+    match kind {
+        "RawMic" => 0,
+        "RawSystem" => 1,
+        "Mixed" => 2,
+        "Imported" => 3,
+        _ => 4,
+    }
+}
+
+fn transcription_artifacts_satisfy_recording_source(
+    recording_source: &str,
+    artifacts: &[TranscriptionAudioArtifact],
+) -> bool {
+    let kinds = artifacts
+        .iter()
+        .map(|artifact| artifact.kind.as_str())
+        .collect::<Vec<_>>();
+    artifact_kinds_satisfy_recording_source(recording_source, &kinds)
+}
+
+fn artifact_kinds_satisfy_recording_source(recording_source: &str, kinds: &[&str]) -> bool {
+    let has_kind = |kind: &str| kinds.contains(&kind);
+    match recording_source {
+        "Mixed" => has_kind("Mixed") || (has_kind("RawMic") && has_kind("RawSystem")),
+        "Microphone" => has_kind("RawMic"),
+        "System" => has_kind("RawSystem"),
+        "Imported" => has_kind("Imported"),
+        _ => false,
     }
 }

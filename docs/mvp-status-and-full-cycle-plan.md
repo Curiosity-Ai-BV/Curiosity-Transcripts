@@ -7,12 +7,12 @@ Date: 2026-05-22
 - macOS is the MVP platform.
 - "Full cycle" means: configure local models, create a meeting, transcribe locally with Whisper, generate a local Ollama summary, search transcript content, export JSON, and delete app-private data.
 - Whisper is the transcription engine. Ollama is the local summary/analysis runtime.
-- Calendar integration, production packaging, model downloads, and system audio in the main recording UI are outside this MVP-completion pass.
+- Calendar integration, production packaging, and model downloads are outside this MVP-completion pass.
 - Default automated tests must remain hardware-free, network-free, model-free, and Ollama-free.
 
 ## Current Assessment
 
-The MVP implementation is now functionally wired for local testing. The desktop shell has real settings, recording/transcription commands, SQLite-backed meeting management, export/delete, local Ollama summaries, and a debug/test fixture seed for deterministic full-cycle validation.
+The MVP implementation is now functionally wired for local testing. The desktop shell has real settings, microphone plus system-audio recording/transcription commands, SQLite-backed meeting management, export/delete, local Ollama summaries, and a debug/test fixture seed for deterministic full-cycle validation.
 
 Remaining work before a real-user smoke on this machine is local environment setup, not core MVP wiring:
 
@@ -20,6 +20,7 @@ Remaining work before a real-user smoke on this machine is local environment set
 - Provide a local whisper.cpp model file.
 - Run Ollama locally and pull the selected model.
 - Grant macOS microphone permission for real recording.
+- Grant macOS Screen Recording permission and run the desktop backend with the `system-audio-screencapturekit` feature for full meeting capture.
 
 ## Implemented Slices
 
@@ -44,7 +45,12 @@ Remaining work before a real-user smoke on this machine is local environment set
    - README documents CMake, `whisper-rs`, model path, smoke, and Tauri dev commands.
    - Smoke exits nonzero for skipped/unavailable/failed states.
 
-5. Deterministic full-cycle fixture:
+5. System-audio desktop recording:
+   - Desktop recording starts one meeting/session and persists private `RawMic` and `RawSystem` WAV artifacts.
+   - Startup repair recovers both pending artifacts after a crash.
+   - Transcription bundles completed mic/system WAVs into one local Whisper run with channel-tagged segments.
+
+6. Deterministic full-cycle fixture:
    - Debug/test-only `seed_dev_fixture` command.
    - Seeds one transcript-ready private meeting without microphone, Whisper, or Ollama.
    - Release builds do not register the fixture command.
@@ -69,7 +75,7 @@ Passing checks from the completed slices:
 Not verified in this environment:
 
 - Real microphone permission and capture.
-- Full system-audio meeting capture in the main recording UI.
+- Live system-audio capture on this machine with Screen Recording permission.
 - Live Ollama summary generation against a running local Ollama server.
 - Packaged app behavior.
 
@@ -118,11 +124,11 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
    ollama pull qwen3.6:27b
    ```
 
-5. Run the desktop app with Whisper enabled:
+5. Run the desktop app with Whisper and system audio enabled:
 
    ```sh
    cd apps/desktop
-   CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev
+   CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
    ```
 
 6. In Settings:
@@ -131,12 +137,11 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
    - Confirm the Ollama model.
    - Run the Whisper path test and Ollama connection test.
 
-7. Record a microphone meeting, stop recording, transcribe it, generate a local summary, search transcript text, export JSON, and delete private data.
+7. Record a desktop meeting, stop recording, transcribe it, generate a local summary, search transcript text, export JSON, and delete private data.
 
 ## Remaining Non-MVP Work
 
 - Production packaging and installer flow.
 - Calendar integration.
-- System-audio capture in the main recording UI.
 - Whisper model download/management UI.
 - Hosted provider key selection and disclosure UX beyond the guarded backend paths.

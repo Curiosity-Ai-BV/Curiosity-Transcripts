@@ -218,7 +218,7 @@ export function mapRecordingState(dto: CommandRecordingDto): StatusView {
     return {
       label: "Recorded",
       tone: "ready",
-      detail: dto.recovery_action || "Local microphone WAV artifact is saved.",
+      detail: dto.recovery_action || "Local desktop WAV artifacts are saved.",
     };
   }
   return {
@@ -276,7 +276,7 @@ export function mapPermissionState(state: AppPermissionState): StatusView {
     return {
       label: "System audio unavailable",
       tone: "blocked",
-      detail: "System audio capture is not wired yet; microphone-only capture can still be used.",
+      detail: "Run the ScreenCaptureKit desktop backend and allow Screen Recording before recording.",
     };
   }
   return {

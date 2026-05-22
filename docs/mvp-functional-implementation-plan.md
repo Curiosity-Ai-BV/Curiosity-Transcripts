@@ -10,13 +10,13 @@ This plan turns the current Rust foundation into a usable macOS-first MVP. It is
 - The desktop app uses Tauri 2 with a React/Vite frontend.
 - Default automated tests stay deterministic and do not require microphone hardware, Screen Recording permission, Whisper model files, Ollama, hosted keys, or network access.
 - Hardware and model checks are explicit smoke paths and must report `NotRun`, `Skipped`, `Unavailable`, or `PermissionDenied` honestly when prerequisites are missing.
-- System audio is implemented through a macOS-specific adapter where available. Mic-only recording remains a working fallback when system audio is unavailable or denied.
+- System audio is implemented through a macOS-specific adapter where available. Full meeting recording should fail visibly when system audio is unavailable or denied, rather than silently falling back to microphone-only capture.
 - Local Whisper uses a user-provided model path first. Model download/management is separate from transcription execution.
 
 ## MVP Acceptance
 
 - A user can open the desktop app and see the transcript workspace, not a landing page.
-- A user can start and stop a microphone recording on macOS and the app stores a private audio artifact with device/sample metadata.
+- A user can start and stop a desktop recording on macOS and the app stores private microphone and system-audio artifacts with device/sample metadata.
 - System-audio capture is either functional on permissioned macOS hardware or represented as a typed unavailable/permission state with clear recovery guidance; it is never silently treated as passing.
 - A user can configure a local Whisper model path and transcribe a saved WAV artifact into persisted transcript segments.
 - Meeting detail shows transcript, source/storage/privacy state, exports, and structured summary controls already supported by the Rust foundation.
@@ -55,7 +55,7 @@ Acceptance:
 
 - On macOS hardware, mic capture can write `raw-mic.wav` with sample rate, channel count, device identity, start time, duration, and sha256.
 - System-audio capture is wired through a macOS adapter where feasible; denied/unavailable states are typed and visible.
-- Mic-only recording remains usable when system audio is denied or unavailable.
+- System-audio failures are typed and visible so the app does not silently create microphone-only meeting transcripts.
 - Existing fake recording tests continue to pass.
 
 ## Slice 3: Desktop UI

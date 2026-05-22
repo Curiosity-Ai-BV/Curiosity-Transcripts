@@ -15,7 +15,7 @@ use curiosity_app::{
     MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
 };
 use curiosity_audio::{
-    ArtifactManifest, CaptureError, CapturePermission, MacosMicrophoneWavRecording,
+    ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
     ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus, ScreenCaptureKitSystemAudioAdapter,
     StreamKind, SystemAudioAdapterStatus,
 };
@@ -25,7 +25,7 @@ use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, MeetingStatus, ModelRun, RecordingSession,
     RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
 };
-use curiosity_store::{AppSettings, Store};
+use curiosity_store::{AppSettings, CompletedAudioArtifact, RecoverableArtifact, Store};
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
 use curiosity_transcription::{
@@ -329,7 +329,7 @@ fn stop_microphone_recording(
         command_state
             .active_recording
             .take()
-            .ok_or_else(|| "Start a microphone recording before stopping.".to_string())?
+            .ok_or_else(|| "Start a desktop recording before stopping.".to_string())?
     };
     let recording = stop_active_microphone_recording(&app_root, active, current_timestamp_ms());
     let snapshot_state = {
@@ -488,7 +488,7 @@ fn desktop_snapshot_for_app_root_with_state(
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
-            system_audio: DesktopPermissionState::SystemAudioUnavailable,
+            system_audio: system_audio_capture_state(command_state),
         },
         transcription: command_state.last_transcription.clone(),
         export_command: command_state.last_export.clone().unwrap_or_default(),
@@ -872,6 +872,7 @@ impl DesktopCommandState {
                 ActiveDesktopRecordingSnapshot {
                     meeting_id: recording.meeting_id.clone(),
                     recording_id: recording.recording_id.clone(),
+                    captures_system_audio: recording.streams.contains(&StreamKind::SystemAudio),
                 }
             }),
             last_recording: self.last_recording.clone(),
@@ -897,16 +898,19 @@ struct DesktopCommandSnapshotState {
 struct ActiveDesktopRecordingSnapshot {
     meeting_id: String,
     recording_id: String,
+    captures_system_audio: bool,
 }
 
 struct ActiveDesktopRecording {
     meeting_id: String,
     recording_id: String,
+    streams: Vec<StreamKind>,
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
 struct StartedMicrophoneRecording {
     sample_rate_hz: u32,
+    streams: Vec<StreamKind>,
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
@@ -955,9 +959,13 @@ impl MicrophoneStartFailure {
                 }
             }
             CaptureError::Unavailable(error) => {
+                let permission_state = match error.capability {
+                    CaptureCapability::Microphone => AppPermissionState::MicrophoneUnavailable,
+                    CaptureCapability::SystemAudio => AppPermissionState::SystemAudioUnavailable,
+                };
                 let guidance = error.recovery_guidance();
                 Self {
-                    permission_state: AppPermissionState::MicrophoneUnavailable,
+                    permission_state,
                     message: error.to_string(),
                     recovery_action: guidance.steps.join("; "),
                 }
@@ -1001,17 +1009,18 @@ impl MicrophoneRecorderFactory for RealMicrophoneRecorderFactory {
         recording_id: &str,
         started_at_ms: u64,
     ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
-        let recorder = MacosMicrophoneWavRecording::start(audio_root, recording_id, started_at_ms)
+        let recorder = MacosDesktopWavRecording::start(audio_root, recording_id, started_at_ms)
             .map_err(MicrophoneStartFailure::from_capture_error)?;
         let sample_rate_hz = recorder.sample_rate_hz();
         Ok(StartedMicrophoneRecording {
             sample_rate_hz,
+            streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
             recorder: Box::new(recorder),
         })
     }
 }
 
-impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
+impl ActiveMicrophoneRecording for MacosDesktopWavRecording {
     fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
         (*self).stop(ended_at_ms).map_err(|error| error.to_string())
     }
@@ -1039,6 +1048,7 @@ fn start_microphone_recording_for_app_root(
     let audio_root = app_root.join("meetings").join(&meeting_id).join("audio");
     let StartedMicrophoneRecording {
         sample_rate_hz,
+        streams,
         recorder,
     } = factory.start(&audio_root, &recording_id, started_at_ms)?;
 
@@ -1046,20 +1056,15 @@ fn start_microphone_recording_for_app_root(
     let session = RecordingSession::start(
         &recording_id,
         &meeting_id,
-        RecordingSource::Microphone,
+        recording_source_for_streams(&streams),
         started_at_ms,
         sample_rate_hz,
     );
     meeting.start_recording(&session);
-    let artifact = AudioArtifact::new_private(
-        artifact_id(&recording_id),
-        &recording_id,
-        ArtifactKind::RawMic,
-        microphone_artifact_relative_path(&meeting_id, &recording_id),
-        format!("sha256:pending:{}", artifact_id(&recording_id)),
-    );
+    let artifacts = audio_artifacts_for_streams(&meeting_id, &recording_id, &streams);
 
-    if let Err(error) = store.insert_recording_start(&meeting, &session, &artifact) {
+    if let Err(error) = store.insert_recording_start_with_artifacts(&meeting, &session, &artifacts)
+    {
         return Err(metadata_persistence_failure(
             error.to_string(),
             recorder,
@@ -1067,12 +1072,18 @@ fn start_microphone_recording_for_app_root(
             audio_root.join(&recording_id),
         ));
     }
-    if let Err(error) = store.write_recoverable_artifact_manifest(
+    let recoverable_artifacts = artifacts
+        .iter()
+        .map(|artifact| RecoverableArtifact {
+            artifact_id: artifact.id.clone(),
+            path: artifact.path.clone(),
+            sha256: artifact.sha256.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Err(error) = store.write_recoverable_artifact_manifests(
         &meeting_id,
         &recording_id,
-        &artifact.id,
-        &artifact.path,
-        &artifact.sha256,
+        &recoverable_artifacts,
     ) {
         return Err(metadata_persistence_failure(
             error.to_string(),
@@ -1093,6 +1104,7 @@ fn start_microphone_recording_for_app_root(
     command_state.active_recording = Some(ActiveDesktopRecording {
         meeting_id,
         recording_id,
+        streams,
         recorder,
     });
     command_state.last_recording = Some(recording);
@@ -1134,7 +1146,7 @@ fn stop_microphone_recording_for_app_root(
     ended_at_ms: u64,
 ) -> Result<DesktopSnapshot, String> {
     let Some(active) = command_state.active_recording.take() else {
-        return Err("Start a microphone recording before stopping.".to_string());
+        return Err("Start a desktop recording before stopping.".to_string());
     };
     command_state.last_recording = Some(stop_active_microphone_recording(
         app_root,
@@ -1172,11 +1184,19 @@ fn stop_active_microphone_recording(
                 &meeting_id,
                 Some(recording_id),
                 CommandRecordingState::Interrupted,
-                AppPermissionState::MicrophoneUnavailable,
+                recording_stop_permission_state(&message),
                 microphone_storage_path(&meeting_id),
                 &format!("Recording could not be finalized: {message}"),
             )
         }
+    }
+}
+
+fn recording_stop_permission_state(message: &str) -> AppPermissionState {
+    if message.to_ascii_lowercase().contains("system audio") {
+        AppPermissionState::SystemAudioUnavailable
+    } else {
+        AppPermissionState::MicrophoneUnavailable
     }
 }
 
@@ -1186,41 +1206,49 @@ fn complete_active_microphone_recording(
     ended_at_ms: u64,
 ) -> Result<CommandRecordingDto, String> {
     let manifest = active.recorder.stop(ended_at_ms)?;
-    let artifact = manifest
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.stream == StreamKind::Microphone)
-        .ok_or_else(|| "microphone recording stopped without a WAV artifact".to_string())?;
-    let relative_path = artifact
-        .path
-        .strip_prefix(app_root)
-        .map_err(|_| "microphone artifact was written outside private app storage".to_string())?
-        .to_string_lossy()
-        .to_string();
-    let expected_path = microphone_artifact_relative_path(&active.meeting_id, &active.recording_id);
-    if relative_path != expected_path {
-        return Err(format!(
-            "microphone artifact path mismatch: expected {expected_path}, got {relative_path}"
-        ));
-    }
-
     let store = open_store(app_root)?;
+    let mut completed_artifacts = Vec::new();
+    for stream in &active.streams {
+        let artifact = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.stream == *stream)
+            .ok_or_else(|| {
+                format!(
+                    "{} recording stopped without a WAV artifact",
+                    stream_label(*stream)
+                )
+            })?;
+        let relative_path = artifact
+            .path
+            .strip_prefix(app_root)
+            .map_err(|_| {
+                format!(
+                    "{} artifact was written outside private app storage",
+                    stream_label(*stream)
+                )
+            })?
+            .to_string_lossy()
+            .to_string();
+        let expected_path =
+            artifact_relative_path_for_stream(&active.meeting_id, &active.recording_id, *stream);
+        if relative_path != expected_path {
+            return Err(format!(
+                "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
+                stream_label(*stream)
+            ));
+        }
+        completed_artifacts.push(CompletedAudioArtifact {
+            artifact_id: artifact_id_for_stream(&active.recording_id, *stream),
+            sha256: artifact.sha256.clone(),
+        });
+    }
     store
-        .complete_audio_artifact(&artifact_id(&active.recording_id), &artifact.sha256)
-        .map_err(|error| error.to_string())?;
-    store
-        .update_recording_session_status(
-            &active.recording_id,
-            RecordingStatus::Complete,
-            Some(ended_at_ms),
-            None,
-        )
-        .map_err(|error| error.to_string())?;
-    store
-        .update_meeting_status(
+        .complete_recording_session_with_artifacts(
             &active.meeting_id,
-            MeetingStatus::Complete,
-            Some(ended_at_ms),
+            &active.recording_id,
+            ended_at_ms,
+            &completed_artifacts,
         )
         .map_err(|error| error.to_string())?;
 
@@ -1230,7 +1258,7 @@ fn complete_active_microphone_recording(
         CommandRecordingState::Complete,
         AppPermissionState::Ready,
         microphone_storage_path(&active.meeting_id),
-        "Finalized local microphone WAV artifact.",
+        "Finalized local microphone and system audio WAV artifacts.",
     ))
 }
 
@@ -1266,27 +1294,31 @@ fn transcribe_meeting_command<B: WhisperBackend>(
     let model_path = model_path.into();
     let model_name = model_name.into();
     let store = open_store(app_root)?;
-    let Some(artifact) = store
-        .completed_wav_artifact_for_transcription(meeting_id)
-        .map_err(|error| error.to_string())?
-    else {
+    let artifacts = store
+        .completed_wav_artifacts_for_transcription(meeting_id)
+        .map_err(|error| error.to_string())?;
+    if artifacts.is_empty() {
         return Ok(transcription_failed(
             meeting_id,
             "missing_audio_artifact",
             "No completed retained local WAV artifact exists for this meeting.",
-            "Stop a microphone recording before requesting transcription.",
+            "Stop a desktop recording before requesting transcription.",
         ));
-    };
+    }
 
-    let source_channel = source_channel_for_artifact_kind(&artifact.kind);
-    let request = WhisperTranscriptionRequest::new(
-        meeting_id,
-        app_root.join(&artifact.path),
-        artifact.sha256.clone(),
-        source_channel,
-    );
+    let requests = artifacts
+        .iter()
+        .map(|artifact| {
+            WhisperTranscriptionRequest::new(
+                meeting_id,
+                app_root.join(&artifact.path),
+                artifact.sha256.clone(),
+                source_channel_for_artifact_kind(&artifact.kind),
+            )
+        })
+        .collect::<Vec<_>>();
     let transcriber = WhisperTranscriber::new(model_path, model_name, backend);
-    match transcriber.transcribe_wav(&request) {
+    match transcriber.transcribe_wav_bundle(&requests) {
         Ok(document) => {
             match persist_transcription_document(&store, meeting_id, document, created_at_ms) {
                 Ok(()) => Ok(TranscriptionCommandView {
@@ -1374,6 +1406,12 @@ fn transcription_failure_from_error(
             &format!("Whisper model is unavailable. {guidance}"),
             &guidance,
         ),
+        TranscriptionError::EmptyAudioInput { guidance } => transcription_failed(
+            meeting_id,
+            "missing_audio",
+            &format!("Audio input is unavailable. {guidance}"),
+            &guidance,
+        ),
         TranscriptionError::AudioInputUnavailable { guidance, .. } => transcription_failed(
             meeting_id,
             "missing_audio",
@@ -1441,7 +1479,7 @@ fn recording_snapshot(
         CommandRecordingState::Interrupted,
         AppPermissionState::MicrophoneUnavailable,
         app_root.display().to_string(),
-        "Start a microphone recording to create a private WAV artifact.",
+        "Start a desktop recording to create private microphone and system audio WAV artifacts.",
     )
 }
 
@@ -1453,13 +1491,50 @@ fn microphone_capture_state(command_state: &DesktopCommandSnapshotState) -> Desk
         return match recording.permission_state {
             AppPermissionState::Ready => DesktopPermissionState::Ready,
             AppPermissionState::MicrophoneDenied => DesktopPermissionState::MicrophoneDenied,
-            AppPermissionState::MicrophoneUnavailable => DesktopPermissionState::MicrophoneUnavailable,
+            AppPermissionState::MicrophoneUnavailable => {
+                DesktopPermissionState::MicrophoneUnavailable
+            }
             AppPermissionState::SystemAudioDenied | AppPermissionState::SystemAudioUnavailable => {
                 DesktopPermissionState::Ready
             }
         };
     }
     DesktopPermissionState::Ready
+}
+
+fn system_audio_capture_state(
+    command_state: &DesktopCommandSnapshotState,
+) -> DesktopPermissionState {
+    if command_state
+        .active_recording
+        .as_ref()
+        .map(|recording| recording.captures_system_audio)
+        .unwrap_or(false)
+    {
+        return DesktopPermissionState::Ready;
+    }
+    if let Some(recording) = &command_state.last_recording {
+        match recording.permission_state {
+            AppPermissionState::SystemAudioDenied => {
+                return DesktopPermissionState::SystemAudioDenied
+            }
+            AppPermissionState::SystemAudioUnavailable => {
+                return DesktopPermissionState::SystemAudioUnavailable;
+            }
+            AppPermissionState::Ready => return DesktopPermissionState::Ready,
+            AppPermissionState::MicrophoneDenied | AppPermissionState::MicrophoneUnavailable => {}
+        }
+    }
+    #[cfg(test)]
+    {
+        DesktopPermissionState::SystemAudioUnavailable
+    }
+    #[cfg(not(test))]
+    match ScreenCaptureKitSystemAudioAdapter::status() {
+        SystemAudioAdapterStatus::Available => DesktopPermissionState::Ready,
+        SystemAudioAdapterStatus::PermissionDenied(_) => DesktopPermissionState::SystemAudioDenied,
+        SystemAudioAdapterStatus::Unavailable(_) => DesktopPermissionState::SystemAudioUnavailable,
+    }
 }
 
 fn start_failure_recording_dto(
@@ -1473,7 +1548,7 @@ fn start_failure_recording_dto(
         error.permission_state,
         app_root.display().to_string(),
         &format!(
-            "Microphone recording could not start: {} {}",
+            "Desktop recording could not start: {} {}",
             error.message, error.recovery_action
         ),
     )
@@ -1505,6 +1580,60 @@ fn artifact_id(recording_id: &str) -> String {
     format!("artifact-{recording_id}")
 }
 
+fn system_audio_artifact_id(recording_id: &str) -> String {
+    format!("artifact-{recording_id}-system")
+}
+
+fn artifact_id_for_stream(recording_id: &str, stream: StreamKind) -> String {
+    match stream {
+        StreamKind::Microphone => artifact_id(recording_id),
+        StreamKind::SystemAudio => system_audio_artifact_id(recording_id),
+    }
+}
+
+fn stream_label(stream: StreamKind) -> &'static str {
+    match stream {
+        StreamKind::Microphone => "microphone",
+        StreamKind::SystemAudio => "system audio",
+    }
+}
+
+fn recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
+    let has_microphone = streams.contains(&StreamKind::Microphone);
+    let has_system_audio = streams.contains(&StreamKind::SystemAudio);
+    match (has_microphone, has_system_audio) {
+        (true, true) => RecordingSource::Mixed,
+        (false, true) => RecordingSource::System,
+        _ => RecordingSource::Microphone,
+    }
+}
+
+fn audio_artifacts_for_streams(
+    meeting_id: &str,
+    recording_id: &str,
+    streams: &[StreamKind],
+) -> Vec<AudioArtifact> {
+    streams
+        .iter()
+        .map(|stream| match stream {
+            StreamKind::Microphone => AudioArtifact::new_private(
+                artifact_id(recording_id),
+                recording_id,
+                ArtifactKind::RawMic,
+                microphone_artifact_relative_path(meeting_id, recording_id),
+                format!("sha256:pending:{}", artifact_id(recording_id)),
+            ),
+            StreamKind::SystemAudio => AudioArtifact::new_private(
+                system_audio_artifact_id(recording_id),
+                recording_id,
+                ArtifactKind::RawSystem,
+                system_audio_artifact_relative_path(meeting_id, recording_id),
+                format!("sha256:pending:{}", system_audio_artifact_id(recording_id)),
+            ),
+        })
+        .collect()
+}
+
 fn microphone_storage_path(meeting_id: &str) -> String {
     format!("meetings/{meeting_id}/audio")
 }
@@ -1514,6 +1643,24 @@ fn microphone_artifact_relative_path(meeting_id: &str, recording_id: &str) -> St
         "{}/{recording_id}/raw-mic.wav",
         microphone_storage_path(meeting_id)
     )
+}
+
+fn system_audio_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
+    format!(
+        "{}/{recording_id}/raw-system.wav",
+        microphone_storage_path(meeting_id)
+    )
+}
+
+fn artifact_relative_path_for_stream(
+    meeting_id: &str,
+    recording_id: &str,
+    stream: StreamKind,
+) -> String {
+    match stream {
+        StreamKind::Microphone => microphone_artifact_relative_path(meeting_id, recording_id),
+        StreamKind::SystemAudio => system_audio_artifact_relative_path(meeting_id, recording_id),
+    }
 }
 
 fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
@@ -2015,6 +2162,7 @@ enum DesktopPermissionState {
     Ready,
     MicrophoneDenied,
     MicrophoneUnavailable,
+    SystemAudioDenied,
     SystemAudioUnavailable,
 }
 
@@ -2294,7 +2442,7 @@ mod tests {
         );
         assert_eq!(
             json["recording"]["recovery_action"],
-            "Start a microphone recording to create a private WAV artifact."
+            "Start a desktop recording to create private microphone and system audio WAV artifacts."
         );
         assert_eq!(
             json["recording"]["storage_location"]["app_private_path"],
@@ -3031,6 +3179,39 @@ mod tests {
     }
 
     #[test]
+    fn stop_recording_persists_complete_microphone_and_system_wav_artifacts() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Full call".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+            .expect("stop mixed recording");
+        let store = open_store(&root).expect("open store");
+        let artifact_root = root.join("meetings").join(meeting_id).join("audio");
+
+        assert!(command_state.active_recording.is_none());
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 2);
+        assert!(artifact_root
+            .join("recording-1700000000000/raw-mic.wav")
+            .is_file());
+        assert!(artifact_root
+            .join("recording-1700000000000/raw-system.wav")
+            .is_file());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn startup_repair_recovers_crashed_microphone_wav_for_transcription() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -3051,7 +3232,10 @@ mod tests {
             .recording_id
             .clone()
             .expect("recording id");
-        let artifact_path = root.join(microphone_artifact_relative_path(&meeting_id, &recording_id));
+        let artifact_path = root.join(microphone_artifact_relative_path(
+            &meeting_id,
+            &recording_id,
+        ));
         fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
         write_minimal_wav(&artifact_path);
 
@@ -3067,6 +3251,58 @@ mod tests {
         );
         assert_eq!(artifact.sha256.len(), 64);
         assert!(!artifact.sha256.starts_with("sha256:pending"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn startup_repair_recovers_crashed_mixed_wavs_for_transcription() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Mixed crash recovery".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        let recording_id = start_snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let mic_path = root.join(microphone_artifact_relative_path(
+            &meeting_id,
+            &recording_id,
+        ));
+        let system_path = root.join(system_audio_artifact_relative_path(
+            &meeting_id,
+            &recording_id,
+        ));
+        fs::create_dir_all(mic_path.parent().expect("artifact parent")).expect("artifact dir");
+        write_minimal_wav(&mic_path);
+        write_minimal_wav(&system_path);
+
+        let restarted_store = open_store(&root).expect("open repaired store");
+        let artifacts = restarted_store
+            .completed_wav_artifacts_for_transcription(&meeting_id)
+            .expect("query completed artifacts");
+
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|artifact| artifact.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RawMic", "RawSystem"]
+        );
+        assert!(artifacts
+            .iter()
+            .all(|artifact| !artifact.sha256.starts_with("sha256:pending")));
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -3103,6 +3339,45 @@ mod tests {
             store.meeting_status(&meeting_id).expect("meeting status"),
             "Failed"
         );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn stop_missing_system_artifact_does_not_leave_transcribable_mic_only_bundle() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = PartialMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Partial mixed".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start partial mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        let snapshot =
+            stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+                .expect("stop partial mixed recording");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(json["recording"]["state"], "Interrupted");
+        assert_eq!(
+            json["recording"]["permission_state"],
+            "SystemAudioUnavailable"
+        );
+        assert_eq!(
+            store.meeting_status(&meeting_id).expect("meeting status"),
+            "Failed"
+        );
+        assert!(store
+            .completed_wav_artifacts_for_transcription(&meeting_id)
+            .expect("completed artifacts")
+            .is_empty());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -3229,6 +3504,51 @@ mod tests {
     }
 
     #[test]
+    fn transcribe_mixed_recording_persists_microphone_and_system_segments() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Full transcript".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+            .expect("stop mixed recording");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            PathAwareWhisperBackend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe mixed meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let segments = json["meetings"][0]["segments"]
+            .as_array()
+            .expect("segments");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0]["sourceChannel"], "Microphone");
+        assert_eq!(segments[0]["text"], "mic side");
+        assert_eq!(segments[1]["sourceChannel"], "System");
+        assert_eq!(segments[1]["text"], "call side");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn transcribe_persistence_conflict_replaces_stale_success_with_visible_failure() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -3296,6 +3616,7 @@ mod tests {
         ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
             Ok(StartedMicrophoneRecording {
                 sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone],
                 recorder: Box::new(FakeActiveMicrophoneRecording {
                     session_dir: audio_root.join(recording_id),
                     recording_id: recording_id.to_string(),
@@ -3306,6 +3627,60 @@ mod tests {
     }
 
     struct FakeActiveMicrophoneRecording {
+        session_dir: PathBuf,
+        recording_id: String,
+        started_at_ms: u64,
+    }
+
+    struct FakeMixedRecorderFactory;
+
+    impl MicrophoneRecorderFactory for FakeMixedRecorderFactory {
+        fn start(
+            &self,
+            audio_root: &Path,
+            recording_id: &str,
+            started_at_ms: u64,
+        ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
+            Ok(StartedMicrophoneRecording {
+                sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
+                recorder: Box::new(FakeActiveMixedRecording {
+                    session_dir: audio_root.join(recording_id),
+                    recording_id: recording_id.to_string(),
+                    started_at_ms,
+                }),
+            })
+        }
+    }
+
+    struct FakeActiveMixedRecording {
+        session_dir: PathBuf,
+        recording_id: String,
+        started_at_ms: u64,
+    }
+
+    struct PartialMixedRecorderFactory;
+
+    impl MicrophoneRecorderFactory for PartialMixedRecorderFactory {
+        fn start(
+            &self,
+            audio_root: &Path,
+            recording_id: &str,
+            started_at_ms: u64,
+        ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
+            Ok(StartedMicrophoneRecording {
+                sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
+                recorder: Box::new(FakeActivePartialMixedRecording {
+                    session_dir: audio_root.join(recording_id),
+                    recording_id: recording_id.to_string(),
+                    started_at_ms,
+                }),
+            })
+        }
+    }
+
+    struct FakeActivePartialMixedRecording {
         session_dir: PathBuf,
         recording_id: String,
         started_at_ms: u64,
@@ -3322,6 +3697,7 @@ mod tests {
         ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
             Ok(StartedMicrophoneRecording {
                 sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone],
                 recorder: Box::new(FailingStopMicrophoneRecording),
             })
         }
@@ -3340,6 +3716,7 @@ mod tests {
         ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
             Ok(StartedMicrophoneRecording {
                 sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone],
                 recorder: Box::new(CleanupTrackingMicrophoneRecording {
                     session_dir: audio_root.join(recording_id),
                     recording_id: recording_id.to_string(),
@@ -3377,6 +3754,80 @@ mod tests {
         }
     }
 
+    impl ActiveMicrophoneRecording for FakeActiveMixedRecording {
+        fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
+            fs::create_dir_all(&self.session_dir).map_err(|error| error.to_string())?;
+            let mic_path = self.session_dir.join("raw-mic.wav");
+            let system_path = self.session_dir.join("raw-system.wav");
+            write_minimal_wav(&mic_path);
+            write_minimal_wav(&system_path);
+            Ok(ArtifactManifest {
+                recording: RecordingMetadata::new(&self.recording_id, self.started_at_ms),
+                status: ManifestStatus::Complete,
+                ended_at_ms: Some(ended_at_ms),
+                artifacts: vec![
+                    AudioArtifactMetadata {
+                        stream: StreamKind::Microphone,
+                        file_name: "raw-mic.wav".to_string(),
+                        path: mic_path,
+                        started_at_ms: self.started_at_ms,
+                        ended_at_ms: Some(ended_at_ms),
+                        duration_ms: ended_at_ms.saturating_sub(self.started_at_ms),
+                        sample_rate_hz: 48_000,
+                        channel_count: 1,
+                        identity: DeviceIdentity::new("fake-mic", "Fake Microphone", "test"),
+                        bytes_written: 44,
+                        sha256: "d0c7ca55e6fde29961f3cebe41e0ee7f532f2040c3a5689e62d1fd168ea267a1"
+                            .to_string(),
+                    },
+                    AudioArtifactMetadata {
+                        stream: StreamKind::SystemAudio,
+                        file_name: "raw-system.wav".to_string(),
+                        path: system_path,
+                        started_at_ms: self.started_at_ms,
+                        ended_at_ms: Some(ended_at_ms),
+                        duration_ms: ended_at_ms.saturating_sub(self.started_at_ms),
+                        sample_rate_hz: 48_000,
+                        channel_count: 2,
+                        identity: DeviceIdentity::new("fake-system", "Fake System Audio", "test"),
+                        bytes_written: 44,
+                        sha256: "8cf248ff65c6a51c4ab1d46fd56f36d6235ea8318d07da5b84d58d3e647e8825"
+                            .to_string(),
+                    },
+                ],
+                recovery: None,
+            })
+        }
+    }
+
+    impl ActiveMicrophoneRecording for FakeActivePartialMixedRecording {
+        fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
+            fs::create_dir_all(&self.session_dir).map_err(|error| error.to_string())?;
+            let mic_path = self.session_dir.join("raw-mic.wav");
+            write_minimal_wav(&mic_path);
+            Ok(ArtifactManifest {
+                recording: RecordingMetadata::new(&self.recording_id, self.started_at_ms),
+                status: ManifestStatus::Complete,
+                ended_at_ms: Some(ended_at_ms),
+                artifacts: vec![AudioArtifactMetadata {
+                    stream: StreamKind::Microphone,
+                    file_name: "raw-mic.wav".to_string(),
+                    path: mic_path,
+                    started_at_ms: self.started_at_ms,
+                    ended_at_ms: Some(ended_at_ms),
+                    duration_ms: ended_at_ms.saturating_sub(self.started_at_ms),
+                    sample_rate_hz: 48_000,
+                    channel_count: 1,
+                    identity: DeviceIdentity::new("fake-mic", "Fake Microphone", "test"),
+                    bytes_written: 44,
+                    sha256: "d0c7ca55e6fde29961f3cebe41e0ee7f532f2040c3a5689e62d1fd168ea267a1"
+                        .to_string(),
+                }],
+                recovery: None,
+            })
+        }
+    }
+
     impl ActiveMicrophoneRecording for FakeActiveMicrophoneRecording {
         fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
             fs::create_dir_all(&self.session_dir).map_err(|error| error.to_string())?;
@@ -3402,6 +3853,31 @@ mod tests {
                 }],
                 recovery: None,
             })
+        }
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct PathAwareWhisperBackend;
+
+    impl WhisperBackend for PathAwareWhisperBackend {
+        fn provider(&self) -> &'static str {
+            "local-whisper"
+        }
+
+        fn transcribe(
+            &self,
+            _model_path: &Path,
+            audio_path: &Path,
+        ) -> Result<Vec<WhisperBackendSegment>, TranscriptionError> {
+            let file_name = audio_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let text = match file_name {
+                "raw-system.wav" => "call side",
+                _ => "mic side",
+            };
+            Ok(vec![WhisperBackendSegment::new(0, 1_200, text)])
         }
     }
 

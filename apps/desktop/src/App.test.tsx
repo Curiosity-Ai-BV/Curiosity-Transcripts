@@ -91,14 +91,14 @@ describe("desktop command-state mapping", () => {
         state: "Complete",
         permission_state: "Ready",
         recoverable: false,
-        recovery_action: "Finalized local microphone WAV artifact.",
+        recovery_action: "Finalized local microphone and system audio WAV artifacts.",
         raw_audio_retention: "Retain",
         storage_location: { app_private_path: "meetings/circuit-review/audio" },
       }),
     ).toEqual({
       label: "Recorded",
       tone: "ready",
-      detail: "Finalized local microphone WAV artifact.",
+      detail: "Finalized local microphone and system audio WAV artifacts.",
     });
   });
 
@@ -135,6 +135,11 @@ describe("desktop command-state mapping", () => {
       label: "Microphone unavailable",
       tone: "blocked",
       detail: "Connect or select a macOS input device before recording.",
+    });
+    expect(mapPermissionState("SystemAudioUnavailable")).toEqual({
+      label: "System audio unavailable",
+      tone: "blocked",
+      detail: "Run the ScreenCaptureKit desktop backend and allow Screen Recording before recording.",
     });
   });
 
@@ -490,14 +495,14 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
   });
 
-  it("starts microphone recording with the optional title and replaces the snapshot", async () => {
+  it("starts desktop recording with the optional title and replaces the snapshot", async () => {
     const user = userEvent.setup();
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const initial = connectedSnapshot({
       recording: {
         ...getMockDesktopSnapshot().recording,
         state: "Complete",
-        recovery_action: "Previous local microphone WAV artifact is saved.",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
       },
     });
     const returned = connectedSnapshot({
@@ -535,7 +540,7 @@ describe("desktop workspace shell", () => {
       recording: {
         ...initial.recording,
         state: "Complete",
-        recovery_action: "Finalized local microphone WAV artifact.",
+        recovery_action: "Finalized local microphone and system audio WAV artifacts.",
       },
     });
     const fetchCommand: CommandFetcher = async (command, args) => {
@@ -551,7 +556,7 @@ describe("desktop workspace shell", () => {
     await user.click(screen.getByRole("button", { name: "Stop recording" }));
 
     expect(calls).toEqual([{ command: "stop_microphone_recording", args: undefined }]);
-    expect(screen.getByText("Finalized local microphone WAV artifact.")).toBeInTheDocument();
+    expect(screen.getByText("Finalized local microphone and system audio WAV artifacts.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
   });
 
@@ -562,7 +567,7 @@ describe("desktop workspace shell", () => {
       recording: {
         ...getMockDesktopSnapshot().recording,
         state: "Complete",
-        recovery_action: "Previous local microphone WAV artifact is saved.",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
       },
     });
     const returned = connectedSnapshot({
@@ -1008,7 +1013,7 @@ describe("desktop workspace shell", () => {
       recording: {
         ...getMockDesktopSnapshot().recording,
         state: "Complete",
-        recovery_action: "Previous local microphone WAV artifact is saved.",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
       },
     });
     const returned = connectedSnapshot();
@@ -1038,7 +1043,7 @@ describe("desktop workspace shell", () => {
       recording: {
         ...getMockDesktopSnapshot().recording,
         state: "Complete",
-        recovery_action: "Previous local microphone WAV artifact is saved.",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
         storage_location: { app_private_path: "meetings/circuit-review/audio" },
       },
     });
