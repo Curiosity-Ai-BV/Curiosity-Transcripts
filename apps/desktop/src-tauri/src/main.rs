@@ -1326,8 +1326,10 @@ fn source_channel_for_artifact_kind(kind: &str) -> SourceChannel {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg(not(feature = "whisper-rs"))]
 struct BackendUnavailableWhisperBackend;
 
+#[cfg(not(feature = "whisper-rs"))]
 impl WhisperBackend for BackendUnavailableWhisperBackend {
     fn provider(&self) -> &'static str {
         "local-whisper"
@@ -1432,15 +1434,17 @@ fn microphone_capture_state(command_state: &DesktopCommandSnapshotState) -> Desk
     if command_state.active_recording.is_some() {
         return DesktopPermissionState::Ready;
     }
-    if command_state
-        .last_recording
-        .as_ref()
-        .map(|recording| recording.permission_state == AppPermissionState::MicrophoneDenied)
-        .unwrap_or(false)
-    {
-        return DesktopPermissionState::MicrophoneDenied;
+    if let Some(recording) = &command_state.last_recording {
+        return match recording.permission_state {
+            AppPermissionState::Ready => DesktopPermissionState::Ready,
+            AppPermissionState::MicrophoneDenied => DesktopPermissionState::MicrophoneDenied,
+            AppPermissionState::MicrophoneUnavailable => DesktopPermissionState::MicrophoneUnavailable,
+            AppPermissionState::SystemAudioDenied | AppPermissionState::SystemAudioUnavailable => {
+                DesktopPermissionState::Ready
+            }
+        };
     }
-    DesktopPermissionState::MicrophoneUnavailable
+    DesktopPermissionState::Ready
 }
 
 fn start_failure_recording_dto(
@@ -2282,7 +2286,7 @@ mod tests {
             root.display().to_string()
         );
         assert_eq!(json["model"]["kind"], "missing");
-        assert_eq!(json["capture"]["microphone"], "MicrophoneUnavailable");
+        assert_eq!(json["capture"]["microphone"], "Ready");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
         assert_eq!(json["settings"]["ollamaBaseUrl"], "http://127.0.0.1:11434");
         assert_eq!(json["settings"]["ollamaModel"], "qwen3.6:27b");
@@ -2953,7 +2957,7 @@ mod tests {
     fn start_microphone_recording_with_fake_recorder_returns_active_snapshot() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
-        let factory = FakeMicrophoneRecorderFactory::default();
+        let factory = FakeMicrophoneRecorderFactory;
 
         let snapshot = start_microphone_recording_for_app_root(
             &root,
@@ -2979,7 +2983,7 @@ mod tests {
     fn stop_microphone_recording_persists_complete_private_wav_artifact() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
-        let factory = FakeMicrophoneRecorderFactory::default();
+        let factory = FakeMicrophoneRecorderFactory;
         let started_at_ms = 1_700_000_000_000;
 
         let start_snapshot = start_microphone_recording_for_app_root(
@@ -3003,7 +3007,7 @@ mod tests {
 
         assert!(command_state.active_recording.is_none());
         assert_eq!(json["recording"]["state"], "Complete");
-        assert_eq!(json["capture"]["microphone"], "MicrophoneUnavailable");
+        assert_eq!(json["capture"]["microphone"], "Ready");
         assert_eq!(json["meetings"][0]["status"], "Complete");
         assert_eq!(artifact.sha256.len(), 64);
         assert!(root.join(&artifact.path).is_file());
@@ -3209,7 +3213,7 @@ mod tests {
     }
 
     fn seed_stopped_fake_recording(root: &Path, command_state: &mut DesktopCommandState) -> String {
-        let factory = FakeMicrophoneRecorderFactory::default();
+        let factory = FakeMicrophoneRecorderFactory;
         let snapshot = start_microphone_recording_for_app_root(
             root,
             command_state,

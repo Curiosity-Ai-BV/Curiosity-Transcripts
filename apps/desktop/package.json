@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "tauri:dev": "tauri dev",
+    "tauri:dev:no-whisper": "tauri dev --no-default-features",
     "build": "tsc && vite build",
     "test": "vitest run"
   },

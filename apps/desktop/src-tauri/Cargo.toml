@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["whisper-rs"]
 whisper-rs = ["curiosity-transcription/whisper-rs"]
 system-audio-screencapturekit = ["curiosity-audio/system-audio-screencapturekit"]
 

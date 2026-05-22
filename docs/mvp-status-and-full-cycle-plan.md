@@ -100,7 +100,7 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
 2. Verify the native Whisper build:
 
    ```sh
-   cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features whisper-rs --no-run
+   cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-run
    ```
 
 3. Run a real Whisper smoke with an existing WAV:
@@ -122,7 +122,7 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
 
    ```sh
    cd apps/desktop
-   CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm exec -- tauri dev --features whisper-rs
+   CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev
    ```
 
 6. In Settings:

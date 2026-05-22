@@ -160,7 +160,7 @@ If that command prints nothing, install CMake before building the native
 Verify that the desktop backend and native Whisper dependency can compile:
 
 ```sh
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features whisper-rs --no-run
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-run
 ```
 
 Run the real local Whisper smoke against an existing whisper.cpp model file and
@@ -180,14 +180,16 @@ Run the desktop app with local Whisper enabled:
 
 ```sh
 cd apps/desktop
-CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm exec -- tauri dev --features whisper-rs
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev
 ```
 
 The desktop settings pane can save a local Whisper model path. If no path is
 saved, the desktop `transcribe_meeting` command falls back to
-`CURIOSITY_WHISPER_MODEL`. If the feature is disabled or the effective path is
-missing, the UI should show an explicit unavailable/missing-model state. Model
-download and management are not yet implemented.
+`CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
+default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
+unavailable-backend state. If the effective model path is missing, the UI should
+show an explicit missing-model state. Model download and management are not yet
+implemented.
 
 Copy `.env.example` for the optional Whisper smoke environment variables and
 hosted/provider secret placeholders. Ollama base URL and model are configured in
