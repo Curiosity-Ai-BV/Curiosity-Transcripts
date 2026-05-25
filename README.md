@@ -380,3 +380,5 @@ key-selection gates.
 - Do not silently convert skipped hardware/provider behavior into passing tests.
 - Prefer small, crate-local changes that preserve the current service/API
   contracts while the desktop shell matures.
+
+This app was made by @CuriosityAI - https://curiosityai.nl
