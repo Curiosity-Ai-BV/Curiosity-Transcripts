@@ -2,6 +2,9 @@
 name = "curiosity-desktop"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"
+homepage = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"
 
 [features]
 default = ["whisper-rs"]

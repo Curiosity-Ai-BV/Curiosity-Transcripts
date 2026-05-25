@@ -6,13 +6,18 @@ export type CommandRecordingState =
   | "Recovering"
   | "Complete";
 
-export type AppPermissionState = "Ready" | "MicrophoneDenied" | "SystemAudioDenied" | "MicrophoneUnavailable" | "SystemAudioUnavailable";
+export type AppPermissionState =
+  | "Ready"
+  | "MicrophoneDenied"
+  | "SystemAudioDenied"
+  | "MicrophoneUnavailable"
+  | "SystemAudioUnavailable";
 export type RawAudioRetentionPolicy = "Retain" | "DeleteAfterTranscription" | "NeverSave";
 export type Tone = "ready" | "active" | "warn" | "blocked" | "muted";
 
 export interface CommandRecordingDto {
-  meeting_id?: string;
-  recording_id?: string | null;
+  meeting_id: string;
+  recording_id: string | null;
   state: CommandRecordingState;
   permission_state: AppPermissionState;
   storage_location: { app_private_path: string };
@@ -173,7 +178,9 @@ export async function loadDesktopSnapshot({
   previewFallback = !isTauriRuntime(),
 }: LoadDesktopSnapshotOptions = {}): Promise<DesktopSnapshot> {
   if (fetchCommand) {
-    return fetchCommand<DesktopSnapshot>("desktop_snapshot");
+    const snapshot = await fetchCommand<unknown>("desktop_snapshot");
+    assertDesktopSnapshotContract(snapshot);
+    return snapshot;
   }
   if (previewFallback) {
     return getMockDesktopSnapshot();
@@ -181,11 +188,61 @@ export async function loadDesktopSnapshot({
   throw new Error("Tauri command surface is unavailable");
 }
 
+export function assertDesktopSnapshotContract(value: unknown): asserts value is DesktopSnapshot {
+  for (const path of REQUIRED_DESKTOP_SNAPSHOT_PATHS) {
+    requireContractPath(value, path, "desktop_snapshot");
+  }
+
+  const root = requireContractRecord(value, "desktop_snapshot");
+  requireContractArray(root.meetings, "desktop_snapshot.meetings").forEach((meeting, index) => {
+    const meetingPath = `desktop_snapshot.meetings[${index}]`;
+    for (const path of REQUIRED_MEETING_PATHS) {
+      requireContractPath(meeting, path, meetingPath);
+    }
+
+    const meetingRecord = requireContractRecord(meeting, meetingPath);
+    requireContractArray(meetingRecord.segments, `${meetingPath}.segments`).forEach(
+      (segment, segmentIndex) => {
+        const segmentPath = `${meetingPath}.segments[${segmentIndex}]`;
+        for (const path of REQUIRED_SEGMENT_PATHS) {
+          requireContractPath(segment, path, segmentPath);
+        }
+      },
+    );
+    requireNullableContractObject(
+      meetingRecord.analysis,
+      `${meetingPath}.analysis`,
+      REQUIRED_ANALYSIS_DISCLOSURE_PATHS,
+    );
+  });
+
+  requireNullableContractObject(
+    root.transcription,
+    "desktop_snapshot.transcription",
+    REQUIRED_TRANSCRIPTION_PATHS,
+  );
+  requireNullableContractObject(
+    root.analysisCommand,
+    "desktop_snapshot.analysisCommand",
+    REQUIRED_ANALYSIS_COMMAND_PATHS,
+  );
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export function mapRecordingState(dto: CommandRecordingDto): StatusView {
+export function mapRecordingState(
+  dto: Pick<
+    CommandRecordingDto,
+    | "state"
+    | "permission_state"
+    | "storage_location"
+    | "raw_audio_retention"
+    | "recoverable"
+    | "recovery_action"
+  >,
+): StatusView {
   if (dto.permission_state !== "Ready") {
     const permission = mapPermissionState(dto.permission_state);
     return {
@@ -579,6 +636,174 @@ function segment(
   };
 }
 
+type ContractPath = readonly string[];
+type ContractRecord = Record<string, unknown>;
+
+const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
+  ["loading"],
+  ["commandSurface", "detail"],
+  ["meetings"],
+  ["selectedMeetingId"],
+  ["recording", "meeting_id"],
+  ["recording", "recording_id"],
+  ["recording", "state"],
+  ["recording", "permission_state"],
+  ["recording", "storage_location", "app_private_path"],
+  ["recording", "raw_audio_retention"],
+  ["recording", "recoverable"],
+  ["recording", "recovery_action"],
+  ["model", "kind"],
+  ["model", "configuredPath"],
+  ["settings", "whisperModelPath"],
+  ["settings", "ollamaBaseUrl"],
+  ["settings", "ollamaModel"],
+  ["settings", "exportDirectory"],
+  ["capture", "microphone"],
+  ["capture", "systemAudio"],
+  ["transcription"],
+  ["exportCommand", "state"],
+  ["deleteCommand", "state"],
+  ["analysisCommand"],
+];
+
+const REQUIRED_MEETING_PATHS: readonly ContractPath[] = [
+  ["id"],
+  ["title"],
+  ["startedAt"],
+  ["duration"],
+  ["status"],
+  ["transcriptState"],
+  ["transcriptText"],
+  ["segments"],
+  ["privacy", "storageLabel"],
+  ["privacy", "storagePath"],
+  ["privacy", "rawAudioRetention"],
+  ["privacy", "localOnly"],
+  ["exportState", "state"],
+  ["deleteState", "state"],
+  ["analysis"],
+];
+
+const REQUIRED_SEGMENT_PATHS: readonly ContractPath[] = [
+  ["id"],
+  ["startMs"],
+  ["endMs"],
+  ["text"],
+  ["sourceChannel"],
+  ["modelRunId"],
+  ["transcriptVersionId"],
+];
+
+const REQUIRED_ANALYSIS_DISCLOSURE_PATHS: readonly ContractPath[] = [
+  ["provider"],
+  ["modelName"],
+  ["networkUsed"],
+  ["disclosureRequired"],
+  ["disclosureConfirmed"],
+  ["summary"],
+  ["createdAtMs"],
+  ["promptTemplateVersion"],
+];
+
+const REQUIRED_TRANSCRIPTION_PATHS: readonly ContractPath[] = [
+  ["meetingId"],
+  ["state"],
+  ["failure"],
+];
+
+const REQUIRED_ANALYSIS_COMMAND_PATHS: readonly ContractPath[] = [
+  ["meetingId"],
+  ["state"],
+  ["analysis"],
+  ["failure"],
+];
+
+const REQUIRED_COMMAND_FAILURE_PATHS: readonly ContractPath[] = [
+  ["code"],
+  ["message"],
+  ["setupGuidance"],
+];
+
+const REQUIRED_ANALYSIS_RESULT_PATHS: readonly ContractPath[] = [
+  ["provider"],
+  ["modelName"],
+  ["networkUsed"],
+  ["summary"],
+];
+
+const DESKTOP_SNAPSHOT_COMMANDS = new Set([
+  "desktop_snapshot",
+  "delete_meeting",
+  "export_meeting_json",
+  "generate_summary",
+  "rename_meeting",
+  "save_analysis_settings",
+  "save_whisper_model_path",
+  "seed_dev_fixture",
+  "start_microphone_recording",
+  "stop_microphone_recording",
+  "transcribe_meeting",
+]);
+
+function requireNullableContractObject(
+  value: unknown,
+  pathLabel: string,
+  requiredPaths: readonly ContractPath[],
+) {
+  if (value === null) {
+    return;
+  }
+  for (const path of requiredPaths) {
+    requireContractPath(value, path, pathLabel);
+  }
+
+  const record = requireContractRecord(value, pathLabel);
+  if (Object.prototype.hasOwnProperty.call(record, "failure")) {
+    requireNullableContractObject(
+      record.failure,
+      `${pathLabel}.failure`,
+      REQUIRED_COMMAND_FAILURE_PATHS,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "analysis")) {
+    requireNullableContractObject(
+      record.analysis,
+      `${pathLabel}.analysis`,
+      REQUIRED_ANALYSIS_RESULT_PATHS,
+    );
+  }
+}
+
+function requireContractPath(value: unknown, path: ContractPath, rootLabel: string): unknown {
+  let current = value;
+  let currentPath = rootLabel;
+
+  for (const field of path) {
+    const record = requireContractRecord(current, currentPath);
+    if (!Object.prototype.hasOwnProperty.call(record, field)) {
+      throw new Error(`desktop_snapshot contract drift: missing ${currentPath}.${field}`);
+    }
+    current = record[field];
+    currentPath = `${currentPath}.${field}`;
+  }
+
+  return current;
+}
+
+function requireContractRecord(value: unknown, pathLabel: string): ContractRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be an object`);
+  }
+  return value as ContractRecord;
+}
+
+function requireContractArray(value: unknown, pathLabel: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be an array`);
+  }
+  return value;
+}
+
 function retentionDetail(policy: RawAudioRetentionPolicy): string {
   if (policy === "DeleteAfterTranscription") {
     return "Raw audio will be deleted after transcription.";
@@ -595,6 +820,10 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
   }
   return async <T>(command: string, args?: Record<string, unknown>) => {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<T>(command, args);
+    const result = await invoke<unknown>(command, args);
+    if (DESKTOP_SNAPSHOT_COMMANDS.has(command)) {
+      assertDesktopSnapshotContract(result);
+    }
+    return result as T;
   };
 }

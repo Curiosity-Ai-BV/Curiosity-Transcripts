@@ -5,9 +5,7 @@ use std::cell::Cell;
 
 use curiosity_analysis::{AnalysisInput, AnalysisOutcome, FakeMeetingAnalyzer, MeetingAnalyzer};
 use curiosity_app::{generate_summary_command, AnalysisCommandState};
-use curiosity_domain::{
-    Meeting, ModelRun, SourceChannel, TranscriptSegment, TranscriptVersion,
-};
+use curiosity_domain::{Meeting, ModelRun, SourceChannel, TranscriptSegment, TranscriptVersion};
 use curiosity_store::Store;
 
 fn test_root(name: &str) -> PathBuf {
@@ -76,7 +74,10 @@ fn generate_summary_command_uses_current_transcript_and_persists_structured_resu
     .expect("generate summary");
 
     assert_eq!(dto.state, AnalysisCommandState::Complete);
-    assert_eq!(dto.analysis.as_ref().expect("analysis").provider, "fake-local");
+    assert_eq!(
+        dto.analysis.as_ref().expect("analysis").provider,
+        "fake-local"
+    );
     assert_eq!(
         store
             .current_analysis_result("meeting-1")

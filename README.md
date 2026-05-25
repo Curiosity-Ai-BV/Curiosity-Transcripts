@@ -42,7 +42,64 @@ Implemented MVP flows:
 Remaining gaps:
 
 - First-run model download/management UI for Whisper and Ollama.
-- Calendar integration.
+- Imported-audio workflow and transcript correction UI.
+- Calendar integration, starting with Apple Calendar context before cloud
+  calendar connectors.
+- Release signing/notarization and broader contributor processes beyond the
+  initial license, attribution, security policy, and CI metadata gate.
+
+## Roadmap
+
+The roadmap follows the trust-first direction in
+`docs/local-transcript-app-plan.md`: keep the manual local transcript loop
+dependable before adding automation, hosted providers, or broad integrations.
+
+Near-term product hardening:
+
+- Add first-run model setup for Whisper and Ollama, including model availability
+  states, hashes, and clear recovery guidance when a model is missing or
+  incompatible.
+- Add imported-audio support and a transcript correction UI that preserves the
+  original timing, source channel, transcript version, and export history.
+- Finish per-meeting privacy controls for raw-audio retention, local-only versus
+  hosted-provider use, storage location, and remaining exported files after
+  deletion.
+- Keep the macOS installer path reproducible with unsigned local builds, then
+  add Developer ID signing and notarization for browser-distributed releases.
+
+Calendar roadmap:
+
+- Add Apple Calendar first through a macOS-native provider. The first slice
+  should request permission, show upcoming events, suggest safe meeting context,
+  and let the user manually attach a recording to an event.
+- Keep auto-start disabled until allowlist rules, ambiguous-event handling,
+  private/all-day/recurring-event protections, and always-visible recording
+  indicators are verified.
+- Add Google Calendar and Outlook after Apple Calendar using explicit
+  connect/disconnect flows, keychain-backed tokens, incremental sync, and no
+  coupling to hosted transcription or hosted LLMs.
+
+Search and intelligence roadmap:
+
+- Keep SQLite FTS5 keyword search as the reliable baseline.
+- Add semantic search only after deterministic rebuild and fallback behavior is
+  tested with local embeddings.
+- Add speaker labels, cross-meeting questions, and sentiment/tone later, with
+  source citations, uncertainty, and editable local outputs.
+
+Engineering hardening before broader contributors:
+
+- Split the large Tauri, audio, store, and desktop UI modules behind their
+  current public facades so command handling, recording, transcription, summary
+  generation, settings, storage repair, search/export/delete, and platform
+  capture code each have clear locality.
+- Generate or lock the Rust-to-TypeScript command/view contracts so Tauri DTOs
+  cannot drift silently from the frontend types.
+- Add a minimal CI gate for `cargo test --workspace`, desktop `npm run test`,
+  desktop `npm run build`, and the non-hardware smoke commands that must fail
+  loud when hardware or model prerequisites are absent.
+- Keep secrets, OAuth tokens, provider keys, and future encryption keys in the
+  OS keychain rather than SQLite or plain settings files.
 
 ## Workspace Layout
 
@@ -153,6 +210,19 @@ apps/desktop/src-tauri/target/release/bundle/dmg/
 Browser-distributed macOS releases still require a Developer ID Application
 certificate and notarization. See `docs/macos-dmg-release.md` for the release
 checklist, signing environment variables, and manual installer smoke path.
+
+## License And Attribution
+
+Curiosity Transcripts is licensed under the Apache License, Version 2.0
+(`Apache-2.0`). See `LICENSE` for the full license text and `NOTICE` for the
+project attribution notice.
+
+Commercial projects may use and redistribute the project under Apache-2.0, but
+redistributions must preserve the required license and notice attribution. See
+`ATTRIBUTION.md` for practical attribution guidance.
+
+Security issues should be reported privately. See `SECURITY.md` before sharing
+vulnerability details or private transcript data.
 
 ## Hardware Smoke Checks
 

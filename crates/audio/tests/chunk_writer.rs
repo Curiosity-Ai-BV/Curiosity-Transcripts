@@ -6,10 +6,7 @@ use curiosity_audio::{
 };
 
 fn test_dir(name: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "curiosity-audio-{name}-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("curiosity-audio-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("test dir");
     path
@@ -38,8 +35,8 @@ fn timed_frame(start_time_ms: u64, sample_count: usize, channel_count: u16) -> A
 #[test]
 fn stop_marks_written_chunks_complete_and_manifest_not_recoverable() {
     let root = test_dir("stop");
-    let mut writer = ChunkWriter::create(&root, RecordingMetadata::new("session-stop", 1_000))
-        .expect("writer");
+    let mut writer =
+        ChunkWriter::create(&root, RecordingMetadata::new("session-stop", 1_000)).expect("writer");
 
     writer.write_frame(&mic_frame()).expect("write frame");
     let manifest = writer.stop(1_010).expect("stop");
@@ -97,10 +94,15 @@ fn cancel_preserves_written_bytes_with_clear_recoverable_interrupted_metadata() 
         .expect("writer");
 
     writer.write_frame(&mic_frame()).expect("write frame");
-    let manifest = writer.cancel(2_005, "user canceled recording").expect("cancel");
+    let manifest = writer
+        .cancel(2_005, "user canceled recording")
+        .expect("cancel");
 
     assert_eq!(manifest.status, ManifestStatus::Canceled);
-    assert_eq!(manifest.recovery.as_ref().map(|r| r.recoverable), Some(true));
+    assert_eq!(
+        manifest.recovery.as_ref().map(|r| r.recoverable),
+        Some(true)
+    );
     assert_eq!(
         manifest.chunks[0].recovery,
         ChunkRecoveryState::RecoverableInterrupted
@@ -118,27 +120,34 @@ fn cancel_preserves_written_bytes_with_clear_recoverable_interrupted_metadata() 
 #[test]
 fn failure_without_written_bytes_is_failed_but_not_recoverable() {
     let root = test_dir("failure-empty");
-    let writer = ChunkWriter::create(&root, RecordingMetadata::new("session-fail", 3_000))
-        .expect("writer");
+    let writer =
+        ChunkWriter::create(&root, RecordingMetadata::new("session-fail", 3_000)).expect("writer");
 
     let manifest = writer.fail(3_001, "disk permission denied").expect("fail");
 
     assert_eq!(manifest.status, ManifestStatus::Failed);
-    assert_eq!(manifest.recovery.as_ref().map(|r| r.recoverable), Some(false));
+    assert_eq!(
+        manifest.recovery.as_ref().map(|r| r.recoverable),
+        Some(false)
+    );
     assert!(manifest.chunks.is_empty());
 }
 
 #[test]
 fn failure_after_written_bytes_marks_chunks_recoverable_interrupted() {
     let root = test_dir("failure-written");
-    let mut writer = ChunkWriter::create(&root, RecordingMetadata::new("session-fail-written", 4_000))
-        .expect("writer");
+    let mut writer =
+        ChunkWriter::create(&root, RecordingMetadata::new("session-fail-written", 4_000))
+            .expect("writer");
 
     writer.write_frame(&mic_frame()).expect("write frame");
     let manifest = writer.fail(4_002, "disk full").expect("fail");
 
     assert_eq!(manifest.status, ManifestStatus::Failed);
-    assert_eq!(manifest.recovery.as_ref().map(|r| r.recoverable), Some(true));
+    assert_eq!(
+        manifest.recovery.as_ref().map(|r| r.recoverable),
+        Some(true)
+    );
     assert_eq!(
         manifest.chunks[0].recovery,
         ChunkRecoveryState::RecoverableInterrupted

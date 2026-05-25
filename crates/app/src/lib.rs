@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use curiosity_audio::{AudioCapture, AudioFrame, CapturePermission, CapturePermissionError};
 use curiosity_analysis::{AnalysisInput, AnalysisOutcome, MeetingAnalyzer};
+use curiosity_audio::{AudioCapture, AudioFrame, CapturePermission, CapturePermissionError};
 use curiosity_domain::{
     AnalysisActionItem, AnalysisCitation, AnalysisDecision, AnalysisQuestion, ArtifactKind,
     AudioArtifact, Meeting, MeetingAnalysis, MeetingStatus, RecordingSession, RecordingSource,
@@ -222,7 +222,9 @@ pub fn rename_meeting_command(
     meeting_id: &str,
     title: &str,
 ) -> curiosity_store::StoreResult<MeetingSummaryDto> {
-    Ok(meeting_summary_dto(store.rename_meeting(meeting_id, title)?))
+    Ok(meeting_summary_dto(
+        store.rename_meeting(meeting_id, title)?,
+    ))
 }
 
 pub fn export_meeting_json_command(
@@ -330,14 +332,26 @@ fn meeting_analysis_dto(analysis: MeetingAnalysis) -> MeetingAnalysisDto {
         created_at_ms: analysis.created_at_ms,
         prompt_template_version: analysis.prompt_template_version,
         summary: analysis.summary,
-        decisions: analysis.decisions.into_iter().map(analysis_decision_dto).collect(),
+        decisions: analysis
+            .decisions
+            .into_iter()
+            .map(analysis_decision_dto)
+            .collect(),
         action_items: analysis
             .action_items
             .into_iter()
             .map(analysis_action_item_dto)
             .collect(),
-        questions: analysis.questions.into_iter().map(analysis_question_dto).collect(),
-        citations: analysis.citations.into_iter().map(analysis_citation_dto).collect(),
+        questions: analysis
+            .questions
+            .into_iter()
+            .map(analysis_question_dto)
+            .collect(),
+        citations: analysis
+            .citations
+            .into_iter()
+            .map(analysis_citation_dto)
+            .collect(),
     }
 }
 
@@ -417,8 +431,11 @@ pub struct StorageSetup {
 
 pub trait ArtifactSink {
     fn setup_recording(&self, meeting_id: &str) -> Result<StorageSetup, StorageSetupError>;
-    fn write_frames(&self, setup: &StorageSetup, frames: &[AudioFrame])
-        -> Result<(), StorageSetupError>;
+    fn write_frames(
+        &self,
+        setup: &StorageSetup,
+        frames: &[AudioFrame],
+    ) -> Result<(), StorageSetupError>;
     fn has_recovery_evidence(&self, setup: &StorageSetup) -> bool;
     fn recover_recording(&self, setup: &StorageSetup) -> Result<(), StorageSetupError>;
 }
@@ -515,15 +532,13 @@ impl ArtifactSink for FakeArtifactSink {
         if let Some(FakeWriteFailure::BeforeBytes(error)) = &self.write_failure {
             return Err(error.clone());
         }
-        let artifact_path =
-            relative_to_meetings_root(&self.meetings_root, &setup.artifact_path).ok_or_else(|| {
-                StorageSetupError {
-                    kind: RecordingErrorKind::StorageUnavailable,
-                    message: format!(
-                        "artifact path is not safe for private storage: {}",
-                        setup.artifact_path
-                    ),
-                }
+        let artifact_path = relative_to_meetings_root(&self.meetings_root, &setup.artifact_path)
+            .ok_or_else(|| StorageSetupError {
+                kind: RecordingErrorKind::StorageUnavailable,
+                message: format!(
+                    "artifact path is not safe for private storage: {}",
+                    setup.artifact_path
+                ),
             })?;
         if let Some(parent) = artifact_path.parent() {
             fs::create_dir_all(parent).map_err(|err| StorageSetupError {
@@ -603,7 +618,9 @@ where
     }
 
     pub fn active_recording(&self) -> Option<&str> {
-        self.active.as_ref().map(|active| active.recording_id.as_str())
+        self.active
+            .as_ref()
+            .map(|active| active.recording_id.as_str())
     }
 
     pub fn start_manual_recording(
@@ -632,9 +649,10 @@ where
             ));
         }
 
-        let snapshot = self.capture.device_snapshot().map_err(|err| {
-            permission_error(meeting_id, &storage_location(meeting_id), err)
-        })?;
+        let snapshot = self
+            .capture
+            .device_snapshot()
+            .map_err(|err| permission_error(meeting_id, &storage_location(meeting_id), err))?;
         let setup = self.sink.setup_recording(meeting_id).map_err(|err| {
             storage_error(meeting_id, CommandRecordingState::Interrupted, false, err)
         })?;
@@ -704,7 +722,12 @@ where
             .update_meeting_status(&active.meeting_id, MeetingStatus::Paused, None)
             .map_err(|err| store_error(&active.meeting_id, err.to_string()))?;
         self.store
-            .update_recording_session_status(&active.recording_id, RecordingStatus::Paused, None, None)
+            .update_recording_session_status(
+                &active.recording_id,
+                RecordingStatus::Paused,
+                None,
+                None,
+            )
             .map_err(|err| store_error(&active.meeting_id, err.to_string()))?;
         Ok(dto(
             &active.meeting_id,
@@ -728,7 +751,11 @@ where
         })?;
         active.status = RecordingStatus::Stopping;
         self.store
-            .update_meeting_status(&active.meeting_id, MeetingStatus::Complete, Some(ended_at_ms))
+            .update_meeting_status(
+                &active.meeting_id,
+                MeetingStatus::Complete,
+                Some(ended_at_ms),
+            )
             .map_err(|err| store_error(&active.meeting_id, err.to_string()))?;
         self.store
             .update_recording_session_status(
@@ -763,16 +790,19 @@ where
                 "Stop the current recording before recovering another one",
             ));
         }
-        let interrupted = self.interrupted.as_ref().ok_or_else(|| {
-            no_recoverable_recording_error(meeting_id, recording_id)
-        })?;
+        let interrupted = self
+            .interrupted
+            .as_ref()
+            .ok_or_else(|| no_recoverable_recording_error(meeting_id, recording_id))?;
         if interrupted.meeting_id != meeting_id || interrupted.recording_id != recording_id {
             return Err(no_recoverable_recording_error(meeting_id, recording_id));
         }
 
         self.sink
             .recover_recording(&interrupted.setup)
-            .map_err(|err| storage_error(meeting_id, CommandRecordingState::Interrupted, true, err))?;
+            .map_err(|err| {
+                storage_error(meeting_id, CommandRecordingState::Interrupted, true, err)
+            })?;
         let interrupted = self.interrupted.take().expect("checked");
         self.store
             .update_meeting_status(&interrupted.meeting_id, MeetingStatus::Recovered, None)
@@ -852,7 +882,10 @@ where
                     setup: interrupted.setup,
                 });
             } else {
-                self.mark_persisted_recording_failed(&interrupted, "fake audio write failed before recoverable evidence")?;
+                self.mark_persisted_recording_failed(
+                    &interrupted,
+                    "fake audio write failed before recoverable evidence",
+                )?;
             }
             return Err(storage_error_with_recording(
                 &meeting_id,
@@ -940,7 +973,9 @@ pub fn dedupe_selected_segments(
 ) -> Vec<SpeechSegment> {
     let mut selected: Vec<SpeechSegment> = segments
         .iter()
-        .filter(|segment| selected_source == SpeechSource::Mixed || segment.source == selected_source)
+        .filter(|segment| {
+            selected_source == SpeechSource::Mixed || segment.source == selected_source
+        })
         .cloned()
         .collect();
     selected.sort_by_key(|segment| (segment.start_ms, segment.end_ms));
@@ -953,7 +988,12 @@ pub fn dedupe_selected_segments(
     for segment in selected {
         let duplicate = deduped.iter().any(|existing| {
             normalized_text(&existing.text) == normalized_text(&segment.text)
-                && ranges_overlap(existing.start_ms, existing.end_ms, segment.start_ms, segment.end_ms)
+                && ranges_overlap(
+                    existing.start_ms,
+                    existing.end_ms,
+                    segment.start_ms,
+                    segment.end_ms,
+                )
         });
         if !duplicate {
             deduped.push(segment);
@@ -1159,9 +1199,9 @@ fn is_safe_meeting_id(meeting_id: &str) -> bool {
 
 fn is_safe_relative_path(path: &Path) -> bool {
     !path.is_absolute()
-        && path.components().all(|component| {
-            matches!(component, Component::Normal(_) | Component::CurDir)
-        })
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 fn normalized_text(text: &str) -> String {

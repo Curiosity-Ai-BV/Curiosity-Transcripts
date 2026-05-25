@@ -2,9 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use curiosity_app::meeting_detail_dto;
-use curiosity_domain::{
-    Meeting, ModelRun, SourceChannel, TranscriptSegment, TranscriptVersion,
-};
+use curiosity_domain::{Meeting, ModelRun, SourceChannel, TranscriptSegment, TranscriptVersion};
 use curiosity_store::Store;
 
 fn test_root(name: &str) -> PathBuf {
