@@ -2546,6 +2546,7 @@ fn f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn microphone_error_from_message(message: String) -> CaptureError {
     let lower = message.to_ascii_lowercase();
     if lower.contains("permission") || lower.contains("denied") || lower.contains("authorized") {
@@ -2557,6 +2558,7 @@ fn microphone_error_from_message(message: String) -> CaptureError {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn microphone_capture_stream_result(
     wrote_samples: bool,
     stream_errors: &[String],
@@ -2572,6 +2574,7 @@ fn microphone_capture_stream_result(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
