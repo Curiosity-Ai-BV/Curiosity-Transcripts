@@ -5,7 +5,7 @@ const root = path.resolve(__dirname, "..");
 const workflowPath = path.join(root, ".github", "workflows", "pages.yml");
 
 const requiredText = [
-  "macos-latest",
+  "macos-26",
   "./scripts/build-macos-dmg.sh --no-sign",
   "actions/upload-artifact@v4",
   "actions/download-artifact@v4",
@@ -36,6 +36,13 @@ for (const text of requiredText) {
 
 if (/ubuntu-latest[\s\S]*build-macos-dmg\.sh/.test(yaml)) {
   console.error("::error file=.github/workflows/pages.yml::macOS DMG build must not run on ubuntu-latest");
+  ok = false;
+}
+
+if (/runs-on:\s*macos-latest/.test(yaml)) {
+  console.error(
+    "::error file=.github/workflows/pages.yml::Pages DMG build must pin macos-26 for the ScreenCaptureKit/apple-metal SDK requirement",
+  );
   ok = false;
 }
 

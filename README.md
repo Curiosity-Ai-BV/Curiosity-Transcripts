@@ -215,8 +215,8 @@ checklist, signing environment variables, and manual installer smoke path.
 
 The static homepage under `site/` is published by `.github/workflows/pages.yml`.
 On each `main` deployment, GitHub Actions builds the unsigned macOS DMG on a
-macOS runner, copies it into the Pages artifact, and updates the stable download
-link at `downloads/Curiosity-Transcripts-latest.dmg`.
+macOS 26 runner, copies it into the Pages artifact, and updates the stable
+download link at `downloads/Curiosity-Transcripts-latest.dmg`.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
