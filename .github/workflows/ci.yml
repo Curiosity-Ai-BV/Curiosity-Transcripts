@@ -27,6 +27,12 @@ jobs:
       - name: Check publication readiness
         run: bash scripts/check-publication-readiness.sh
 
+      - name: Check GitHub Pages homepage
+        run: node scripts/check-pages-site.js
+
+      - name: Check GitHub Pages deployment workflow
+        run: node scripts/check-pages-workflow.js
+
       - name: Check Rust formatting
         run: cargo fmt --check
 

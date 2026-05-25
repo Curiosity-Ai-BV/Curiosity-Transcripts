@@ -25,6 +25,8 @@ require_text() {
 for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md; do
   check_file "$file"
 done
+check_file "site/index.html"
+check_file ".github/workflows/pages.yml"
 
 require_text LICENSE 'Apache License' 'Apache-2.0 license text'
 require_text NOTICE 'Curiosity Transcripts' 'Curiosity Transcripts attribution notice'
@@ -34,6 +36,8 @@ require_text SECURITY.md 'Report' 'private vulnerability reporting guidance'
 require_text README.md 'Apache-2\.0' 'license metadata'
 require_text README.md 'ATTRIBUTION\.md' 'commercial attribution pointer'
 require_text README.md 'SECURITY\.md' 'security policy pointer'
+require_text README.md 'GitHub Pages' 'public homepage deployment documentation'
+require_text README.md 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download documentation'
 
 require_text Cargo.toml '^license = "Apache-2\.0"$' 'workspace Apache-2.0 license metadata'
 
@@ -59,6 +63,12 @@ require_text .github/workflows/ci.yml 'librsvg2-dev' 'Tauri Linux SVG dependency
 require_text .github/workflows/ci.yml 'npm run test' 'desktop test CI gate'
 require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
 require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publication readiness CI gate'
+require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
+require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
+require_text .github/workflows/pages.yml 'macos-latest' 'macOS runner for DMG build'
+require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
+require_text site/index.html 'https://curiosityai\.nl' 'CuriosityAI maker link'
+require_text site/index.html 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable homepage DMG download link'
 
 if ! node <<'NODE'
 const fs = require("fs");
@@ -89,6 +99,14 @@ if (rootLockPackage?.license !== "Apache-2.0") {
 process.exit(ok ? 0 : 1);
 NODE
 then
+  failures=1
+fi
+
+if ! node scripts/check-pages-site.js; then
+  failures=1
+fi
+
+if ! node scripts/check-pages-workflow.js; then
   failures=1
 fi
 
