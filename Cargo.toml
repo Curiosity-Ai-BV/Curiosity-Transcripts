@@ -1,3 +1,8 @@
 [workspace]
 members = ["crates/analysis", "crates/app", "crates/audio", "crates/domain", "crates/store", "crates/transcription"]
 resolver = "2"
+
+[workspace.package]
+license = "Apache-2.0"
+repository = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"
+homepage = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"

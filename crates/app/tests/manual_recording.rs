@@ -13,10 +13,7 @@ use curiosity_audio::{
 use curiosity_store::Store;
 
 fn test_root(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "curiosity-app-{name}-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("curiosity-app-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("test root");
     path
@@ -97,11 +94,17 @@ fn start_creates_recording_and_artifacts_before_reporting_active() {
     assert_eq!(dto.recording_id.as_deref(), Some("recording-meeting-1"));
     assert_eq!(dto.permission_state, AppPermissionState::Ready);
     assert_eq!(dto.raw_audio_retention, RawAudioRetentionPolicy::Retain);
-    assert_eq!(dto.storage_location.app_private_path, "meetings/meeting-1/audio");
+    assert_eq!(
+        dto.storage_location.app_private_path,
+        "meetings/meeting-1/audio"
+    );
     assert!(service.active_recording().is_some());
     assert_eq!(service.store().count("meetings").expect("meetings"), 1);
     assert_eq!(
-        service.store().count("recording_sessions").expect("sessions"),
+        service
+            .store()
+            .count("recording_sessions")
+            .expect("sessions"),
         1
     );
     assert_eq!(
@@ -133,7 +136,10 @@ fn artifact_setup_failure_does_not_leave_half_created_active_recording() {
     assert!(service.active_recording().is_none());
     assert_eq!(service.store().count("meetings").expect("meetings"), 0);
     assert_eq!(
-        service.store().count("recording_sessions").expect("sessions"),
+        service
+            .store()
+            .count("recording_sessions")
+            .expect("sessions"),
         0
     );
 }
@@ -224,7 +230,13 @@ fn command_contract_covers_manual_recording_pause_stop_and_recover_states() {
     assert_eq!(interrupted.state, CommandRecordingState::Interrupted);
     assert_eq!(recovering.state, CommandRecordingState::Recovering);
     assert_eq!(stopping.state, CommandRecordingState::Stopping);
-    assert_eq!(service.store().meeting_status("meeting-1").expect("meeting status"), "Complete");
+    assert_eq!(
+        service
+            .store()
+            .meeting_status("meeting-1")
+            .expect("meeting status"),
+        "Complete"
+    );
     assert_eq!(
         service
             .store()
@@ -249,7 +261,12 @@ fn command_contract_covers_manual_recording_pause_stop_and_recover_states() {
 #[test]
 fn duplicate_speech_fixture_does_not_double_count_obvious_mic_system_overlap() {
     let segments = vec![
-        SpeechSegment::new(SpeechSource::Microphone, 1_000, 2_000, "we should ship this"),
+        SpeechSegment::new(
+            SpeechSource::Microphone,
+            1_000,
+            2_000,
+            "we should ship this",
+        ),
         SpeechSegment::new(SpeechSource::System, 1_030, 2_030, "We should ship this"),
         SpeechSegment::new(SpeechSource::Microphone, 2_500, 3_000, "next topic"),
     ];
@@ -308,7 +325,13 @@ fn disk_full_before_written_evidence_leaves_clean_failed_nonrecoverable_state() 
     assert_eq!(interrupted.recording_id, None);
     assert!(interrupted.recovery_action.contains("Free disk space"));
     assert!(service.active_recording().is_none());
-    assert_eq!(service.store().meeting_status("meeting-1").expect("meeting status"), "Failed");
+    assert_eq!(
+        service
+            .store()
+            .meeting_status("meeting-1")
+            .expect("meeting status"),
+        "Failed"
+    );
     assert_eq!(
         service
             .store()
@@ -348,11 +371,23 @@ fn recovery_requires_the_same_interrupted_meeting_and_recording() {
         .expect("same recording should recover");
 
     assert_eq!(unrelated.kind, RecordingErrorKind::NoRecoverableRecording);
-    assert_eq!(wrong_session.kind, RecordingErrorKind::NoRecoverableRecording);
+    assert_eq!(
+        wrong_session.kind,
+        RecordingErrorKind::NoRecoverableRecording
+    );
     assert_eq!(recovered.state, CommandRecordingState::Recovering);
-    assert_eq!(recovered.recording_id.as_deref(), Some("recording-meeting-1"));
+    assert_eq!(
+        recovered.recording_id.as_deref(),
+        Some("recording-meeting-1")
+    );
     assert_eq!(service.active_recording(), Some("recording-meeting-1"));
-    assert_eq!(service.store().meeting_status("meeting-1").expect("meeting status"), "Recovered");
+    assert_eq!(
+        service
+            .store()
+            .meeting_status("meeting-1")
+            .expect("meeting status"),
+        "Recovered"
+    );
     assert_eq!(
         service
             .store()
@@ -414,8 +449,17 @@ fn recoverable_failure_dto_includes_recording_handle_needed_to_recover() {
 
     assert!(interrupted.recoverable);
     assert_eq!(interrupted.meeting_id, "meeting-1");
-    assert_eq!(interrupted.recording_id.as_deref(), Some("recording-meeting-1"));
-    assert_eq!(service.store().meeting_status("meeting-1").expect("meeting status"), "Interrupted");
+    assert_eq!(
+        interrupted.recording_id.as_deref(),
+        Some("recording-meeting-1")
+    );
+    assert_eq!(
+        service
+            .store()
+            .meeting_status("meeting-1")
+            .expect("meeting status"),
+        "Interrupted"
+    );
     assert_eq!(
         service
             .store()
@@ -446,7 +490,13 @@ fn capture_failure_during_active_recording_clears_active_and_allows_restart() {
     assert!(!failed.recoverable);
     assert_eq!(failed.recording_id, None);
     assert!(service.active_recording().is_none());
-    assert_eq!(service.store().meeting_status("meeting-1").expect("meeting status"), "Failed");
+    assert_eq!(
+        service
+            .store()
+            .meeting_status("meeting-1")
+            .expect("meeting status"),
+        "Failed"
+    );
     assert!(service
         .start_manual_recording("meeting-2", "Restart", 2_000)
         .is_ok());
@@ -464,6 +514,8 @@ impl AudioCapture for CaptureFailsAfterStart {
     }
 
     fn capture_frames(&self) -> Result<Vec<AudioFrame>, CapturePermissionError> {
-        Err(CapturePermissionError::denied(CapturePermission::Microphone))
+        Err(CapturePermissionError::denied(
+            CapturePermission::Microphone,
+        ))
     }
 }

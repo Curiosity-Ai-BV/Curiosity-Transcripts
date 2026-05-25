@@ -89,7 +89,9 @@ fn search_ignores_obsolete_transcript_versions_after_retranscription() {
         .expect("obsolete search")
         .is_empty());
     assert_eq!(
-        ids(&store.search_meetings("replacement").expect("current search")),
+        ids(&store
+            .search_meetings("replacement")
+            .expect("current search")),
         vec!["meeting-1"]
     );
 }
@@ -143,7 +145,10 @@ fn rename_meeting_updates_sqlite_title_and_private_manifest_without_renaming_exp
     let manifest = ArtifactManifest::read(&manifest_path).expect("read manifest");
     assert_eq!(manifest.meeting_id, "meeting-1");
     assert_eq!(manifest.meeting_title.as_deref(), Some("Renamed Planning"));
-    assert_eq!(store.exported_files("meeting-1").expect("exports"), vec![exported_path]);
+    assert_eq!(
+        store.exported_files("meeting-1").expect("exports"),
+        vec![exported_path]
+    );
 }
 
 #[cfg(unix)]
@@ -267,10 +272,19 @@ fn export_round_trip_preserves_title_timestamps_transcript_and_edits() {
     assert_eq!(round_trip.segments[0].start_ms, 0);
     assert_eq!(round_trip.segments[0].end_ms, 1_200);
     assert_eq!(round_trip.segments[0].text, "hello world");
-    assert_eq!(round_trip.segments[0].original_text.as_deref(), Some("helo world"));
+    assert_eq!(
+        round_trip.segments[0].original_text.as_deref(),
+        Some("helo world")
+    );
     assert_eq!(round_trip.segments[0].edits[0].previous_text, "helo world");
-    assert_eq!(round_trip.segments[0].edits[0].corrected_text, "hello world");
-    assert_eq!(store.exported_files("meeting-1").expect("exports"), vec![export_path]);
+    assert_eq!(
+        round_trip.segments[0].edits[0].corrected_text,
+        "hello world"
+    );
+    assert_eq!(
+        store.exported_files("meeting-1").expect("exports"),
+        vec![export_path]
+    );
 }
 
 #[test]
@@ -306,10 +320,15 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
 
-    assert_eq!(report.exported_files_outside_app_control, vec![exported_path]);
+    assert_eq!(
+        report.exported_files_outside_app_control,
+        vec![exported_path]
+    );
     assert_eq!(store.count("model_runs").expect("model runs"), 0);
     assert_eq!(
-        store.count("recording_sessions").expect("recording sessions"),
+        store
+            .count("recording_sessions")
+            .expect("recording sessions"),
         0
     );
     assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 0);
@@ -335,7 +354,9 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
 
     assert_eq!(store.count("model_runs").expect("model runs"), 1);
     assert_eq!(
-        store.count("recording_sessions").expect("recording sessions"),
+        store
+            .count("recording_sessions")
+            .expect("recording sessions"),
         1
     );
     assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 1);
@@ -345,7 +366,10 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
         ids(&store.search_meetings("keep").expect("search kept")),
         vec!["meeting-2"]
     );
-    assert!(store.search_meetings("delete").expect("search deleted").is_empty());
+    assert!(store
+        .search_meetings("delete")
+        .expect("search deleted")
+        .is_empty());
 }
 
 #[test]
@@ -401,7 +425,9 @@ fn delete_meeting_retry_succeeds_after_file_removal_failure_marks_delete_intent(
         .expect_err("readonly artifact dir should fail file removal");
 
     assert!(err.to_string().contains("Permission") || err.to_string().contains("permission"));
-    assert!(store.meeting_deleted("meeting-1").expect("meeting deleted intent"));
+    assert!(store
+        .meeting_deleted("meeting-1")
+        .expect("meeting deleted intent"));
     assert!(store
         .artifact_tombstoned("meeting-1-artifact-1")
         .expect("artifact tombstoned intent"));
@@ -414,11 +440,16 @@ fn delete_meeting_retry_succeeds_after_file_removal_failure_marks_delete_intent(
     .expect("restore artifact dir");
     let report = store.delete_meeting("meeting-1").expect("retry delete");
 
-    assert_eq!(report.deleted_private_artifacts, vec![artifact_path.clone()]);
+    assert_eq!(
+        report.deleted_private_artifacts,
+        vec![artifact_path.clone()]
+    );
     assert!(!artifact_path.exists());
     assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 0);
     assert_eq!(
-        store.count("recording_sessions").expect("recording sessions"),
+        store
+            .count("recording_sessions")
+            .expect("recording sessions"),
         0
     );
     assert!(store.search_meetings("delete").expect("search").is_empty());

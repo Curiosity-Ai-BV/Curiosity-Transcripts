@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Curiosity Transcripts is a local-first macOS app for private meeting recording, transcription, search, export, and structured summaries."
+    />
+    <title>Curiosity Transcripts</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #18201d;
+        --muted: #5e6a64;
+        --line: #d8ded8;
+        --paper: #f7f8f5;
+        --panel: #ffffff;
+        --accent: #2f6f5f;
+        --accent-strong: #1f5145;
+        --gold: #b58b45;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--ink);
+        background:
+          linear-gradient(90deg, rgba(24, 32, 29, 0.06) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(24, 32, 29, 0.04) 1px, transparent 1px),
+          var(--paper);
+        background-size: 56px 56px;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .shell {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 26px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .mark {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--accent-strong);
+        font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border: 1px solid var(--accent-strong);
+        border-radius: 8px;
+        background: var(--accent-strong);
+        color: #fff;
+        font-weight: 700;
+        text-decoration: none;
+        transition:
+          transform 160ms ease,
+          background 160ms ease;
+      }
+
+      .button:hover {
+        background: var(--accent);
+      }
+
+      .button:active {
+        transform: translateY(1px);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.02fr) minmax(320px, 0.98fr);
+        gap: 54px;
+        align-items: center;
+        min-height: calc(100dvh - 92px);
+        padding: 32px 0 72px;
+      }
+
+      .eyebrow {
+        margin: 0 0 18px;
+        color: var(--accent-strong);
+        font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 12ch;
+        margin: 0;
+        font-size: 6.8rem;
+        line-height: 0.92;
+        letter-spacing: 0;
+      }
+
+      .lede {
+        max-width: 62ch;
+        margin: 26px 0 0;
+        color: var(--muted);
+        font-size: 1.18rem;
+        line-height: 1.6;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-top: 32px;
+      }
+
+      .secondary {
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--accent-strong);
+      }
+
+      .maker {
+        margin-top: 22px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .maker a {
+        color: var(--accent-strong);
+        font-weight: 700;
+      }
+
+      .product-shot {
+        border: 1px solid rgba(24, 32, 29, 0.14);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 30px 70px rgba(31, 81, 69, 0.14);
+        overflow: hidden;
+      }
+
+      .window-bar {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 38px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: #eef2ec;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--gold);
+      }
+
+      .dot:nth-child(2) {
+        background: #809186;
+      }
+
+      .dot:nth-child(3) {
+        background: var(--accent);
+      }
+
+      .app-ui {
+        display: grid;
+        grid-template-columns: 0.72fr 1.28fr;
+        min-height: 460px;
+      }
+
+      .sidebar {
+        border-right: 1px solid var(--line);
+        background: #f3f5f0;
+        padding: 18px;
+      }
+
+      .search {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .meeting-item {
+        margin-top: 16px;
+        padding: 14px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--muted);
+      }
+
+      .meeting-item.active {
+        border-color: rgba(47, 111, 95, 0.24);
+        background: #fff;
+        color: var(--ink);
+      }
+
+      .meeting-title {
+        display: block;
+        margin-bottom: 7px;
+        font-weight: 760;
+      }
+
+      .meeting-meta,
+      .line {
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .content {
+        padding: 24px;
+      }
+
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+
+      .pill {
+        border: 1px solid rgba(47, 111, 95, 0.2);
+        border-radius: 999px;
+        padding: 7px 10px;
+        background: #f8faf7;
+        color: var(--accent-strong);
+        font-size: 0.78rem;
+        font-weight: 720;
+      }
+
+      .transcript {
+        display: grid;
+        gap: 13px;
+      }
+
+      .segment {
+        border-left: 3px solid var(--accent);
+        padding: 7px 0 7px 14px;
+      }
+
+      .summary {
+        margin-top: 24px;
+        border-top: 1px solid var(--line);
+        padding-top: 20px;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .mini-panel {
+        min-height: 86px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 13px;
+        background: #fff;
+      }
+
+      .mini-panel strong {
+        display: block;
+        margin-bottom: 7px;
+      }
+
+      .section {
+        border-top: 1px solid var(--line);
+        padding: 76px 0;
+      }
+
+      .section-header {
+        display: grid;
+        grid-template-columns: minmax(0, 0.7fr) minmax(280px, 0.3fr);
+        gap: 34px;
+        align-items: end;
+        margin-bottom: 34px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 3.8rem;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: 1.35fr 0.65fr;
+        gap: 18px;
+      }
+
+      .feature {
+        min-height: 190px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.76);
+        padding: 24px;
+      }
+
+      .feature:nth-child(2) {
+        transform: translateY(38px);
+      }
+
+      .feature:nth-child(3) {
+        transform: translateY(-10px);
+      }
+
+      .feature h3 {
+        margin: 0 0 12px;
+        font-size: 1.15rem;
+      }
+
+      .feature p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .download-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(260px, 0.2fr);
+        gap: 22px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 26px;
+      }
+
+      .download-panel p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      footer {
+        padding: 34px 0 52px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      @media (max-width: 860px) {
+        .shell {
+          width: min(100% - 28px, 680px);
+        }
+
+        .nav,
+        .nav-links,
+        .hero-actions {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .hero,
+        .app-ui,
+        .section-header,
+        .feature-grid,
+        .download-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          min-height: auto;
+          padding-top: 28px;
+        }
+
+        h1 {
+          max-width: 8ch;
+          font-size: 3.8rem;
+        }
+
+        h2 {
+          font-size: 2.4rem;
+        }
+
+        .lede {
+          font-size: 1.06rem;
+        }
+
+        .feature:nth-child(2),
+        .feature:nth-child(3) {
+          transform: none;
+        }
+
+        .sidebar {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .summary-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 430px) {
+        h1 {
+          font-size: 3rem;
+        }
+
+        h2 {
+          font-size: 2rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="shell nav">
+      <a class="brand" href="#" aria-label="Curiosity Transcripts home">
+        <span class="mark">CT</span>
+        <span>Curiosity Transcripts</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#download">Download</a>
+        <a href="https://curiosityai.nl">Made by CuriosityAI</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="shell hero" aria-labelledby="hero-title">
+        <div>
+          <p class="eyebrow">Local-first meeting transcripts</p>
+          <h1 id="hero-title">Private transcripts, owned locally.</h1>
+          <p class="lede">
+            Curiosity Transcripts records microphone and system audio on macOS,
+            transcribes meetings with local Whisper, keeps searchable history in
+            private storage, and exports plain Markdown, JSON, and SRT files.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
+              Download latest macOS DMG
+            </a>
+            <a class="button secondary" href="https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts">
+              View source
+            </a>
+          </div>
+          <p class="maker">
+            Built by <a href="https://curiosityai.nl">CuriosityAI</a> as a
+            local-first desktop app for users who need meeting records they can
+            inspect, search, export, and delete.
+          </p>
+        </div>
+
+        <div class="product-shot" aria-label="Curiosity Transcripts workspace preview">
+          <div class="window-bar" aria-hidden="true">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <div class="app-ui">
+            <aside class="sidebar">
+              <div class="search"></div>
+              <div class="meeting-item active">
+                <span class="meeting-title">Design review</span>
+                <span class="meeting-meta">Recorded locally - Whisper ready</span>
+              </div>
+              <div class="meeting-item">
+                <span class="meeting-title">Sprint planning</span>
+                <span class="meeting-meta">Summary pending</span>
+              </div>
+              <div class="meeting-item">
+                <span class="meeting-title">Customer sync</span>
+                <span class="meeting-meta">Exported JSON</span>
+              </div>
+            </aside>
+            <div class="content">
+              <div class="status-row">
+                <span class="pill">Local only</span>
+                <span class="pill">Raw audio retained</span>
+                <span class="pill">Ollama summary</span>
+              </div>
+              <div class="transcript">
+                <div class="segment">
+                  <strong>00:04</strong>
+                  <div class="line">We decided to keep the transcript local and export the action list after review.</div>
+                </div>
+                <div class="segment">
+                  <strong>02:18</strong>
+                  <div class="line">The macOS DMG should be attached to each deployment and linked from the Pages site.</div>
+                </div>
+              </div>
+              <div class="summary">
+                <div class="summary-grid">
+                  <div class="mini-panel">
+                    <strong>Decision</strong>
+                    <span class="line">Ship local-first recording before calendar automation.</span>
+                  </div>
+                  <div class="mini-panel">
+                    <strong>Action</strong>
+                    <span class="line">Verify unsigned DMG before publishing.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="shell section" aria-labelledby="features-title">
+        <div class="section-header">
+          <h2 id="features-title">What the app does today.</h2>
+          <p class="lede">
+            The MVP focuses on the trusted manual loop: record, transcribe,
+            inspect, summarize, export, and delete without a required cloud
+            account.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <h3>Desktop recording with private artifacts</h3>
+            <p>
+              Capture microphone audio and feature-gated ScreenCaptureKit
+              system audio into app-private WAV files with visible recovery and
+              permission states.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Local Whisper transcription</h3>
+            <p>
+              Transcribe saved meetings using a user-provided local model path
+              and keep channel-tagged transcript segments in SQLite.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Search and export</h3>
+            <p>
+              Find meetings with SQLite FTS5, inspect transcript history, export
+              Markdown, JSON, and SRT, then delete private artifacts when needed.
+            </p>
+          </article>
+          <article class="feature">
+            <h3>Structured local summaries</h3>
+            <p>
+              Generate cited summaries, decisions, questions, and action items
+              through a local Ollama setup, with hosted provider paths gated by
+              explicit disclosure.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="download" class="shell section" aria-labelledby="download-title">
+        <div class="download-panel">
+          <div>
+            <p class="eyebrow">Automated deployment artifact</p>
+            <h2 id="download-title">Latest macOS DMG</h2>
+            <p>
+              Each GitHub Pages deployment publishes the current unsigned macOS
+              DMG to the stable download path below. Signed and notarized
+              distribution remains a separate release step.
+            </p>
+          </div>
+          <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
+            Curiosity-Transcripts-latest.dmg
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="shell">
+      <span>Curiosity Transcripts is made by <a href="https://curiosityai.nl">CuriosityAI</a>.</span>
+    </footer>
+  </body>
+</html>

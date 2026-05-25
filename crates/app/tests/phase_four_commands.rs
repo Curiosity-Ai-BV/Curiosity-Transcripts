@@ -28,7 +28,10 @@ fn phase_four_commands_find_open_rename_delete_and_export_without_provider_depen
     let store = migrated_store(&root);
     seed_meeting_with_transcript(&store, "meeting-1", "Planning", "local transcript");
 
-    assert_eq!(list_meetings_dto(&store).expect("list")[0].title, "Planning");
+    assert_eq!(
+        list_meetings_dto(&store).expect("list")[0].title,
+        "Planning"
+    );
     assert_eq!(
         meeting_detail_dto(&store, "meeting-1")
             .expect("open")

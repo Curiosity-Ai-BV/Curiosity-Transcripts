@@ -2,8 +2,8 @@ use std::cell::Cell;
 
 use curiosity_analysis::{
     recommended_analysis_model_presets, AnalysisClientError, AnalysisInput, AnalysisOutcome,
-    AnalysisProviderKind, FakeMeetingAnalyzer, HostedAnalysisConfig, OpenAiCompatibleAnalyzer,
-    OllamaAnalyzer, ProviderTextClient,
+    AnalysisProviderKind, FakeMeetingAnalyzer, HostedAnalysisConfig, OllamaAnalyzer,
+    OpenAiCompatibleAnalyzer, ProviderTextClient,
 };
 use curiosity_domain::{SourceChannel, TranscriptSegment};
 
@@ -230,7 +230,10 @@ fn deepseek_presets_are_not_marked_as_local_ollama_models() {
     assert!(!cloud.default_candidate);
 
     assert_eq!(speciale.display_name, "DeepSeek V3.2 Speciale");
-    assert_eq!(speciale.provider_kind, AnalysisProviderKind::OpenAiCompatibleHosted);
+    assert_eq!(
+        speciale.provider_kind,
+        AnalysisProviderKind::OpenAiCompatibleHosted
+    );
     assert_eq!(speciale.model_tag, "DeepSeek-V3.2-Speciale");
     assert!(speciale.network_used);
     assert!(speciale.requires_data_disclosure);
@@ -299,7 +302,8 @@ fn cloud_ollama_tag_cannot_be_run_through_local_ollama_constructor() {
 #[test]
 fn deepseek_speciale_tag_cannot_be_run_through_local_ollama_constructor() {
     let client = CountingClient::success(valid_model_json());
-    let outcome = OllamaAnalyzer::new(client, "DeepSeek-V3.2-Speciale", "summary-v1").analyze(input());
+    let outcome =
+        OllamaAnalyzer::new(client, "DeepSeek-V3.2-Speciale", "summary-v1").analyze(input());
 
     let AnalysisOutcome::Failed(failure) = outcome else {
         panic!("hosted Speciale tag should not run through local constructor");

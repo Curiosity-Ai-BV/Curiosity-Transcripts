@@ -30,7 +30,11 @@ fn meeting_recording_lifecycle_preserves_recovery_before_completion_and_delete()
     meeting.mark_interrupted(&interrupted);
     assert_eq!(meeting.status, MeetingStatus::Interrupted);
     assert_eq!(interrupted.status, RecordingStatus::Interrupted);
-    assert!(interrupted.recovery_note.as_deref().expect("note").contains("process exited"));
+    assert!(interrupted
+        .recovery_note
+        .as_deref()
+        .expect("note")
+        .contains("process exited"));
 
     let recovered = interrupted.recover(1_800);
     meeting.mark_recovered(&recovered);
