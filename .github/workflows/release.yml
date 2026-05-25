@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-release-dmg:
+    runs-on: macos-26
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build unsigned macOS DMG
+        run: ./scripts/build-macos-dmg.sh --no-sign
+
+      - name: Stage versioned release assets
+        id: stage_assets
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          expected_tag="v${version}"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME must match apps/desktop/package.json version $version"
+            exit 1
+          fi
+
+          tauri_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -n 1)"
+          if [ "$tauri_version" != "$version" ]; then
+            echo "::error::apps/desktop/src-tauri/Cargo.toml version $tauri_version must match apps/desktop/package.json version $version"
+            exit 1
+          fi
+
+          lock_version="$(node -p "require('./apps/desktop/package-lock.json').packages[''].version")"
+          if [ "$lock_version" != "$version" ]; then
+            echo "::error::apps/desktop/package-lock.json version $lock_version must match apps/desktop/package.json version $version"
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
+          if [ -z "$dmg_path" ]; then
+            echo "::error::No DMG was produced"
+            exit 1
+          fi
+
+          release_asset="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.dmg"
+          cp "$dmg_path" "$release_asset"
+          shasum -a 256 "$release_asset" | tee "$release_asset.sha256"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$release_asset" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$release_asset.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.stage_assets.outputs.version }}
+          ASSET_PATH: ${{ steps.stage_assets.outputs.asset_path }}
+          CHECKSUM_PATH: ${{ steps.stage_assets.outputs.checksum_path }}
+        run: |
+          release_notes="$(mktemp)"
+          {
+            echo "Curiosity Transcripts ${RELEASE_VERSION}"
+            echo
+            echo "Unsigned macOS DMG for testing the open-source release path."
+            echo "Signed and notarized distribution remains a separate release step."
+          } > "$release_notes"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
+              --notes-file "$release_notes"
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
+              --notes-file "$release_notes"
+          fi
+
+          gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
