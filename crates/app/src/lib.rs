@@ -15,6 +15,7 @@ pub type AppResult<T> = Result<T, RecordingError>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum CommandRecordingState {
+    Idle,
     Recording,
     Paused,
     Stopping,

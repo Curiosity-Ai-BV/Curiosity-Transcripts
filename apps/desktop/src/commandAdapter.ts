@@ -1,4 +1,5 @@
 export type CommandRecordingState =
+  | "Idle"
   | "Recording"
   | "Paused"
   | "Stopping"
@@ -243,6 +244,13 @@ export function mapRecordingState(
     | "recovery_action"
   >,
 ): StatusView {
+  if (dto.state === "Idle") {
+    return {
+      label: "Recording idle",
+      tone: "muted",
+      detail: dto.recovery_action || "Start a desktop recording when you are ready.",
+    };
+  }
   if (dto.permission_state !== "Ready") {
     const permission = mapPermissionState(dto.permission_state);
     return {

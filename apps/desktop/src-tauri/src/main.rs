@@ -1520,8 +1520,8 @@ fn recording_snapshot(
     recording_dto(
         "",
         None,
-        CommandRecordingState::Interrupted,
-        AppPermissionState::MicrophoneUnavailable,
+        CommandRecordingState::Idle,
+        AppPermissionState::Ready,
         app_root.display().to_string(),
         "Start a desktop recording to create private microphone and system audio WAV artifacts.",
     )
@@ -2516,10 +2516,8 @@ mod tests {
         );
         assert_eq!(json["meetings"].as_array().expect("meetings").len(), 0);
         assert!(json["selectedMeetingId"].is_null());
-        assert_eq!(
-            json["recording"]["permission_state"],
-            "MicrophoneUnavailable"
-        );
+        assert_eq!(json["recording"]["state"], "Idle");
+        assert_eq!(json["recording"]["permission_state"], "Ready");
         assert_eq!(
             json["recording"]["recovery_action"],
             "Start a desktop recording to create private microphone and system audio WAV artifacts."
@@ -2671,7 +2669,9 @@ mod tests {
 
         assert_eq!(result.state, "Unavailable");
         assert!(result.setup_guidance.contains("ollama pull qwen3.6:27b"));
-        assert!(result.setup_guidance.contains("Installed local models: gemma4:31b"));
+        assert!(result
+            .setup_guidance
+            .contains("Installed local models: gemma4:31b"));
     }
 
     #[test]

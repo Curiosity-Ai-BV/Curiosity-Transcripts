@@ -102,6 +102,23 @@ describe("desktop command-state mapping", () => {
     });
   });
 
+  it("renders idle recording state without microphone approval guidance", () => {
+    expect(
+      mapRecordingState({
+        state: "Idle",
+        permission_state: "Ready",
+        recoverable: false,
+        recovery_action: "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        raw_audio_retention: "Retain",
+        storage_location: { app_private_path: "/tmp/curiosity" },
+      }),
+    ).toEqual({
+      label: "Recording idle",
+      tone: "muted",
+      detail: "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+    });
+  });
+
   it("renders transcription command failures as visible blocked state", () => {
     expect(
       mapTranscriptionState({
