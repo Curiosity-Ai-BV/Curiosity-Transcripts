@@ -132,6 +132,52 @@ pub fn recommended_analysis_model_presets() -> &'static [AnalysisModelPreset] {
     RECOMMENDED_ANALYSIS_MODEL_PRESETS
 }
 
+pub fn summary_json_schema() -> serde_json::Value {
+    let citation = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["segment_id", "start_ms", "end_ms"],
+        "properties": {
+            "segment_id": { "type": "string" },
+            "start_ms": { "type": "integer", "minimum": 0 },
+            "end_ms": { "type": "integer", "minimum": 0 }
+        }
+    });
+    let cited_text = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "citations"],
+        "properties": {
+            "text": { "type": "string" },
+            "citations": { "type": "array", "items": citation.clone() }
+        }
+    });
+    let action_item = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "citations"],
+        "properties": {
+            "text": { "type": "string" },
+            "owner": { "type": "string" },
+            "due_date": { "type": "string" },
+            "citations": { "type": "array", "items": citation.clone() }
+        }
+    });
+
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "decisions", "action_items", "questions", "citations"],
+        "properties": {
+            "summary": { "type": "string" },
+            "decisions": { "type": "array", "items": cited_text.clone() },
+            "action_items": { "type": "array", "items": action_item },
+            "questions": { "type": "array", "items": cited_text },
+            "citations": { "type": "array", "items": citation }
+        }
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostedAnalysisConfig {
     pub selected_key_name: Option<String>,

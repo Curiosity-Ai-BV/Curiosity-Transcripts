@@ -172,6 +172,16 @@ fn ollama_provider_path_generates_cited_summary_without_real_server() {
 }
 
 #[test]
+fn summary_json_schema_requires_structured_decisions_instead_of_string_lists() {
+    let schema = curiosity_analysis::summary_json_schema();
+    let decision_item = &schema["properties"]["decisions"]["items"];
+
+    assert_eq!(decision_item["type"], "object");
+    assert_eq!(decision_item["properties"]["text"]["type"], "string");
+    assert_eq!(decision_item["properties"]["citations"]["type"], "array");
+}
+
+#[test]
 fn openai_compatible_provider_runs_only_after_key_and_disclosure_opt_in() {
     let client = CountingClient::success(valid_model_json());
     let outcome = OpenAiCompatibleAnalyzer::new(

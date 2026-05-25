@@ -4,8 +4,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use curiosity_analysis::{
-    recommended_analysis_model_presets, AnalysisClientError, AnalysisProviderKind, OllamaAnalyzer,
-    ProviderTextClient,
+    recommended_analysis_model_presets, summary_json_schema, AnalysisClientError,
+    AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
     delete_meeting_command, export_meeting_json_command, generate_summary_command,
@@ -1819,7 +1819,7 @@ where
             "model": model_name,
             "prompt": prompt,
             "stream": false,
-            "format": "json",
+            "format": summary_json_schema(),
             "options": {
                 "temperature": 0,
                 "top_p": 0.1,
@@ -1970,19 +1970,10 @@ where
             );
         }
     };
-    let installed = response
-        .get("models")
-        .and_then(|models| models.as_array())
-        .map(|models| {
-            models.iter().any(|model| {
-                model
-                    .get("name")
-                    .and_then(|name| name.as_str())
-                    .map(|name| name == model_name)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
+    let installed_models = installed_ollama_model_names(&response);
+    let installed = installed_models
+        .iter()
+        .any(|installed_model| ollama_model_matches_request(installed_model, model_name));
     if installed {
         OllamaConnectionTestView {
             state: "Available".to_string(),
@@ -1990,11 +1981,48 @@ where
             setup_guidance: String::new(),
         }
     } else {
+        let installed_hint = if installed_models.is_empty() {
+            " No local models were reported by Ollama.".to_string()
+        } else {
+            format!(" Installed local models: {}.", installed_models.join(", "))
+        };
         OllamaConnectionTestView::unavailable(
             format!("Ollama is reachable, but {model_name} is not installed."),
-            format!("Install the selected model with `ollama pull {model_name}`, then retry."),
+            format!(
+                "Install the selected model with `ollama pull {model_name}`, then retry.{installed_hint}"
+            ),
         )
     }
+}
+
+fn installed_ollama_model_names(response: &serde_json::Value) -> Vec<String> {
+    let mut names = response
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|model| {
+            ["name", "model"].into_iter().filter_map(|field| {
+                model
+                    .get(field)
+                    .and_then(|name| name.as_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+            })
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn ollama_model_matches_request(installed_model: &str, requested_model: &str) -> bool {
+    let installed_model = installed_model.trim();
+    let requested_model = requested_model.trim();
+    installed_model == requested_model
+        || (!requested_model.contains(':')
+            && installed_model == format!("{requested_model}:latest"))
 }
 
 fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientError> {
@@ -2563,7 +2591,11 @@ mod tests {
         assert_eq!(request.body["model"], "qwen3.6:27b");
         assert_eq!(request.body["prompt"], "summarize locally");
         assert_eq!(request.body["stream"], false);
-        assert_eq!(request.body["format"], "json");
+        assert_eq!(request.body["format"]["type"], "object");
+        assert_eq!(
+            request.body["format"]["properties"]["decisions"]["items"]["type"],
+            "object"
+        );
         assert_eq!(request.body["options"]["temperature"], 0);
     }
 
@@ -2607,6 +2639,29 @@ mod tests {
     }
 
     #[test]
+    fn test_ollama_connection_accepts_model_field_without_name_field() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"model":"qwen3.6:27b"}]}"#);
+
+        let result =
+            test_ollama_connection_value("http://127.0.0.1:11434", "qwen3.6:27b", &transport);
+
+        assert_eq!(result.state, "Available");
+        assert!(result.message.contains("qwen3.6:27b"));
+    }
+
+    #[test]
+    fn test_ollama_connection_accepts_tagless_request_when_latest_is_installed() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:latest"}]}"#);
+
+        let result = test_ollama_connection_value("http://127.0.0.1:11434", "gemma4", &transport);
+
+        assert_eq!(result.state, "Available");
+        assert!(result.message.contains("gemma4"));
+    }
+
+    #[test]
     fn test_ollama_connection_reports_missing_model_without_live_server() {
         let transport =
             RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#);
@@ -2616,6 +2671,7 @@ mod tests {
 
         assert_eq!(result.state, "Unavailable");
         assert!(result.setup_guidance.contains("ollama pull qwen3.6:27b"));
+        assert!(result.setup_guidance.contains("Installed local models: gemma4:31b"));
     }
 
     #[test]
