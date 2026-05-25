@@ -7,6 +7,7 @@ const readmePath = path.join(root, "README.md");
 const packagePath = path.join(root, "apps", "desktop", "package.json");
 const lockPath = path.join(root, "apps", "desktop", "package-lock.json");
 const tauriCargoPath = path.join(root, "apps", "desktop", "src-tauri", "Cargo.toml");
+const tauriConfigPath = path.join(root, "apps", "desktop", "src-tauri", "tauri.conf.json");
 
 const requiredWorkflowText = [
   "macos-26",
@@ -27,6 +28,7 @@ const requiredReadmeText = [
   "apps/desktop/package.json",
   "apps/desktop/package-lock.json",
   "apps/desktop/src-tauri/Cargo.toml",
+  "apps/desktop/src-tauri/tauri.conf.json",
   "GitHub Release",
   "Curiosity-Transcripts-<version>-macos-aarch64.dmg",
 ];
@@ -64,6 +66,9 @@ for (const text of requiredReadmeText) {
 const pkg = JSON.parse(readRequired(packagePath, "apps/desktop/package.json"));
 const lock = JSON.parse(readRequired(lockPath, "apps/desktop/package-lock.json"));
 const tauriCargo = readRequired(tauriCargoPath, "apps/desktop/src-tauri/Cargo.toml");
+const tauriConfig = JSON.parse(
+  readRequired(tauriConfigPath, "apps/desktop/src-tauri/tauri.conf.json"),
+);
 const tauriVersionMatch = tauriCargo.match(/^version = "([^"]+)"$/m);
 const tauriVersion = tauriVersionMatch?.[1];
 const lockVersion = lock.packages?.[""]?.version ?? lock.version;
@@ -78,6 +83,10 @@ if (lockVersion !== pkg.version) {
 
 if (tauriVersion !== pkg.version) {
   fail("apps/desktop/src-tauri/Cargo.toml", "Tauri package version must match apps/desktop/package.json");
+}
+
+if (tauriConfig.version !== pkg.version) {
+  fail("apps/desktop/src-tauri/tauri.conf.json", "Tauri config version must match apps/desktop/package.json");
 }
 
 process.exit(ok ? 0 : 1);

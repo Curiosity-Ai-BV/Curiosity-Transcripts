@@ -229,8 +229,9 @@ tags use `vMAJOR.MINOR.PATCH` and must match the same version in:
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
 - `apps/desktop/src-tauri/Cargo.toml`
+- `apps/desktop/src-tauri/tauri.conf.json`
 
-For example, package version `0.1.0` is released from tag `v0.1.0`. A tag that
+For example, package version `0.1.1` is released from tag `v0.1.1`. A tag that
 does not match the app metadata fails before upload.
 
 The GitHub Pages workflow keeps the moving latest download at
