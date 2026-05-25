@@ -33,6 +33,9 @@ jobs:
       - name: Check GitHub Pages deployment workflow
         run: node scripts/check-pages-workflow.js
 
+      - name: Check GitHub Release workflow
+        run: node scripts/check-release-workflow.js
+
       - name: Check Rust formatting
         run: cargo fmt --check
 

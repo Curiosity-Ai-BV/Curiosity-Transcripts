@@ -221,6 +221,30 @@ download link at `downloads/Curiosity-Transcripts-latest.dmg`.
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
 
+## Versioning Rules
+
+Release versions use SemVer without a leading `v` in package metadata. Release
+tags use `vMAJOR.MINOR.PATCH` and must match the same version in:
+
+- `apps/desktop/package.json`
+- `apps/desktop/package-lock.json`
+- `apps/desktop/src-tauri/Cargo.toml`
+
+For example, package version `0.1.0` is released from tag `v0.1.0`. A tag that
+does not match the app metadata fails before upload.
+
+The GitHub Pages workflow keeps the moving latest download at
+`downloads/Curiosity-Transcripts-latest.dmg`. Versioned distribution happens
+through GitHub Release assets. The release workflow uploads:
+
+```text
+Curiosity-Transcripts-<version>-macos-aarch64.dmg
+Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
+```
+
+Until Developer ID signing and notarization are configured, release DMGs are
+explicitly unsigned and intended for testing the public release path.
+
 ## License And Attribution
 
 Curiosity Transcripts is licensed under the Apache License, Version 2.0

@@ -27,6 +27,7 @@ for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md;
 done
 check_file "site/index.html"
 check_file ".github/workflows/pages.yml"
+check_file ".github/workflows/release.yml"
 
 require_text LICENSE 'Apache License' 'Apache-2.0 license text'
 require_text NOTICE 'Curiosity Transcripts' 'Curiosity Transcripts attribution notice'
@@ -38,6 +39,7 @@ require_text README.md 'ATTRIBUTION\.md' 'commercial attribution pointer'
 require_text README.md 'SECURITY\.md' 'security policy pointer'
 require_text README.md 'GitHub Pages' 'public homepage deployment documentation'
 require_text README.md 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download documentation'
+require_text README.md 'Versioning Rules' 'versioning and GitHub Release documentation'
 
 require_text Cargo.toml '^license = "Apache-2\.0"$' 'workspace Apache-2.0 license metadata'
 
@@ -65,8 +67,11 @@ require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
 require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publication readiness CI gate'
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
+require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Release workflow validation CI gate'
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
+require_text .github/workflows/release.yml 'gh release upload' 'versioned GitHub Release asset upload'
+require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-macos-aarch64\.dmg' 'versioned macOS DMG release asset name'
 require_text site/index.html 'https://curiosityai\.nl' 'CuriosityAI maker link'
 require_text site/index.html 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable homepage DMG download link'
 
@@ -107,6 +112,10 @@ if ! node scripts/check-pages-site.js; then
 fi
 
 if ! node scripts/check-pages-workflow.js; then
+  failures=1
+fi
+
+if ! node scripts/check-release-workflow.js; then
   failures=1
 fi
 
