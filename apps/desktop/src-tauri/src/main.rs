@@ -475,6 +475,7 @@ fn desktop_snapshot_for_app_root_with_state(
     }
 
     let selected_meeting_id = meetings.first().map(|meeting| meeting.id.clone());
+    let has_system_audio_transcript = meetings_have_system_audio_transcript(&meetings);
 
     Ok(DesktopSnapshot {
         loading: false,
@@ -488,7 +489,7 @@ fn desktop_snapshot_for_app_root_with_state(
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
-            system_audio: system_audio_capture_state(command_state),
+            system_audio: system_audio_capture_state(command_state, has_system_audio_transcript),
         },
         transcription: command_state.last_transcription.clone(),
         export_command: command_state.last_export.clone().unwrap_or_default(),
@@ -1546,8 +1547,18 @@ fn microphone_capture_state(command_state: &DesktopCommandSnapshotState) -> Desk
     DesktopPermissionState::Ready
 }
 
+fn meetings_have_system_audio_transcript(meetings: &[MeetingView]) -> bool {
+    meetings.iter().any(|meeting| {
+        meeting
+            .segments
+            .iter()
+            .any(|segment| segment.source_channel == "System")
+    })
+}
+
 fn system_audio_capture_state(
     command_state: &DesktopCommandSnapshotState,
+    has_system_audio_transcript: bool,
 ) -> DesktopPermissionState {
     if command_state
         .active_recording
@@ -1568,6 +1579,9 @@ fn system_audio_capture_state(
             AppPermissionState::Ready => return DesktopPermissionState::Ready,
             AppPermissionState::MicrophoneDenied | AppPermissionState::MicrophoneUnavailable => {}
         }
+    }
+    if has_system_audio_transcript {
+        return DesktopPermissionState::Ready;
     }
     #[cfg(test)]
     {
@@ -3676,6 +3690,48 @@ mod tests {
         assert_eq!(segments[0]["text"], "mic side");
         assert_eq!(segments[1]["sourceChannel"], "System");
         assert_eq!(segments[1]["text"], "call side");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_marks_system_audio_ready_when_persisted_transcript_has_system_segments() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Full transcript".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+            .expect("stop mixed recording");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            PathAwareWhisperBackend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe mixed meeting");
+
+        let restarted_snapshot = desktop_snapshot_for_app_root_with_state(
+            &root,
+            &DesktopCommandSnapshotState::default(),
+        )
+        .expect("snapshot after restart");
+        let json = serde_json::to_value(&restarted_snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["capture"]["systemAudio"], "Ready");
 
         fs::remove_dir_all(root).expect("cleanup");
     }
