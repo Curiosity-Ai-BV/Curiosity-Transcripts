@@ -2056,14 +2056,6 @@ fn requested_ollama_model_aliases(requested_model: &str) -> Vec<String> {
         &mut aliases,
         normalized_ollama_model_name(&canonical_local_ollama_model_tag(trimmed)),
     );
-    for preset in recommended_analysis_model_presets() {
-        if preset.provider_kind == AnalysisProviderKind::OllamaLocal
-            && normalized_ollama_model_name(ollama_model_family(preset.model_tag))
-                == normalized_ollama_model_name(trimmed)
-        {
-            push_unique_alias(&mut aliases, normalized_ollama_model_name(preset.model_tag));
-        }
-    }
     aliases
 }
 
@@ -2095,13 +2087,6 @@ fn normalized_ollama_model_name(model_name: &str) -> String {
         .filter(|ch| !ch.is_ascii_whitespace())
         .flat_map(|ch| ch.to_lowercase())
         .collect()
-}
-
-fn ollama_model_family(model_tag: &str) -> &str {
-    model_tag
-        .split_once(':')
-        .map(|(family, _)| family)
-        .unwrap_or(model_tag)
 }
 
 fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientError> {
