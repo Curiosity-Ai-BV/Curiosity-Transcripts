@@ -534,6 +534,7 @@ fn save_analysis_settings_for_app_root(
     ollama_model: String,
 ) -> Result<AppSettingsView, String> {
     let store = open_store(app_root)?;
+    let ollama_model = canonical_local_ollama_model_tag(&ollama_model);
     store
         .save_analysis_settings(&ollama_base_url, &ollama_model)
         .map(app_settings_view)
@@ -598,11 +599,12 @@ fn generate_summary_for_app_root(
     let settings = app_settings_for_app_root(app_root)?;
     let client =
         LocalOllamaTextClient::new(settings.ollama_base_url.clone(), UreqOllamaHttpTransport);
+    let model_name = canonical_local_ollama_model_tag(&settings.ollama_model);
     generate_summary_command_for_app_root_with_client(
         app_root,
         meeting_id,
         client,
-        settings.ollama_model,
+        model_name,
         current_timestamp_ms(),
     )
 }
@@ -1827,7 +1829,8 @@ where
     T: OllamaHttpTransport,
 {
     fn complete(&self, model_name: &str, prompt: &str) -> Result<String, AnalysisClientError> {
-        validate_local_ollama_model(model_name)?;
+        let model_name = canonical_local_ollama_model_tag(model_name);
+        validate_local_ollama_model(&model_name)?;
         let url = local_ollama_endpoint(&self.base_url, "/api/generate")?;
         let body = serde_json::json!({
             "model": model_name,
@@ -1985,25 +1988,26 @@ where
         }
     };
     let installed_models = installed_ollama_model_names(&response);
-    let installed = installed_models
+    let matched_model = installed_models
         .iter()
-        .any(|installed_model| ollama_model_matches_request(installed_model, model_name));
-    if installed {
+        .find(|installed_model| ollama_model_matches_request(installed_model, model_name));
+    if let Some(installed_model) = matched_model {
         OllamaConnectionTestView {
             state: "Available".to_string(),
-            message: format!("Ollama is reachable and {model_name} is installed."),
+            message: format!("Ollama is reachable and {installed_model} is installed."),
             setup_guidance: String::new(),
         }
     } else {
+        let pull_model_name = canonical_local_ollama_model_tag(model_name);
         let installed_hint = if installed_models.is_empty() {
             " No local models were reported by Ollama.".to_string()
         } else {
             format!(" Installed local models: {}.", installed_models.join(", "))
         };
         OllamaConnectionTestView::unavailable(
-            format!("Ollama is reachable, but {model_name} is not installed."),
+            format!("Ollama is reachable, but {pull_model_name} is not installed."),
             format!(
-                "Install the selected model with `ollama pull {model_name}`, then retry.{installed_hint}"
+                "Install the selected model with `ollama pull {pull_model_name}`, then retry.{installed_hint}"
             ),
         )
     }
@@ -2032,11 +2036,72 @@ fn installed_ollama_model_names(response: &serde_json::Value) -> Vec<String> {
 }
 
 fn ollama_model_matches_request(installed_model: &str, requested_model: &str) -> bool {
-    let installed_model = installed_model.trim();
-    let requested_model = requested_model.trim();
-    installed_model == requested_model
-        || (!requested_model.contains(':')
-            && installed_model == format!("{requested_model}:latest"))
+    let installed_model = normalized_ollama_model_name(installed_model);
+    requested_ollama_model_aliases(requested_model)
+        .iter()
+        .any(|alias| alias == &installed_model)
+}
+
+fn requested_ollama_model_aliases(requested_model: &str) -> Vec<String> {
+    let trimmed = requested_model.trim();
+    let mut aliases = Vec::new();
+    push_unique_alias(&mut aliases, normalized_ollama_model_name(trimmed));
+    if !trimmed.contains(':') {
+        push_unique_alias(
+            &mut aliases,
+            normalized_ollama_model_name(&format!("{trimmed}:latest")),
+        );
+    }
+    push_unique_alias(
+        &mut aliases,
+        normalized_ollama_model_name(&canonical_local_ollama_model_tag(trimmed)),
+    );
+    for preset in recommended_analysis_model_presets() {
+        if preset.provider_kind == AnalysisProviderKind::OllamaLocal
+            && normalized_ollama_model_name(ollama_model_family(preset.model_tag))
+                == normalized_ollama_model_name(trimmed)
+        {
+            push_unique_alias(&mut aliases, normalized_ollama_model_name(preset.model_tag));
+        }
+    }
+    aliases
+}
+
+fn push_unique_alias(aliases: &mut Vec<String>, alias: String) {
+    if !alias.is_empty() && !aliases.contains(&alias) {
+        aliases.push(alias);
+    }
+}
+
+fn canonical_local_ollama_model_tag(model_name: &str) -> String {
+    let trimmed = model_name.trim();
+    let normalized = normalized_ollama_model_name(trimmed);
+    recommended_analysis_model_presets()
+        .iter()
+        .find(|preset| {
+            preset.provider_kind == AnalysisProviderKind::OllamaLocal
+                && (normalized_ollama_model_name(preset.model_tag) == normalized
+                    || normalized_ollama_model_name(preset.id) == normalized
+                    || normalized_ollama_model_name(preset.display_name) == normalized)
+        })
+        .map(|preset| preset.model_tag.to_string())
+        .unwrap_or_else(|| trimmed.to_ascii_lowercase())
+}
+
+fn normalized_ollama_model_name(model_name: &str) -> String {
+    model_name
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+fn ollama_model_family(model_tag: &str) -> &str {
+    model_tag
+        .split_once(':')
+        .map(|(family, _)| family)
+        .unwrap_or(model_tag)
 }
 
 fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientError> {
@@ -2046,10 +2111,13 @@ fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientErr
             "Choose a local Ollama model before requesting analysis.".to_string(),
         ));
     }
-    let is_hosted = trimmed.ends_with(":cloud")
+    let normalized = normalized_ollama_model_name(trimmed);
+    let is_hosted = normalized.ends_with(":cloud")
         || recommended_analysis_model_presets().iter().any(|preset| {
             preset.provider_kind != AnalysisProviderKind::OllamaLocal
-                && (preset.model_tag == trimmed || preset.id == trimmed)
+                && (normalized_ollama_model_name(preset.model_tag) == normalized
+                    || normalized_ollama_model_name(preset.id) == normalized
+                    || normalized_ollama_model_name(preset.display_name) == normalized)
         });
     if is_hosted {
         return Err(AnalysisClientError::Transport(
@@ -2612,6 +2680,39 @@ mod tests {
     }
 
     #[test]
+    fn local_ollama_client_posts_canonical_local_preset_tags_for_case_variants() {
+        let qwen_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Local summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[]}"}"#,
+        );
+        let qwen_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", qwen_transport.clone());
+
+        qwen_client
+            .complete("qwen3.6:27B", "summarize locally")
+            .expect("uppercase size suffix should use the local preset tag");
+
+        let qwen_request = qwen_transport
+            .last_generate_request()
+            .expect("qwen generate request");
+        assert_eq!(qwen_request.body["model"], "qwen3.6:27b");
+
+        let gemma_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Local summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[]}"}"#,
+        );
+        let gemma_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", gemma_transport.clone());
+
+        gemma_client.complete("Gemma4", "summarize locally").expect(
+            "tagless model family should normalize without forcing a non-installed size tag",
+        );
+
+        let gemma_request = gemma_transport
+            .last_generate_request()
+            .expect("gemma generate request");
+        assert_eq!(gemma_request.body["model"], "gemma4");
+    }
+
+    #[test]
     fn local_ollama_client_rejects_non_loopback_base_url_before_transport_call() {
         let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
         let client = LocalOllamaTextClient::new("http://192.168.1.20:11434", transport.clone());
@@ -2671,6 +2772,46 @@ mod tests {
 
         assert_eq!(result.state, "Available");
         assert!(result.message.contains("gemma4"));
+    }
+
+    #[test]
+    fn test_ollama_connection_matches_local_model_tags_without_case_sensitive_false_missing() {
+        let transport = RecordingOllamaTransport::tags_response(
+            r#"{"models":[{"name":"qwen3.6:27b"},{"name":"gemma4:31b"}]}"#,
+        );
+
+        let qwen =
+            test_ollama_connection_value("http://127.0.0.1:11434", "qwen3.6:27B", &transport);
+
+        assert_eq!(qwen.state, "Available");
+        assert!(qwen.message.contains("qwen3.6:27b"));
+    }
+
+    #[test]
+    fn test_ollama_connection_does_not_accept_family_alias_for_unverified_size_tag() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#);
+
+        let gemma = test_ollama_connection_value("http://127.0.0.1:11434", "Gemma4", &transport);
+
+        assert_eq!(gemma.state, "Unavailable");
+        assert!(gemma.message.contains("gemma4"));
+        assert!(gemma.setup_guidance.contains("ollama pull gemma4"));
+        assert!(gemma
+            .setup_guidance
+            .contains("Installed local models: gemma4:31b"));
+    }
+
+    #[test]
+    fn test_ollama_connection_accepts_explicit_size_tag_with_different_casing() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#);
+
+        let gemma =
+            test_ollama_connection_value("http://127.0.0.1:11434", "Gemma4:31B", &transport);
+
+        assert_eq!(gemma.state, "Available");
+        assert!(gemma.message.contains("gemma4:31b"));
     }
 
     #[test]

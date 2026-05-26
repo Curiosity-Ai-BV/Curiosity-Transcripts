@@ -521,8 +521,11 @@ impl ModelPayload {
 
 fn prompt(input: &AnalysisInput) -> String {
     let mut lines = vec![
-        "Return strict JSON with summary, decisions, action_items, questions, and citations."
+        "Return only JSON matching this schema. Do not include markdown or commentary."
             .to_string(),
+        summary_json_schema().to_string(),
+        "Every citation object must include segment_id, start_ms, and end_ms. Copy segment_id exactly from a transcript segment id, and use that segment's millisecond range. Use empty arrays when nothing applies.".to_string(),
+        "Transcript segments:".to_string(),
     ];
     for segment in &input.transcript_segments {
         lines.push(format!(

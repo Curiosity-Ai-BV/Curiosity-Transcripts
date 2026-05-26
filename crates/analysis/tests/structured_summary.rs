@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use curiosity_analysis::{
     recommended_analysis_model_presets, AnalysisClientError, AnalysisInput, AnalysisOutcome,
@@ -169,6 +170,27 @@ fn ollama_provider_path_generates_cited_summary_without_real_server() {
     assert_eq!(analysis.model_name, "llama3.2");
     assert!(!analysis.network_used);
     assert_eq!(analysis.decisions[0].citations[0].segment_id, "segment-1");
+}
+
+#[test]
+fn ollama_prompt_includes_required_citation_field_names_to_ground_schema_outputs() {
+    let captured_prompt = Rc::new(RefCell::new(None));
+    let client = PromptCaptureClient::success(valid_model_json(), Rc::clone(&captured_prompt));
+
+    let outcome = OllamaAnalyzer::new(client, "qwen3.6:27b", "summary-v1").analyze(input());
+
+    let AnalysisOutcome::Completed(_) = outcome else {
+        panic!("valid response should complete after prompt capture");
+    };
+    let prompt = captured_prompt
+        .borrow()
+        .clone()
+        .expect("provider prompt should be captured");
+    assert!(prompt.contains("segment_id"));
+    assert!(prompt.contains("start_ms"));
+    assert!(prompt.contains("end_ms"));
+    assert!(prompt.contains("Return only JSON"));
+    assert!(prompt.contains("[segment-1 0-1000]"));
 }
 
 #[test]
@@ -467,5 +489,26 @@ impl ProviderTextClient for CountingClient {
 
     fn call_count(&self) -> u32 {
         self.calls.get()
+    }
+}
+
+struct PromptCaptureClient {
+    response: String,
+    captured_prompt: Rc<RefCell<Option<String>>>,
+}
+
+impl PromptCaptureClient {
+    fn success(text: impl Into<String>, captured_prompt: Rc<RefCell<Option<String>>>) -> Self {
+        Self {
+            response: text.into(),
+            captured_prompt,
+        }
+    }
+}
+
+impl ProviderTextClient for PromptCaptureClient {
+    fn complete(&self, _model_name: &str, prompt: &str) -> Result<String, AnalysisClientError> {
+        *self.captured_prompt.borrow_mut() = Some(prompt.to_string());
+        Ok(self.response.clone())
     }
 }
