@@ -4,14 +4,17 @@ import {
   FileText,
   MagnifyingGlass,
   Microphone,
+  Moon,
   PencilSimple,
   ShieldCheck,
+  Sun,
   Trash,
   WarningDiamond,
   Waveform,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 
+import packageInfo from "../package.json";
 import {
   CommandFetcher,
   DesktopSnapshot,
@@ -32,6 +35,8 @@ import {
 
 import "./styles.css";
 
+const appVersion = packageInfo.version;
+
 interface AppProps {
   snapshot?: DesktopSnapshot;
   fetchCommand?: CommandFetcher;
@@ -50,6 +55,8 @@ type PendingCommand =
   | "save-whisper"
   | "save-analysis"
   | null;
+
+type ThemeMode = "dark" | "light";
 
 interface SettingsFormState {
   whisperModelPath: string;
@@ -76,6 +83,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<ThemeMode>("dark");
 
   useEffect(() => {
     if (snapshot) {
@@ -167,7 +175,6 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     : mapRecordingState(currentSnapshot.recording);
   const model = mapModelStatus(currentSnapshot.model);
   const transcription = mapTranscriptionState(currentSnapshot.transcription);
-  const shellLabel = commandUnavailable.startsWith("Preview shell") ? "Preview shell" : "Desktop shell";
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
@@ -455,69 +462,44 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
         : selectedMeeting.segments.length === 0
           ? "Generate a transcript before requesting a summary."
           : "Generate a local Ollama summary for the selected meeting.";
+  const isLightTheme = theme === "light";
+  const themeButtonLabel = isLightTheme ? "Switch to dark mode" : "Switch to light mode";
+
+  function toggleTheme() {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-theme={theme}>
       <section className="workspace" aria-label="Transcript workspace">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Curiosity Transcripts</p>
-            <h1>Transcript workspace</h1>
+          <div className="brand-lockup">
+            <span className="brand-mark" aria-hidden="true">
+              <Waveform size={22} weight="fill" />
+            </span>
+            <div>
+              <p className="eyebrow">Curiosity Transcripts</p>
+              <h1>Transcript workspace</h1>
+            </div>
           </div>
-          <div className="topbar-status" aria-label="Workspace status">
-            <StatusPill tone={recording.tone} label={recording.label} />
-            <StatusPill tone={model.tone} label={model.label} />
-            <StatusPill tone={transcription.tone} label={transcription.label} />
-            <StatusPill tone={shellLabel === "Preview shell" ? "muted" : "ready"} label={shellLabel} />
+          <div className="topbar-controls" aria-label="Workspace controls">
+            <span className="version-badge" aria-label={`Version ${appVersion}`}>
+              v{appVersion}
+            </span>
+            <button
+              type="button"
+              className="theme-toggle"
+              aria-label={themeButtonLabel}
+              aria-pressed={isLightTheme}
+              title={themeButtonLabel}
+              onClick={toggleTheme}
+            >
+              {isLightTheme ? <Moon size={16} weight="regular" /> : <Sun size={16} weight="regular" />}
+              <span>{isLightTheme ? "Dark" : "Light"}</span>
+            </button>
           </div>
         </header>
 
-        <section className="recording-strip" aria-label="Recording controls and status">
-          <div className="strip-primary">
-            <IconFrame tone={recording.tone}>
-              <Waveform size={22} weight="regular" />
-            </IconFrame>
-            <div>
-              <h2>Recording</h2>
-              <p>{recording.detail}</p>
-            </div>
-          </div>
-          <div className="recording-actions">
-            <label className="recording-title-field" htmlFor="recording-title">
-              <span>Recording title</span>
-              <input
-                id="recording-title"
-                value={recordingTitle}
-                onChange={(event) => setRecordingTitle(event.target.value)}
-                placeholder="Optional meeting title"
-                disabled={recordingTitleDisabled}
-              />
-            </label>
-            <div className="recording-buttons">
-              <button
-                type="button"
-                className="button"
-                disabled={startDisabled}
-                title={startButtonTitle}
-                onClick={startRecording}
-              >
-                <Microphone size={16} weight="regular" />
-                {pendingCommand === "start" ? "Starting recording" : "Start recording"}
-              </button>
-              <button
-                type="button"
-                className="button"
-                disabled={stopDisabled}
-                title={stopButtonTitle}
-                onClick={stopRecording}
-              >
-                <Waveform size={16} weight="regular" />
-                {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
-              </button>
-            </div>
-            <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
-          </div>
-        </section>
         {commandError ? (
           <p role="alert" className="command-error">
             {commandError}
@@ -556,6 +538,10 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
 
         <div className="content-grid">
           <aside className="meeting-pane" aria-label="Meetings">
+            <div className="pane-heading">
+              <p className="eyebrow">History</p>
+              <h2>Meetings</h2>
+            </div>
             <div className="search-block">
               <label htmlFor="meeting-search">Search meetings</label>
               <div className="search-control">
@@ -596,6 +582,56 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
           <section className="detail-pane" aria-label="Meeting detail">
             {selectedMeeting ? (
               <>
+                <section className="recording-strip" aria-label="Recording controls and status">
+                  <div className="strip-primary">
+                    <IconFrame tone={recording.tone}>
+                      <Waveform size={22} weight="regular" />
+                    </IconFrame>
+                    <div>
+                      <div className="strip-heading-row">
+                        <h2>Recording</h2>
+                        <StatusPill tone={recording.tone} label={recording.label} />
+                      </div>
+                      <p>{recording.detail}</p>
+                    </div>
+                  </div>
+                  <div className="recording-actions">
+                    <label className="recording-title-field" htmlFor="recording-title">
+                      <span>Recording title</span>
+                      <input
+                        id="recording-title"
+                        value={recordingTitle}
+                        onChange={(event) => setRecordingTitle(event.target.value)}
+                        placeholder="Optional meeting title"
+                        disabled={recordingTitleDisabled}
+                      />
+                    </label>
+                    <div className="recording-buttons">
+                      <button
+                        type="button"
+                        className="button primary"
+                        disabled={startDisabled}
+                        title={startButtonTitle}
+                        onClick={startRecording}
+                      >
+                        <Microphone size={16} weight="regular" />
+                        {pendingCommand === "start" ? "Starting recording" : "Start recording"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={stopDisabled}
+                        title={stopButtonTitle}
+                        onClick={stopRecording}
+                      >
+                        <Waveform size={16} weight="regular" />
+                        {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
+                      </button>
+                    </div>
+                    <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
+                  </div>
+                </section>
+
                 <div className="detail-header">
                   <div>
                     <p className="eyebrow">{selectedMeeting.startedAt}</p>
@@ -626,7 +662,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                     <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
                     <button
                       type="button"
-                      className="button"
+                      className="button primary"
                       disabled={transcribeDisabled}
                       title={transcribeButtonTitle}
                       onClick={transcribeSelectedMeeting}
@@ -712,7 +748,34 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
           </section>
 
           <aside className="settings-pane" aria-label="Settings and model status">
-            <h2>Settings</h2>
+            <div className="pane-heading">
+              <p className="eyebrow">Processing engine</p>
+              <h2>Settings</h2>
+            </div>
+            <div className="engine-stack" aria-label="Model and capture status">
+              <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
+              <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
+              <StatusLine
+                icon={<Microphone size={18} weight="regular" />}
+                label={captureLabel(currentSnapshot.capture.microphone)}
+                value={captureDetail(currentSnapshot.capture.microphone)}
+                tone={captureTone(currentSnapshot.capture.microphone)}
+              />
+              <StatusLine
+                icon={<WarningDiamond size={18} weight="regular" />}
+                label={captureLabel(currentSnapshot.capture.systemAudio)}
+                value={captureDetail(currentSnapshot.capture.systemAudio)}
+                tone={captureTone(currentSnapshot.capture.systemAudio)}
+              />
+              {selectedMeeting ? (
+                <StatusLine
+                  icon={<ShieldCheck size={18} weight="regular" />}
+                  label={analysisDisclosure?.label ?? "Summary unavailable"}
+                  value={analysisDisclosure?.detail ?? "No selected meeting."}
+                  tone={analysisDisclosure?.tone ?? "muted"}
+                />
+              ) : null}
+            </div>
             <div className="settings-form" aria-label="Local settings">
               <label className="settings-field" htmlFor="whisper-model-path">
                 <span>Whisper model path</span>
@@ -792,28 +855,6 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 </p>
               ) : null}
             </div>
-            <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
-            <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
-            <StatusLine
-              icon={<Microphone size={18} weight="regular" />}
-              label={captureLabel(currentSnapshot.capture.microphone)}
-              value={captureDetail(currentSnapshot.capture.microphone)}
-              tone={captureTone(currentSnapshot.capture.microphone)}
-            />
-            <StatusLine
-              icon={<WarningDiamond size={18} weight="regular" />}
-              label={captureLabel(currentSnapshot.capture.systemAudio)}
-              value={captureDetail(currentSnapshot.capture.systemAudio)}
-              tone={captureTone(currentSnapshot.capture.systemAudio)}
-            />
-            {selectedMeeting ? (
-              <StatusLine
-                icon={<ShieldCheck size={18} weight="regular" />}
-                label={analysisDisclosure?.label ?? "Summary unavailable"}
-                value={analysisDisclosure?.detail ?? "No selected meeting."}
-                tone={analysisDisclosure?.tone ?? "muted"}
-              />
-            ) : null}
           </aside>
         </div>
       </section>

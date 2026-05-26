@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
+import packageInfo from "../package.json";
 import App from "./App";
 import {
   CommandFetcher,
@@ -268,6 +269,12 @@ describe("desktop workspace shell", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Transcript workspace" })).toBeInTheDocument();
+    const workspaceControls = screen.getByLabelText("Workspace controls");
+    expect(within(workspaceControls).getByText(`v${packageInfo.version}`)).toBeInTheDocument();
+    expect(within(workspaceControls).queryByText("Recording unavailable")).not.toBeInTheDocument();
+    expect(within(workspaceControls).queryByText("Whisper model missing")).not.toBeInTheDocument();
+    expect(within(workspaceControls).queryByText("Transcription idle")).not.toBeInTheDocument();
+    expect(within(workspaceControls).queryByText("Preview shell")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Search meetings")).toBeInTheDocument();
     expect(
       within(screen.getByLabelText("Recording controls and status")).getByText(
@@ -279,6 +286,25 @@ describe("desktop workspace shell", () => {
     expect(screen.getByText("Private storage")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Structured summary" })).toBeInTheDocument();
     expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
+
+  it("switches the workspace between dark and light themes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole("main")).toHaveAttribute("data-theme", "dark");
+    expect(screen.getByRole("button", { name: "Switch to light mode" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Switch to light mode" }));
+
+    expect(screen.getByRole("main")).toHaveAttribute("data-theme", "light");
+    expect(screen.getByRole("button", { name: "Switch to dark mode" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("renders editable local settings from the desktop snapshot", () => {
@@ -327,7 +353,7 @@ describe("desktop workspace shell", () => {
   it("shows unavailable command controls without fabricating export or delete results", () => {
     render(<App />);
 
-    expect(screen.getByText("Preview shell")).toBeInTheDocument();
+    expect(screen.getByText("Preview shell: backend command wiring is not connected in this browser/dev fixture.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start recording" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stop recording" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Transcribe" })).toBeDisabled();
