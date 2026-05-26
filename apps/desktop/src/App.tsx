@@ -187,7 +187,8 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
-  const settingsDisabled = !commandSurfaceReady || commandBusy;
+  const settingsInputDisabled = commandBusy;
+  const settingsActionDisabled = commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -312,7 +313,11 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     args: Record<string, unknown>,
     successMessage: string,
   ) {
-    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+    if (commandBusy) {
+      return;
+    }
+    if (!fetchCommand || !commandSurfaceReady) {
+      setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
 
@@ -333,7 +338,11 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   }
 
   async function testWhisperModelPath() {
-    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+    if (commandBusy) {
+      return;
+    }
+    if (!fetchCommand || !commandSurfaceReady) {
+      setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
 
@@ -356,7 +365,11 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   }
 
   async function testOllamaConnection() {
-    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+    if (commandBusy) {
+      return;
+    }
+    if (!fetchCommand || !commandSurfaceReady) {
+      setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
 
@@ -786,14 +799,14 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                     setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
                   }
                   placeholder="/absolute/path/to/ggml-base.en.bin"
-                  disabled={settingsDisabled}
+                  disabled={settingsInputDisabled}
                 />
               </label>
               <div className="settings-buttons">
                 <button
                   type="button"
                   className="button"
-                  disabled={settingsDisabled}
+                  disabled={settingsActionDisabled}
                   title={commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle}
                   onClick={testWhisperModelPath}
                 >
@@ -802,7 +815,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 <button
                   type="button"
                   className="button"
-                  disabled={settingsDisabled}
+                  disabled={settingsActionDisabled}
                   title={commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle}
                   onClick={saveWhisperModelPath}
                 >
@@ -816,7 +829,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                   value={settingsForm.ollamaBaseUrl}
                   onChange={(event) => updateOllamaBaseUrl(event.target.value)}
                   placeholder="http://127.0.0.1:11434"
-                  disabled={settingsDisabled}
+                  disabled={settingsInputDisabled}
                 />
               </label>
               <label className="settings-field" htmlFor="ollama-model">
@@ -826,14 +839,14 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                   value={settingsForm.ollamaModel}
                   onChange={(event) => updateOllamaModel(event.target.value)}
                   placeholder="qwen3.6:27b"
-                  disabled={settingsDisabled}
+                  disabled={settingsInputDisabled}
                 />
               </label>
               <div className="settings-buttons">
                 <button
                   type="button"
                   className="button"
-                  disabled={settingsDisabled}
+                  disabled={settingsActionDisabled}
                   title={commandSurfaceReady ? "Test the configured local Ollama server and model." : commandUnavailableTitle}
                   onClick={testOllamaConnection}
                 >
@@ -842,7 +855,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
                 <button
                   type="button"
                   className="button"
-                  disabled={settingsDisabled}
+                  disabled={settingsActionDisabled}
                   title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
                   onClick={saveAnalysisSettings}
                 >

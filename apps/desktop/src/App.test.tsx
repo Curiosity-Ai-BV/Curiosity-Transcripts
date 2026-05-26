@@ -333,6 +333,36 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("button", { name: "Save analysis" })).toBeEnabled();
   });
 
+  it("keeps local settings controls usable when desktop commands are unavailable", async () => {
+    const user = userEvent.setup();
+
+    render(<App snapshot={getMockDesktopSnapshot()} />);
+
+    const whisperPath = screen.getByLabelText("Whisper model path");
+    const ollamaBaseUrl = screen.getByLabelText("Ollama base URL");
+    const ollamaModel = screen.getByLabelText("Ollama model");
+
+    await user.type(whisperPath, "/models/ggml-base.en.bin");
+    await user.clear(ollamaBaseUrl);
+    await user.type(ollamaBaseUrl, "http://127.0.0.1:11435");
+    await user.clear(ollamaModel);
+    await user.type(ollamaModel, "gemma4:31b");
+
+    expect(whisperPath).toHaveValue("/models/ggml-base.en.bin");
+    expect(ollamaBaseUrl).toHaveValue("http://127.0.0.1:11435");
+    expect(ollamaModel).toHaveValue("gemma4:31b");
+    expect(screen.getByRole("button", { name: "Test path" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save Whisper" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Test Ollama" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save analysis" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Save analysis" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
+    );
+  });
+
   it("renders loading, empty, unavailable, permission-denied, transcribing, and ready states", () => {
     render(<App snapshot={getMockDesktopSnapshot("state-matrix")} />);
 
