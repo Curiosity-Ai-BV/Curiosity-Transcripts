@@ -10,14 +10,77 @@ builds include the native `whisper-rs` backend by default. System-audio meeting
 recording is available through the feature-gated ScreenCaptureKit desktop
 backend.
 
+## Quick Start
+
+Use this path for a fresh local checkout when you want the desktop app running
+with the same command surface used by contributors and CI.
+
+Prerequisites:
+
+- Rust toolchain with `cargo`.
+- Node.js 22 and npm.
+- CMake for the default desktop build, because it compiles the native
+  `whisper-rs` backend.
+- macOS for real microphone capture, ScreenCaptureKit system-audio capture, and
+  installer builds.
+
+Install desktop dependencies and run the deterministic checks:
+
+```sh
+cd apps/desktop
+npm ci
+npm run test
+npm run build
+cd ../..
+cargo test --workspace
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+Start the Tauri desktop app:
+
+```sh
+cd apps/desktop
+npm run tauri:dev
+```
+
+That opens the real Tauri shell with local commands and the default local
+Whisper backend. It can record microphone audio on macOS after permission is
+granted. Transcription needs a readable whisper.cpp model file, either saved in
+the desktop Settings pane or provided when launching:
+
+```sh
+cd apps/desktop
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev
+```
+
+For full microphone plus ScreenCaptureKit system-audio recording, launch with
+the system-audio feature and grant both Microphone and Screen Recording
+permissions:
+
+```sh
+cd apps/desktop
+CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
+```
+
+The Vite-only preview is useful for UI work, but it does not run local desktop
+commands:
+
+```sh
+cd apps/desktop
+npm run dev
+```
+
+See [Hardware Smoke Checks](#hardware-smoke-checks), [Local Whisper](#local-whisper),
+and [Local Ollama Summaries](#local-ollama-summaries) for optional real hardware,
+model, and local summary verification.
+
 ## Current Status
 
 Implemented MVP flows:
 
 - React/Vite/Tauri 2 desktop app under `apps/desktop`.
-- Tauri commands for `desktop_snapshot`, `start_microphone_recording`,
-  `stop_microphone_recording`, `transcribe_meeting`, `audio_smoke_status`, and
-  `system_audio_smoke_recording`.
+- Tauri commands for desktop snapshots, settings, recording, transcription,
+  search/export/delete, local summary generation, and smoke checks.
 - Real macOS desktop capture through `MacosDesktopWavRecording`, `cpal`, and
   ScreenCaptureKit, writing separate private `raw-mic.wav` and
   `raw-system.wav` artifacts when run with the system-audio feature.
@@ -122,11 +185,12 @@ backend for the desktop app is a separate Cargo manifest at
 
 ## Local Setup
 
-Prerequisites:
+Additional prerequisites and command details:
 
 - Rust toolchain with `cargo` installed. `rustup` is the usual install path.
-- Node.js and npm for the desktop frontend.
-- macOS for real microphone and ScreenCaptureKit desktop capture checks.
+- Node.js 22 and npm for the desktop frontend. CI uses Node.js 22.
+- macOS for real microphone and ScreenCaptureKit desktop capture checks and
+  installer builds.
 - CMake for default desktop builds, because they include the native
   `whisper-rs` backend. If `cmake` is missing, the native `whisper-rs-sys`
   build fails before local Whisper can be verified.
@@ -146,7 +210,7 @@ Desktop frontend preview, build, and tests:
 
 ```sh
 cd apps/desktop
-npm install
+npm ci
 npm run test
 npm run dev
 npm run build
@@ -160,7 +224,7 @@ Tauri desktop development run:
 
 ```sh
 cd apps/desktop
-npm exec -- tauri dev
+npm run tauri:dev
 ```
 
 The Tauri config uses `devUrl` `http://127.0.0.1:1420` and
