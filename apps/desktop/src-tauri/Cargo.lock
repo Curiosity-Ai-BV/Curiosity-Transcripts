@@ -620,7 +620,7 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "curiosity-analysis"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "curiosity-domain",
  "serde",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "curiosity-app"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "curiosity-analysis",
  "curiosity-audio",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "curiosity-audio"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "cpal",
  "hound",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "curiosity-desktop"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "curiosity-analysis",
  "curiosity-app",
@@ -669,14 +669,14 @@ dependencies = [
 
 [[package]]
 name = "curiosity-domain"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "curiosity-store"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "curiosity-domain",
  "rusqlite",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "curiosity-transcription"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "curiosity-domain",
  "hound",
