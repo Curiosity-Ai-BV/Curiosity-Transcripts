@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -8,11 +8,12 @@ use curiosity_analysis::{
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
-    delete_meeting_command, export_meeting_json_command, generate_summary_command,
-    list_meetings_dto, meeting_detail_dto, rename_meeting_command, search_meetings_dto,
-    AnalysisCommandDto, AnalysisCommandState, AppPermissionState, CommandRecordingDto,
-    CommandRecordingState, DeletedMeetingDto, ExportedMeetingDto, MeetingAnalysisDto,
-    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
+    delete_meeting_command, export_meeting_json_command,
+    generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
+    rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
+    AppPermissionState, CommandRecordingDto, CommandRecordingState, DeletedMeetingDto,
+    ExportedMeetingDto, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
+    StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
@@ -37,7 +38,9 @@ use tauri::Manager;
 use url::Url;
 
 fn main() {
-    let builder = tauri::Builder::default().manage(Mutex::new(DesktopCommandState::default()));
+    let builder = tauri::Builder::default()
+        .manage(Mutex::new(DesktopCommandState::default()))
+        .on_window_event(cancel_active_recording_on_window_close);
     #[cfg(any(test, debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         desktop_snapshot,
@@ -55,7 +58,10 @@ fn main() {
         system_audio_smoke_recording,
         start_microphone_recording,
         stop_microphone_recording,
+        cancel_microphone_recording,
         transcribe_meeting,
+        cancel_transcription,
+        cancel_summary,
         seed_dev_fixture
     ]);
     #[cfg(not(any(test, debug_assertions)))]
@@ -75,11 +81,53 @@ fn main() {
         system_audio_smoke_recording,
         start_microphone_recording,
         stop_microphone_recording,
-        transcribe_meeting
+        cancel_microphone_recording,
+        transcribe_meeting,
+        cancel_transcription,
+        cancel_summary
     ]);
     builder
         .run(tauri::generate_context!())
         .expect("failed to run Curiosity Transcripts desktop shell");
+}
+
+fn cancel_active_recording_on_window_close<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    event: &tauri::WindowEvent,
+) {
+    if !matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        return;
+    }
+
+    let app = window.app_handle();
+    let app_root = match app.path().app_data_dir() {
+        Ok(app_root) => app_root,
+        Err(error) => {
+            eprintln!("failed to resolve app data directory during recording shutdown: {error}");
+            return;
+        }
+    };
+    let Some(command_state) = app.try_state::<Mutex<DesktopCommandState>>() else {
+        eprintln!("failed to resolve desktop command state during recording shutdown");
+        return;
+    };
+
+    let has_active_recording = match command_state.lock() {
+        Ok(command_state) => command_state.active_recording.is_some(),
+        Err(error) => {
+            eprintln!("failed to lock desktop command state during recording shutdown: {error}");
+            return;
+        }
+    };
+    if !has_active_recording {
+        return;
+    }
+
+    if let Err(error) =
+        cancel_active_recording_for_shutdown(&app_root, &command_state, current_timestamp_ms())
+    {
+        eprintln!("failed to cancel active recording during window close: {error}");
+    }
 }
 
 #[tauri::command]
@@ -135,8 +183,11 @@ fn rename_meeting(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let mut command_state = state.lock().map_err(|error| error.to_string())?;
-    rename_meeting_for_app_root(&app_root, &mut command_state, &meeting_id, &title)
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    rename_meeting_for_app_root(&app_root, &snapshot_state, &meeting_id, &title)
 }
 
 #[tauri::command]
@@ -149,8 +200,13 @@ fn export_meeting_json(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let mut command_state = state.lock().map_err(|error| error.to_string())?;
-    export_meeting_json_for_app_root(&app_root, &mut command_state, &meeting_id)
+    let export_state = export_meeting_json_command_state_for_app_root(&app_root, &meeting_id)?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_export = Some(export_state);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
 #[tauri::command]
@@ -163,8 +219,18 @@ fn delete_meeting(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let mut command_state = state.lock().map_err(|error| error.to_string())?;
-    delete_meeting_for_app_root(&app_root, &mut command_state, &meeting_id)
+    let has_active_recording = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.active_recording_matches(&meeting_id)
+    };
+    let delete_state =
+        delete_meeting_command_state_for_app_root(&app_root, &meeting_id, has_active_recording)?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_delete = Some(delete_state);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
 #[tauri::command]
@@ -177,13 +243,81 @@ fn generate_summary(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let command = generate_summary_for_app_root(&app_root, &meeting_id)?;
+    let (job, snapshot) = match start_summary_job_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        current_timestamp_ms(),
+    ) {
+        Ok(started) => started,
+        Err(_) => {
+            let snapshot_state = {
+                let command_state = state.lock().map_err(|error| error.to_string())?;
+                command_state.snapshot_state()
+            };
+            return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
+        }
+    };
+    spawn_summary_job(app, app_root, job, meeting_id);
+    Ok(snapshot)
+}
+
+fn spawn_summary_job(
+    app: tauri::AppHandle,
+    app_root: PathBuf,
+    job: CommandJobView,
+    meeting_id: String,
+) {
+    std::thread::spawn(move || {
+        let command_state = app.state::<Mutex<DesktopCommandState>>();
+        if let Err(error) = finish_summary_job_for_app_root(
+            &app_root,
+            command_state.inner(),
+            job,
+            &meeting_id,
+            current_timestamp_ms(),
+        ) {
+            eprintln!("summary job failed: {error}");
+        }
+    });
+}
+
+fn finish_summary_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job: CommandJobView,
+    meeting_id: &str,
+    created_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let command = generate_summary_for_app_root_with_cancellation(
+        app_root,
+        meeting_id,
+        created_at_ms,
+        || summary_job_cancel_requested(command_state, &job.id),
+    );
     let snapshot_state = {
-        let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        command_state.last_analysis = Some(command);
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        match &command {
+            Ok(Some(command)) => {
+                let finish_state = if command.state == AnalysisCommandState::Failed {
+                    CommandJobFinishState::Failed
+                } else {
+                    CommandJobFinishState::Complete
+                };
+                command_state.finish_summary_job(&job, finish_state);
+                command_state.last_analysis = Some(command.clone());
+            }
+            Ok(None) => {
+                command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+            }
+            Err(_) => {
+                command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            }
+        }
         command_state.snapshot_state()
     };
-    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+    command?;
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
 #[tauri::command]
@@ -341,6 +475,36 @@ fn stop_microphone_recording(
 }
 
 #[tauri::command]
+fn cancel_microphone_recording(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let active = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .active_recording
+            .take()
+            .ok_or_else(|| "Start a desktop recording before canceling.".to_string())?
+    };
+    let recording = cancel_active_microphone_recording(
+        &app_root,
+        active,
+        current_timestamp_ms(),
+        "user canceled active recording",
+    );
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_recording = Some(recording);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
 fn transcribe_meeting(
     app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<DesktopCommandState>>,
@@ -353,42 +517,113 @@ fn transcribe_meeting(
     let settings = app_settings_for_app_root(&app_root)?;
     let model_path = resolved_whisper_model_path(&settings);
     let model_name = model_name_for_path(&model_path);
+    let started_at_ms = current_timestamp_ms();
+    let (job, snapshot) = match start_transcription_job_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        started_at_ms,
+    ) {
+        Ok(started) => started,
+        Err(_) => {
+            let snapshot_state = {
+                let command_state = state.lock().map_err(|error| error.to_string())?;
+                command_state.snapshot_state()
+            };
+            return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
+        }
+    };
 
     #[cfg(feature = "whisper-rs")]
     {
-        let transcription = transcribe_meeting_command(
-            &app_root,
-            &meeting_id,
-            PathBuf::from(model_path),
-            model_name,
-            RealWhisperBackend,
-            current_timestamp_ms(),
-        )?;
-        let snapshot_state = {
-            let mut command_state = state.lock().map_err(|error| error.to_string())?;
-            command_state.last_transcription = Some(transcription);
-            command_state.snapshot_state()
-        };
-        desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+        spawn_transcription_job(
+            app,
+            TranscriptionJobWork {
+                app_root,
+                job,
+                meeting_id,
+                model_path: PathBuf::from(model_path),
+                model_name,
+                backend: RealWhisperBackend,
+                created_at_ms: started_at_ms,
+            },
+        );
+        Ok(snapshot)
     }
 
     #[cfg(not(feature = "whisper-rs"))]
     {
-        let transcription = transcribe_meeting_command(
-            &app_root,
-            &meeting_id,
-            PathBuf::from(model_path),
-            model_name,
-            BackendUnavailableWhisperBackend,
-            current_timestamp_ms(),
-        )?;
-        let snapshot_state = {
-            let mut command_state = state.lock().map_err(|error| error.to_string())?;
-            command_state.last_transcription = Some(transcription);
-            command_state.snapshot_state()
-        };
-        desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+        spawn_transcription_job(
+            app,
+            TranscriptionJobWork {
+                app_root,
+                job,
+                meeting_id,
+                model_path: PathBuf::from(model_path),
+                model_name,
+                backend: BackendUnavailableWhisperBackend,
+                created_at_ms: started_at_ms,
+            },
+        );
+        Ok(snapshot)
     }
+}
+
+struct TranscriptionJobWork<B> {
+    app_root: PathBuf,
+    job: CommandJobView,
+    meeting_id: String,
+    model_path: PathBuf,
+    model_name: String,
+    backend: B,
+    created_at_ms: u64,
+}
+
+fn spawn_transcription_job<B>(app: tauri::AppHandle, work: TranscriptionJobWork<B>)
+where
+    B: WhisperBackend + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let command_state = app.state::<Mutex<DesktopCommandState>>();
+        if let Err(error) = finish_transcription_job_for_app_root(
+            &work.app_root,
+            command_state.inner(),
+            work.job,
+            &work.meeting_id,
+            work.model_path,
+            work.model_name,
+            work.backend,
+            work.created_at_ms,
+        ) {
+            eprintln!("transcription job failed: {error}");
+        }
+    });
+}
+
+#[tauri::command]
+fn cancel_transcription(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    job_id: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    cancel_transcription_job_for_app_root(&app_root, state.inner(), &job_id)
+}
+
+#[tauri::command]
+fn cancel_summary(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    job_id: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    cancel_summary_job_for_app_root(&app_root, state.inner(), &job_id)
 }
 
 #[cfg(test)]
@@ -400,7 +635,11 @@ fn desktop_snapshot_for_app_root_with_state(
     app_root: &Path,
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
-    let store = open_store(app_root)?;
+    let store = if command_state.active_recording.is_some() {
+        open_store(app_root)?
+    } else {
+        open_store_with_startup_repair(app_root)?
+    };
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
@@ -480,6 +719,7 @@ fn desktop_snapshot_for_app_root_with_state(
     Ok(DesktopSnapshot {
         loading: false,
         command_surface: CommandSurfaceState {
+            ready: true,
             detail: "Connected to local desktop commands.".to_string(),
         },
         meetings,
@@ -492,18 +732,30 @@ fn desktop_snapshot_for_app_root_with_state(
             system_audio: system_audio_capture_state(command_state, has_system_audio_transcript),
         },
         transcription: command_state.last_transcription.clone(),
+        transcription_job: command_state.transcription_job.clone(),
         export_command: command_state.last_export.clone().unwrap_or_default(),
         delete_command: command_state.last_delete.clone().unwrap_or_default(),
         analysis_command: command_state.last_analysis.clone(),
+        summary_job: command_state.summary_job.clone(),
     })
 }
 
 fn open_store(app_root: &Path) -> Result<Store, String> {
+    open_store_for_app_root(app_root, false)
+}
+
+fn open_store_with_startup_repair(app_root: &Path) -> Result<Store, String> {
+    open_store_for_app_root(app_root, true)
+}
+
+fn open_store_for_app_root(app_root: &Path, repair_startup: bool) -> Result<Store, String> {
     std::fs::create_dir_all(app_root).map_err(|error| error.to_string())?;
     let store = Store::open(app_root.join("curiosity.sqlite3"), app_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
-    store.repair_startup().map_err(|error| error.to_string())?;
+    if repair_startup {
+        store.repair_startup().map_err(|error| error.to_string())?;
+    }
     Ok(store)
 }
 
@@ -551,64 +803,97 @@ fn search_meetings_for_app_root(
 
 fn rename_meeting_for_app_root(
     app_root: &Path,
-    command_state: &mut DesktopCommandState,
+    command_state: &DesktopCommandSnapshotState,
     meeting_id: &str,
     title: &str,
 ) -> Result<DesktopSnapshot, String> {
     let store = open_store(app_root)?;
     rename_meeting_command(&store, meeting_id, title).map_err(|error| error.to_string())?;
     drop(store);
-    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+    desktop_snapshot_for_app_root_with_state(app_root, command_state)
 }
 
+#[cfg(test)]
 fn export_meeting_json_for_app_root(
     app_root: &Path,
     command_state: &mut DesktopCommandState,
     meeting_id: &str,
 ) -> Result<DesktopSnapshot, String> {
-    let store = open_store(app_root)?;
-    let settings = store.app_settings().map_err(|error| error.to_string())?;
-    let export_root = export_root_for_settings(app_root, &settings);
-    command_state.last_export = match export_meeting_json_command(&store, meeting_id, &export_root)
-    {
-        Ok(exported) => Some(ExportCommandState::exported(exported)),
-        Err(error) => Some(ExportCommandState::failed(meeting_id, error.to_string())),
-    };
-    drop(store);
+    let export_state = export_meeting_json_command_state_for_app_root(app_root, meeting_id)?;
+    command_state.last_export = Some(export_state);
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
+fn export_meeting_json_command_state_for_app_root(
+    app_root: &Path,
+    meeting_id: &str,
+) -> Result<ExportCommandState, String> {
+    let store = open_store(app_root)?;
+    let settings = store.app_settings().map_err(|error| error.to_string())?;
+    let export_root = export_root_for_settings(app_root, &settings);
+    let export_state = match export_meeting_json_command(&store, meeting_id, &export_root) {
+        Ok(exported) => ExportCommandState::exported(exported),
+        Err(error) => ExportCommandState::failed(meeting_id, error.to_string()),
+    };
+    Ok(export_state)
+}
+
+#[cfg(test)]
 fn delete_meeting_for_app_root(
     app_root: &Path,
     command_state: &mut DesktopCommandState,
     meeting_id: &str,
 ) -> Result<DesktopSnapshot, String> {
-    let store = open_store(app_root)?;
-    command_state.last_delete = match delete_meeting_command(&store, meeting_id) {
-        Ok(deleted) => Some(DeleteCommandState::deleted(deleted)),
-        Err(error) => Some(DeleteCommandState::failed(meeting_id, error.to_string())),
-    };
-    drop(store);
+    let delete_state = delete_meeting_command_state_for_app_root(
+        app_root,
+        meeting_id,
+        command_state.active_recording_matches(meeting_id),
+    )?;
+    command_state.last_delete = Some(delete_state);
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
-fn generate_summary_for_app_root(
+fn delete_meeting_command_state_for_app_root(
     app_root: &Path,
     meeting_id: &str,
-) -> Result<AnalysisCommandView, String> {
+    has_active_recording: bool,
+) -> Result<DeleteCommandState, String> {
+    if has_active_recording {
+        return Ok(DeleteCommandState::failed(
+            meeting_id,
+            "Cannot delete a meeting while it has an active recording.".to_string(),
+        ));
+    }
+
+    let store = open_store(app_root)?;
+    let delete_state = match delete_meeting_command(&store, meeting_id) {
+        Ok(deleted) => DeleteCommandState::deleted(deleted),
+        Err(error) => DeleteCommandState::failed(meeting_id, error.to_string()),
+    };
+    Ok(delete_state)
+}
+
+fn generate_summary_for_app_root_with_cancellation(
+    app_root: &Path,
+    meeting_id: &str,
+    created_at_ms: u64,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<Option<AnalysisCommandView>, String> {
     let settings = app_settings_for_app_root(app_root)?;
     let client =
         LocalOllamaTextClient::new(settings.ollama_base_url.clone(), UreqOllamaHttpTransport);
     let model_name = canonical_local_ollama_model_tag(&settings.ollama_model);
-    generate_summary_command_for_app_root_with_client(
+    generate_summary_command_for_app_root_with_client_and_cancellation(
         app_root,
         meeting_id,
         client,
         model_name,
-        current_timestamp_ms(),
+        created_at_ms,
+        is_cancelled,
     )
 }
 
+#[cfg(test)]
 fn generate_summary_command_for_app_root_with_client<C>(
     app_root: &Path,
     meeting_id: &str,
@@ -619,11 +904,39 @@ fn generate_summary_command_for_app_root_with_client<C>(
 where
     C: ProviderTextClient,
 {
+    generate_summary_command_for_app_root_with_client_and_cancellation(
+        app_root,
+        meeting_id,
+        client,
+        model_name,
+        created_at_ms,
+        || false,
+    )
+    .map(|command| command.expect("non-cancelable summary command cannot be canceled"))
+}
+
+fn generate_summary_command_for_app_root_with_client_and_cancellation<C>(
+    app_root: &Path,
+    meeting_id: &str,
+    client: C,
+    model_name: impl Into<String>,
+    created_at_ms: u64,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<Option<AnalysisCommandView>, String>
+where
+    C: ProviderTextClient,
+{
     let store = open_store(app_root)?;
     let analyzer = OllamaAnalyzer::new(client, model_name, "summary-v1");
-    generate_summary_command(&store, &analyzer, meeting_id, created_at_ms)
-        .map(AnalysisCommandView::from_command)
-        .map_err(|error| error.to_string())
+    generate_summary_command_with_cancellation(
+        &store,
+        &analyzer,
+        meeting_id,
+        created_at_ms,
+        is_cancelled,
+    )
+    .map(|command| command.map(AnalysisCommandView::from_command))
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -647,6 +960,92 @@ where
     )?;
     command_state.last_analysis = Some(command);
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+#[cfg(test)]
+fn finish_summary_job_for_app_root_with_client<C>(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job: CommandJobView,
+    meeting_id: &str,
+    client: C,
+    model_name: impl Into<String>,
+    created_at_ms: u64,
+) -> Result<DesktopSnapshot, String>
+where
+    C: ProviderTextClient,
+{
+    let command = generate_summary_command_for_app_root_with_client_and_cancellation(
+        app_root,
+        meeting_id,
+        client,
+        model_name,
+        created_at_ms,
+        || summary_job_cancel_requested(command_state, &job.id),
+    )?;
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        if let Some(command) = command {
+            let finish_state = if command.state == AnalysisCommandState::Failed {
+                CommandJobFinishState::Failed
+            } else {
+                CommandJobFinishState::Complete
+            };
+            command_state.finish_summary_job(&job, finish_state);
+            command_state.last_analysis = Some(command);
+        } else {
+            command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+        }
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
+}
+
+fn begin_summary_job_for_app_root(
+    _app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<CommandJobView, String> {
+    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+    command_state
+        .begin_summary_job(meeting_id, started_at_ms)
+        .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))
+}
+
+fn start_summary_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<(CommandJobView, DesktopSnapshot), String> {
+    let job = begin_summary_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
+    let snapshot_state = {
+        let command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    let snapshot = match desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    Ok((job, snapshot))
+}
+
+fn cancel_summary_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job_id: &str,
+) -> Result<DesktopSnapshot, String> {
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.request_summary_cancel(job_id)?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
 fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf {
@@ -866,6 +1265,8 @@ struct DesktopCommandState {
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    transcription_job: Option<CommandJobView>,
+    summary_job: Option<CommandJobView>,
 }
 
 impl DesktopCommandState {
@@ -883,7 +1284,70 @@ impl DesktopCommandState {
             last_export: self.last_export.clone(),
             last_delete: self.last_delete.clone(),
             last_analysis: self.last_analysis.clone(),
+            transcription_job: self.transcription_job.clone(),
+            summary_job: self.summary_job.clone(),
         }
+    }
+
+    fn active_recording_matches(&self, meeting_id: &str) -> bool {
+        self.active_recording
+            .as_ref()
+            .map(|recording| recording.meeting_id == meeting_id)
+            .unwrap_or(false)
+    }
+
+    fn begin_transcription_job(
+        &mut self,
+        meeting_id: &str,
+        started_at_ms: u64,
+    ) -> Result<CommandJobView, CommandJobView> {
+        begin_job(
+            &mut self.transcription_job,
+            CommandJobKind::Transcription,
+            meeting_id,
+            started_at_ms,
+        )
+    }
+
+    fn finish_transcription_job(&mut self, job: &CommandJobView, state: CommandJobFinishState) {
+        finish_job(&mut self.transcription_job, job, state);
+    }
+
+    fn request_transcription_cancel(&mut self, job_id: &str) -> Result<(), String> {
+        request_job_cancel(
+            &mut self.transcription_job,
+            job_id,
+            CommandJobKind::Transcription,
+        )
+    }
+
+    fn transcription_job_cancel_requested(&self, job_id: &str) -> bool {
+        job_cancel_requested(&self.transcription_job, job_id)
+    }
+
+    fn begin_summary_job(
+        &mut self,
+        meeting_id: &str,
+        started_at_ms: u64,
+    ) -> Result<CommandJobView, CommandJobView> {
+        begin_job(
+            &mut self.summary_job,
+            CommandJobKind::Summary,
+            meeting_id,
+            started_at_ms,
+        )
+    }
+
+    fn finish_summary_job(&mut self, job: &CommandJobView, state: CommandJobFinishState) {
+        finish_job(&mut self.summary_job, job, state);
+    }
+
+    fn request_summary_cancel(&mut self, job_id: &str) -> Result<(), String> {
+        request_job_cancel(&mut self.summary_job, job_id, CommandJobKind::Summary)
+    }
+
+    fn summary_job_cancel_requested(&self, job_id: &str) -> bool {
+        job_cancel_requested(&self.summary_job, job_id)
     }
 }
 
@@ -895,6 +1359,8 @@ struct DesktopCommandSnapshotState {
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    transcription_job: Option<CommandJobView>,
+    summary_job: Option<CommandJobView>,
 }
 
 #[derive(Clone)]
@@ -902,6 +1368,135 @@ struct ActiveDesktopRecordingSnapshot {
     meeting_id: String,
     recording_id: String,
     captures_system_audio: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandJobView {
+    id: String,
+    kind: CommandJobKind,
+    meeting_id: String,
+    state: CommandJobState,
+    cancel_requested: bool,
+    started_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+enum CommandJobKind {
+    Transcription,
+    Summary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+enum CommandJobState {
+    Running,
+    CancelRequested,
+    Complete,
+    Failed,
+    Canceled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandJobFinishState {
+    Complete,
+    Failed,
+    Canceled,
+}
+
+impl CommandJobView {
+    fn running(kind: CommandJobKind, meeting_id: &str, started_at_ms: u64) -> Self {
+        let job_kind = match kind {
+            CommandJobKind::Transcription => "transcription",
+            CommandJobKind::Summary => "summary",
+        };
+        Self {
+            id: format!("{job_kind}-{meeting_id}-{started_at_ms}"),
+            kind,
+            meeting_id: meeting_id.to_string(),
+            state: CommandJobState::Running,
+            cancel_requested: false,
+            started_at_ms,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(
+            self.state,
+            CommandJobState::Running | CommandJobState::CancelRequested
+        )
+    }
+}
+
+fn begin_job(
+    slot: &mut Option<CommandJobView>,
+    kind: CommandJobKind,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<CommandJobView, CommandJobView> {
+    if let Some(job) = slot.as_ref().filter(|job| job.is_active()) {
+        return Err(job.clone());
+    }
+    let job = CommandJobView::running(kind, meeting_id, started_at_ms);
+    *slot = Some(job.clone());
+    Ok(job)
+}
+
+fn finish_job(
+    slot: &mut Option<CommandJobView>,
+    job: &CommandJobView,
+    state: CommandJobFinishState,
+) {
+    if let Some(active) = slot.as_mut().filter(|active| active.id == job.id) {
+        active.state = match state {
+            CommandJobFinishState::Complete => CommandJobState::Complete,
+            CommandJobFinishState::Failed => CommandJobState::Failed,
+            CommandJobFinishState::Canceled => CommandJobState::Canceled,
+        };
+        active.cancel_requested = false;
+    }
+}
+
+fn job_cancel_requested(slot: &Option<CommandJobView>, job_id: &str) -> bool {
+    slot.as_ref()
+        .filter(|job| job.id == job_id)
+        .map(|job| job.cancel_requested)
+        .unwrap_or(false)
+}
+
+fn transcription_job_cancel_requested(
+    command_state: &Mutex<DesktopCommandState>,
+    job_id: &str,
+) -> bool {
+    command_state
+        .lock()
+        .map(|state| state.transcription_job_cancel_requested(job_id))
+        .unwrap_or(true)
+}
+
+fn summary_job_cancel_requested(command_state: &Mutex<DesktopCommandState>, job_id: &str) -> bool {
+    command_state
+        .lock()
+        .map(|state| state.summary_job_cancel_requested(job_id))
+        .unwrap_or(true)
+}
+
+fn request_job_cancel(
+    slot: &mut Option<CommandJobView>,
+    job_id: &str,
+    kind: CommandJobKind,
+) -> Result<(), String> {
+    let Some(job) = slot.as_mut().filter(|job| job.is_active()) else {
+        return Err(format!("No active {kind:?} job to cancel."));
+    };
+    if job.id != job_id {
+        return Err(format!(
+            "{} already owns {kind:?} for {}",
+            job.id, job.meeting_id
+        ));
+    }
+    job.state = CommandJobState::CancelRequested;
+    job.cancel_requested = true;
+    Ok(())
 }
 
 struct ActiveDesktopRecording {
@@ -1192,6 +1787,51 @@ fn stop_microphone_recording_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
+#[cfg(test)]
+fn cancel_microphone_recording_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    ended_at_ms: u64,
+    reason: &str,
+) -> Result<DesktopSnapshot, String> {
+    let Some(active) = command_state.active_recording.take() else {
+        return Err("Start a desktop recording before canceling.".to_string());
+    };
+    command_state.last_recording = Some(cancel_active_microphone_recording(
+        app_root,
+        active,
+        ended_at_ms,
+        reason,
+    ));
+
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn cancel_active_recording_for_shutdown(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    ended_at_ms: u64,
+) -> Result<CommandRecordingDto, String> {
+    let active = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .active_recording
+            .take()
+            .ok_or_else(|| "Start a desktop recording before canceling.".to_string())?
+    };
+    let recording = cancel_active_microphone_recording(
+        app_root,
+        active,
+        ended_at_ms,
+        "window closed before recording completion",
+    );
+    {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.last_recording = Some(recording.clone());
+    }
+    Ok(recording)
+}
+
 fn stop_active_microphone_recording(
     app_root: &Path,
     active: ActiveDesktopRecording,
@@ -1227,6 +1867,50 @@ fn stop_active_microphone_recording(
     }
 }
 
+fn cancel_active_microphone_recording(
+    app_root: &Path,
+    active: ActiveDesktopRecording,
+    ended_at_ms: u64,
+    reason: &str,
+) -> CommandRecordingDto {
+    let meeting_id = active.meeting_id.clone();
+    let recording_id = active.recording_id.clone();
+    let stop_error = active.recorder.stop(ended_at_ms).err();
+    let message = match stop_error {
+        Some(error) => format!("{reason}; recorder shutdown reported: {error}"),
+        None => reason.to_string(),
+    };
+    if let Ok(store) = open_store(app_root) {
+        let _ = store.update_recording_session_status(
+            &recording_id,
+            RecordingStatus::Failed,
+            Some(ended_at_ms),
+            Some(&message),
+        );
+        let _ = store.update_meeting_status(&meeting_id, MeetingStatus::Failed, Some(ended_at_ms));
+    }
+    let manifest_path = app_root
+        .join("meetings")
+        .join(&meeting_id)
+        .join("manifest.json");
+    let _ = std::fs::remove_file(manifest_path);
+
+    recording_dto(
+        &meeting_id,
+        Some(recording_id),
+        CommandRecordingState::Interrupted,
+        AppPermissionState::Ready,
+        microphone_storage_path(&meeting_id),
+        &format!("Recording canceled before completion: {message}"),
+    )
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CompletedAudioManifestMapping {
+    completed_artifacts: Vec<CompletedAudioArtifact>,
+    completed_streams: Vec<StreamKind>,
+}
+
 fn recording_stop_permission_state(message: &str) -> AppPermissionState {
     if message.to_ascii_lowercase().contains("system audio") {
         AppPermissionState::SystemAudioUnavailable
@@ -1242,58 +1926,34 @@ fn complete_active_microphone_recording(
 ) -> Result<CommandRecordingDto, String> {
     let manifest = active.recorder.stop(ended_at_ms)?;
     let store = open_store(app_root)?;
-    let mut completed_artifacts = Vec::new();
-    let mut completed_streams = Vec::new();
-    for artifact in &manifest.artifacts {
-        if !active.streams.contains(&artifact.stream) {
-            return Err(format!(
-                "{} artifact was not part of the active recording",
-                stream_label(artifact.stream)
-            ));
-        }
-        let relative_path = artifact
-            .path
-            .strip_prefix(app_root)
-            .map_err(|_| {
-                format!(
-                    "{} artifact was written outside private app storage",
-                    stream_label(artifact.stream)
-                )
-            })?
-            .to_string_lossy()
-            .to_string();
-        let expected_path = artifact_relative_path_for_stream(
-            &active.meeting_id,
-            &active.recording_id,
-            artifact.stream,
-        );
-        if relative_path != expected_path {
-            return Err(format!(
-                "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
-                stream_label(artifact.stream)
-            ));
-        }
-        completed_streams.push(artifact.stream);
-        completed_artifacts.push(CompletedAudioArtifact {
-            artifact_id: artifact_id_for_stream(&active.recording_id, artifact.stream),
-            sha256: artifact.sha256.clone(),
-        });
-    }
-    if !completed_streams.contains(&StreamKind::Microphone) {
+    let completed = completed_audio_artifacts_from_manifest(
+        app_root,
+        &active.meeting_id,
+        &active.recording_id,
+        &active.streams,
+        &manifest,
+    )?;
+    if !completed
+        .completed_streams
+        .contains(&StreamKind::Microphone)
+    {
         return Err("microphone recording stopped without a WAV artifact".to_string());
     }
-    let recording_source = recording_source_for_streams(&completed_streams);
+    let recording_source = recording_source_for_streams(&completed.completed_streams);
     store
         .complete_recording_session_with_artifacts(
             &active.meeting_id,
             &active.recording_id,
             ended_at_ms,
             recording_source,
-            &completed_artifacts,
+            &completed.completed_artifacts,
         )
         .map_err(|error| error.to_string())?;
 
-    let recovery_action = if completed_streams.contains(&StreamKind::SystemAudio) {
+    let recovery_action = if completed
+        .completed_streams
+        .contains(&StreamKind::SystemAudio)
+    {
         "Finalized local microphone and system audio WAV artifacts."
     } else {
         "Finalized local microphone WAV artifact."
@@ -1307,6 +1967,67 @@ fn complete_active_microphone_recording(
         microphone_storage_path(&active.meeting_id),
         recovery_action,
     ))
+}
+
+fn completed_audio_artifacts_from_manifest(
+    app_root: &Path,
+    meeting_id: &str,
+    recording_id: &str,
+    streams: &[StreamKind],
+    manifest: &ArtifactManifest,
+) -> Result<CompletedAudioManifestMapping, String> {
+    let mut completed_artifacts = Vec::new();
+    let mut completed_streams = Vec::new();
+    for artifact in &manifest.artifacts {
+        if !streams.contains(&artifact.stream) {
+            return Err(format!(
+                "{} artifact was not part of the active recording",
+                stream_label(artifact.stream)
+            ));
+        }
+        let relative_path =
+            relative_private_artifact_path(app_root, &artifact.path, artifact.stream)?;
+        let expected_path =
+            artifact_relative_path_for_stream(meeting_id, recording_id, artifact.stream);
+        if relative_path != expected_path {
+            return Err(format!(
+                "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
+                stream_label(artifact.stream)
+            ));
+        }
+        completed_streams.push(artifact.stream);
+        completed_artifacts.push(CompletedAudioArtifact {
+            artifact_id: artifact_id_for_stream(recording_id, artifact.stream),
+            sha256: artifact.sha256.clone(),
+        });
+    }
+    Ok(CompletedAudioManifestMapping {
+        completed_artifacts,
+        completed_streams,
+    })
+}
+
+fn relative_private_artifact_path(
+    app_root: &Path,
+    path: &Path,
+    stream: StreamKind,
+) -> Result<String, String> {
+    let relative_path = path.strip_prefix(app_root).map_err(|_| {
+        format!(
+            "{} artifact was written outside private app storage",
+            stream_label(stream)
+        )
+    })?;
+    if relative_path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(format!(
+            "{} artifact was written outside private app storage",
+            stream_label(stream)
+        ));
+    }
+    Ok(relative_path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
@@ -1330,6 +2051,108 @@ fn transcribe_meeting_for_app_root<B: WhisperBackend>(
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
+fn begin_transcription_job_for_app_root(
+    _app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<CommandJobView, String> {
+    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+    command_state
+        .begin_transcription_job(meeting_id, started_at_ms)
+        .map_err(|job| {
+            format!(
+                "{} already owns transcription for {}",
+                job.id, job.meeting_id
+            )
+        })
+}
+
+fn start_transcription_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<(CommandJobView, DesktopSnapshot), String> {
+    let job =
+        begin_transcription_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
+    let snapshot_state = {
+        let command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    let snapshot = match desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    Ok((job, snapshot))
+}
+
+fn cancel_transcription_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job_id: &str,
+) -> Result<DesktopSnapshot, String> {
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.request_transcription_cancel(job_id)?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "job completion keeps state ownership, job identity, and backend inputs explicit"
+)]
+fn finish_transcription_job_for_app_root<B: WhisperBackend>(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job: CommandJobView,
+    meeting_id: &str,
+    model_path: impl Into<PathBuf>,
+    model_name: impl Into<String>,
+    backend: B,
+    created_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let transcription = transcribe_meeting_command_with_cancellation(
+        app_root,
+        meeting_id,
+        model_path,
+        model_name,
+        backend,
+        created_at_ms,
+        || transcription_job_cancel_requested(command_state, &job.id),
+    );
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        match &transcription {
+            Ok(Some(transcription)) => {
+                let finish_state = if transcription.state == TranscriptionCommandState::Failed {
+                    CommandJobFinishState::Failed
+                } else {
+                    CommandJobFinishState::Complete
+                };
+                command_state.finish_transcription_job(&job, finish_state);
+                command_state.last_transcription = Some(transcription.clone());
+            }
+            Ok(None) => {
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
+            }
+            Err(_) => {
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            }
+        }
+        command_state.snapshot_state()
+    };
+    transcription?;
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
+}
+
+#[cfg(test)]
 fn transcribe_meeting_command<B: WhisperBackend>(
     app_root: &Path,
     meeting_id: &str,
@@ -1338,19 +2161,46 @@ fn transcribe_meeting_command<B: WhisperBackend>(
     backend: B,
     created_at_ms: u64,
 ) -> Result<TranscriptionCommandView, String> {
+    transcribe_meeting_command_with_cancellation(
+        app_root,
+        meeting_id,
+        model_path,
+        model_name,
+        backend,
+        created_at_ms,
+        || false,
+    )
+    .map(|transcription| transcription.expect("non-cancelable transcription cannot be canceled"))
+}
+
+fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
+    app_root: &Path,
+    meeting_id: &str,
+    model_path: impl Into<PathBuf>,
+    model_name: impl Into<String>,
+    backend: B,
+    created_at_ms: u64,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<Option<TranscriptionCommandView>, String> {
     let model_path = model_path.into();
     let model_name = model_name.into();
+    if is_cancelled() {
+        return Ok(None);
+    }
     let store = open_store(app_root)?;
     let artifacts = store
         .completed_wav_artifacts_for_transcription(meeting_id)
         .map_err(|error| error.to_string())?;
+    if is_cancelled() {
+        return Ok(None);
+    }
     if artifacts.is_empty() {
-        return Ok(transcription_failed(
+        return Ok(Some(transcription_failed(
             meeting_id,
             "missing_audio_artifact",
             "No completed retained local WAV artifact exists for this meeting.",
             "Stop a desktop recording before requesting transcription.",
-        ));
+        )));
     }
 
     let requests = artifacts
@@ -1367,21 +2217,30 @@ fn transcribe_meeting_command<B: WhisperBackend>(
     let transcriber = WhisperTranscriber::new(model_path, model_name, backend);
     match transcriber.transcribe_wav_bundle(&requests) {
         Ok(document) => {
+            if is_cancelled() {
+                return Ok(None);
+            }
             match persist_transcription_document(&store, meeting_id, document, created_at_ms) {
-                Ok(()) => Ok(TranscriptionCommandView {
+                Ok(()) => Ok(Some(TranscriptionCommandView {
                     meeting_id: meeting_id.to_string(),
                     state: TranscriptionCommandState::Complete,
                     failure: None,
-                }),
-                Err(error) => Ok(transcription_failed(
+                })),
+                Err(error) => Ok(Some(transcription_failed(
                     meeting_id,
                     "transcript_persist_failed",
                     &format!("Transcription completed but could not be saved: {error}"),
                     "Check local app storage and retry transcription.",
-                )),
+                ))),
             }
         }
-        Err(error) => Ok(transcription_failure_from_error(meeting_id, error)),
+        Err(error) => {
+            if is_cancelled() {
+                Ok(None)
+            } else {
+                Ok(Some(transcription_failure_from_error(meeting_id, error)))
+            }
+        }
     }
 }
 
@@ -2235,13 +3094,16 @@ struct DesktopSnapshot {
     settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
+    transcription_job: Option<CommandJobView>,
     export_command: ExportCommandState,
     delete_command: DeleteCommandState,
     analysis_command: Option<AnalysisCommandView>,
+    summary_job: Option<CommandJobView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct CommandSurfaceState {
+    ready: bool,
     detail: String,
 }
 
@@ -2321,7 +3183,7 @@ struct TranscriptionCommandView {
     failure: Option<CommandFailureView>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 enum TranscriptionCommandState {
     Complete,
     Failed,
@@ -2577,6 +3439,7 @@ mod tests {
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(json["loading"], false);
+        assert_eq!(json["commandSurface"]["ready"], true);
         assert_eq!(
             json["commandSurface"]["detail"],
             "Connected to local desktop commands."
@@ -2601,7 +3464,7 @@ mod tests {
         assert!(json["transcription"].is_null());
 
         restore_whisper_env(previous);
-        let _ = fs::remove_dir_all(root);
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -2860,7 +3723,7 @@ mod tests {
         );
         assert_eq!(json["meetings"][0]["analysis"]["networkUsed"], false);
 
-        fs::remove_dir_all(root).expect("cleanup");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3286,7 +4149,7 @@ mod tests {
     #[test]
     fn rename_meeting_command_updates_selected_snapshot_title() {
         let root = unique_test_root();
-        let mut command_state = DesktopCommandState::default();
+        let command_state = DesktopCommandState::default();
         seed_transcribed_meeting_with_private_artifact(
             &root,
             "meeting-1",
@@ -3294,9 +4157,13 @@ mod tests {
             "rename target",
         );
 
-        let snapshot =
-            rename_meeting_for_app_root(&root, &mut command_state, "meeting-1", "Renamed Planning")
-                .expect("rename meeting");
+        let snapshot = rename_meeting_for_app_root(
+            &root,
+            &command_state.snapshot_state(),
+            "meeting-1",
+            "Renamed Planning",
+        )
+        .expect("rename meeting");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(json["selectedMeetingId"], "meeting-1");
@@ -3365,6 +4232,72 @@ mod tests {
     }
 
     #[test]
+    fn delete_meeting_rejects_active_recording_meeting_without_corrupting_state() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Do not delete active".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+
+        let snapshot = delete_meeting_for_app_root(&root, &mut command_state, &meeting_id)
+            .expect("active delete returns visible failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(command_state.active_recording.is_some());
+        assert_eq!(json["recording"]["meeting_id"], meeting_id);
+        assert_eq!(json["recording"]["state"], "Recording");
+        assert_eq!(json["deleteCommand"]["state"], "failed");
+        assert_eq!(json["deleteCommand"]["meetingId"], meeting_id);
+        assert!(json["deleteCommand"]["message"]
+            .as_str()
+            .expect("delete message")
+            .contains("active recording"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .any(|meeting| meeting["id"] == meeting_id));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn rename_export_and_delete_commands_do_not_hold_command_mutex_during_store_work() {
+        let source = include_str!("main.rs");
+        let old_rename_call = concat!(
+            "rename_meeting_for_app_root(&app_root, ",
+            "&mut command_state"
+        );
+        let old_export_call = concat!(
+            "export_meeting_json_for_app_root(&app_root, ",
+            "&mut command_state"
+        );
+        let old_delete_call = concat!(
+            "delete_meeting_for_app_root(&app_root, ",
+            "&mut command_state"
+        );
+
+        assert!(!source.contains(old_rename_call));
+        assert!(!source.contains(old_export_call));
+        assert!(!source.contains(old_delete_call));
+    }
+
+    #[test]
+    fn builder_registers_window_close_recording_shutdown_handler() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains(".on_window_event(cancel_active_recording_on_window_close)"));
+    }
+
+    #[test]
     fn start_microphone_recording_with_fake_recorder_returns_active_snapshot() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -3386,6 +4319,134 @@ mod tests {
         assert_eq!(json["meetings"][0]["status"], "Recording");
         assert_eq!(json["selectedMeetingId"], json["recording"]["meeting_id"]);
         assert!(command_state.active_recording.is_some());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn active_recording_snapshot_does_not_run_startup_repair_on_live_manifest() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = StartedFileMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Still recording".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording with live file");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot.recording.recording_id.expect("recording id");
+        let store = open_store(&root).expect("open store");
+
+        assert!(command_state.active_recording.is_some());
+        assert_eq!(
+            store.meeting_status(&meeting_id).expect("meeting status"),
+            "Recording"
+        );
+        assert_eq!(
+            store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Recording"
+        );
+        assert_eq!(
+            store
+                .artifact_recovery_status(&artifact_id(&recording_id))
+                .expect("artifact status"),
+            curiosity_store::RepairStatus::NotNeeded
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn cancel_active_recording_consumes_recorder_and_prevents_startup_repair_success() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = StartedFileMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Cancel instead of recover".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording with live file");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        let recording_id = start_snapshot.recording.recording_id.expect("recording id");
+
+        let snapshot = cancel_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            started_at_ms + 250,
+            "user canceled active recording",
+        )
+        .expect("cancel recording");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
+
+        assert!(command_state.active_recording.is_none());
+        assert_eq!(json["recording"]["state"], "Interrupted");
+        assert_eq!(
+            restarted_store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Failed"
+        );
+        assert!(restarted_store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn window_shutdown_cancels_active_recording_before_startup_repair() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let factory = StartedFileMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = {
+            let mut state = command_state.lock().expect("command state");
+            start_microphone_recording_for_app_root(
+                &root,
+                &mut state,
+                Some("Close window while recording".to_string()),
+                started_at_ms,
+                &factory,
+            )
+            .expect("start recording with live file")
+        };
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        let recording_id = start_snapshot.recording.recording_id.expect("recording id");
+
+        let canceled =
+            cancel_active_recording_for_shutdown(&root, &command_state, started_at_ms + 250)
+                .expect("shutdown cancel should produce state");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
+
+        assert_eq!(canceled.state, CommandRecordingState::Interrupted);
+        assert!(command_state
+            .lock()
+            .expect("command state")
+            .active_recording
+            .is_none());
+        assert_eq!(
+            restarted_store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Failed"
+        );
+        assert!(restarted_store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .is_none());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -3424,6 +4485,72 @@ mod tests {
         assert!(root.join(&artifact.path).is_file());
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn completed_audio_manifest_mapping_is_the_store_artifact_boundary() {
+        let root = unique_test_root();
+        let manifest = audio_manifest_for_test(
+            &root,
+            "recording-1",
+            StreamKind::Microphone,
+            "meetings/meeting-1/audio/recording-1/raw-mic.wav",
+            "sha256:mic",
+        );
+
+        let mapped = completed_audio_artifacts_from_manifest(
+            &root,
+            "meeting-1",
+            "recording-1",
+            &[StreamKind::Microphone],
+            &manifest,
+        )
+        .expect("map completed artifacts");
+
+        assert_eq!(mapped.completed_streams, vec![StreamKind::Microphone]);
+        assert_eq!(
+            mapped.completed_artifacts,
+            vec![CompletedAudioArtifact {
+                artifact_id: "artifact-recording-1".to_string(),
+                sha256: "sha256:mic".to_string(),
+            }]
+        );
+
+        let outside_manifest = audio_manifest_for_test(
+            &root,
+            "recording-1",
+            StreamKind::Microphone,
+            "../outside/raw-mic.wav",
+            "sha256:outside",
+        );
+        let outside_error = completed_audio_artifacts_from_manifest(
+            &root,
+            "meeting-1",
+            "recording-1",
+            &[StreamKind::Microphone],
+            &outside_manifest,
+        )
+        .expect_err("outside paths must fail before store mutation");
+        assert!(outside_error.contains("outside private app storage"));
+
+        let unowned_manifest = audio_manifest_for_test(
+            &root,
+            "recording-1",
+            StreamKind::SystemAudio,
+            "meetings/meeting-1/audio/recording-1/raw-system.wav",
+            "sha256:system",
+        );
+        let unowned_error = completed_audio_artifacts_from_manifest(
+            &root,
+            "meeting-1",
+            "recording-1",
+            &[StreamKind::Microphone],
+            &unowned_manifest,
+        )
+        .expect_err("unowned streams must fail before store mutation");
+        assert!(unowned_error.contains("was not part of the active recording"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3487,7 +4614,7 @@ mod tests {
         fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
         write_minimal_wav(&artifact_path);
 
-        let restarted_store = open_store(&root).expect("open repaired store");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
         let artifact = restarted_store
             .completed_wav_artifact_for_transcription(&meeting_id)
             .expect("query completed artifact")
@@ -3536,7 +4663,7 @@ mod tests {
         write_minimal_wav(&mic_path);
         write_minimal_wav(&system_path);
 
-        let restarted_store = open_store(&root).expect("open repaired store");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
         let artifacts = restarted_store
             .completed_wav_artifacts_for_transcription(&meeting_id)
             .expect("query completed artifacts");
@@ -3863,6 +4990,224 @@ mod tests {
     }
 
     #[test]
+    fn transcription_job_ownership_rejects_duplicate_start_and_keeps_running_status_visible() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_001,
+        )
+        .expect_err("duplicate job should be rejected");
+        let duplicate_snapshot = {
+            let state = command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("duplicate snapshot")
+        };
+        let duplicate_json =
+            serde_json::to_value(&duplicate_snapshot).expect("serialize duplicate");
+
+        assert_eq!(started.kind, CommandJobKind::Transcription);
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(duplicate_json["transcriptionJob"]["id"], started.id);
+        assert_eq!(duplicate_json["transcriptionJob"]["state"], "Running");
+
+        {
+            let mut state = command_state.lock().expect("command state");
+            state
+                .transcription_job
+                .as_mut()
+                .expect("transcription job")
+                .state = CommandJobState::CancelRequested;
+        }
+        let cancel_requested_duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_002,
+        )
+        .expect_err("cancel-requested job should still own the command");
+        let cancel_requested_snapshot = {
+            let state = command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("cancel requested snapshot")
+        };
+        let cancel_requested_json =
+            serde_json::to_value(&cancel_requested_snapshot).expect("serialize duplicate");
+
+        assert!(cancel_requested_duplicate.contains(&started.id));
+        assert_eq!(
+            cancel_requested_json["transcriptionJob"]["state"],
+            "CancelRequested"
+        );
+
+        finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(0, 1_200, "job owned")]),
+            1_700_000_001_500,
+        )
+        .expect("finish transcription job");
+        let repeated = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_002_000,
+        )
+        .expect("begin repeated transcription job after completion");
+
+        assert_ne!(
+            repeated.id,
+            duplicate_json["transcriptionJob"]["id"]
+                .as_str()
+                .expect("job id")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_cancel_request_marks_snapshot_and_blocks_duplicate_until_finish() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+
+        let cancel_snapshot =
+            cancel_transcription_job_for_app_root(&root, &command_state, &started.id)
+                .expect("request transcription cancel");
+        let cancel_json = serde_json::to_value(&cancel_snapshot).expect("serialize cancel");
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_001,
+        )
+        .expect_err("cancel-requested job still owns transcription");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(cancel_json["transcriptionJob"]["state"], "CancelRequested");
+        assert_eq!(cancel_json["transcriptionJob"]["cancelRequested"], true);
+
+        let finish_snapshot = finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(0, 1_200, "job owned")]),
+            1_700_000_001_500,
+        )
+        .expect("finish transcription job");
+        let finish_json = serde_json::to_value(&finish_snapshot).expect("serialize finish");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(finish_json["transcriptionJob"]["state"], "Canceled");
+        assert_eq!(finish_json["transcriptionJob"]["cancelRequested"], false);
+        assert!(finish_json["transcription"].is_null());
+        assert!(
+            store
+                .transcript_segments(&meeting_id)
+                .expect("query transcript segments")
+                .is_empty(),
+            "a canceled transcription must not persist completed backend output"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_start_returns_running_snapshot_before_worker_persists_transcript() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let (started, snapshot) = start_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("start transcription job");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(json["transcriptionJob"]["id"], started.id);
+        assert_eq!(json["transcriptionJob"]["state"], "Running");
+        assert!(json["transcription"].is_null());
+        assert!(
+            store
+                .transcript_segments(&meeting_id)
+                .expect("query transcript segments")
+                .is_empty(),
+            "starting the job must return before worker persistence"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_start_marks_job_failed_when_running_snapshot_cannot_be_built() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("create invalid app root file");
+        let command_state = Mutex::new(DesktopCommandState::default());
+
+        let error = start_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            1_700_000_001_000,
+        )
+        .expect_err("snapshot creation should fail for invalid app root");
+        let job = command_state
+            .lock()
+            .expect("command state")
+            .transcription_job
+            .clone()
+            .expect("failed transcription job remains visible");
+
+        assert!(!error.is_empty());
+        assert_eq!(job.state, CommandJobState::Failed);
+        assert!(!job.cancel_requested);
+
+        fs::remove_file(root).expect("cleanup");
+    }
+
+    #[test]
     fn transcribe_persistence_conflict_replaces_stale_success_with_visible_failure() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -3902,6 +5247,135 @@ mod tests {
         fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[test]
+    fn summary_job_ownership_rejects_duplicate_start_and_keeps_running_status_visible() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let duplicate =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
+                .expect_err("duplicate summary job should be rejected");
+        let duplicate_snapshot = {
+            let state = command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("duplicate snapshot")
+        };
+        let duplicate_json =
+            serde_json::to_value(&duplicate_snapshot).expect("serialize duplicate");
+
+        assert_eq!(started.kind, CommandJobKind::Summary);
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(duplicate_json["summaryJob"]["id"], started.id);
+        assert_eq!(duplicate_json["summaryJob"]["state"], "Running");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_cancel_request_marks_snapshot_and_blocks_duplicate() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+
+        let cancel_snapshot = cancel_summary_job_for_app_root(&root, &command_state, &started.id)
+            .expect("request summary cancel");
+        let cancel_json = serde_json::to_value(&cancel_snapshot).expect("serialize cancel");
+        let duplicate =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
+                .expect_err("cancel-requested summary still owns command");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(cancel_json["summaryJob"]["state"], "CancelRequested");
+        assert_eq!(cancel_json["summaryJob"]["cancelRequested"], true);
+
+        let transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Canceled summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let client = LocalOllamaTextClient::new("http://127.0.0.1:11434", transport);
+        let finish_snapshot = finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            started,
+            "meeting-1",
+            client,
+            "qwen3.6:27b",
+            1_700_000_001_500,
+        )
+        .expect("finish canceled summary job");
+        let finish_json = serde_json::to_value(&finish_snapshot).expect("serialize finish");
+
+        assert_eq!(finish_json["summaryJob"]["state"], "Canceled");
+        assert_eq!(finish_json["summaryJob"]["cancelRequested"], false);
+        assert!(finish_json["analysisCommand"].is_null());
+        assert!(finish_json["meetings"][0]["analysis"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_returns_running_snapshot_before_worker_persists_analysis() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let (started, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("start summary job");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Running");
+        assert!(json["analysisCommand"].is_null());
+        assert!(json["meetings"][0]["analysis"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_marks_job_failed_when_running_snapshot_cannot_be_built() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("create invalid app root file");
+        let command_state = Mutex::new(DesktopCommandState::default());
+
+        let error =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect_err("snapshot creation should fail for invalid app root");
+        let job = command_state
+            .lock()
+            .expect("command state")
+            .summary_job
+            .clone()
+            .expect("failed summary job remains visible");
+
+        assert!(!error.is_empty());
+        assert_eq!(job.state, CommandJobState::Failed);
+        assert!(!job.cancel_requested);
+
+        fs::remove_file(root).expect("cleanup");
+    }
+
     fn seed_stopped_fake_recording(root: &Path, command_state: &mut DesktopCommandState) -> String {
         let factory = FakeMicrophoneRecorderFactory;
         let snapshot = start_microphone_recording_for_app_root(
@@ -3916,6 +5390,38 @@ mod tests {
         stop_microphone_recording_for_app_root(root, command_state, 1_700_000_000_500)
             .expect("stop fake recording");
         meeting_id
+    }
+
+    fn audio_manifest_for_test(
+        root: &Path,
+        recording_id: &str,
+        stream: StreamKind,
+        relative_path: &str,
+        sha256: &str,
+    ) -> ArtifactManifest {
+        ArtifactManifest {
+            recording: RecordingMetadata::new(recording_id, 1_700_000_000_000),
+            status: ManifestStatus::Complete,
+            ended_at_ms: Some(1_700_000_000_500),
+            artifacts: vec![AudioArtifactMetadata {
+                stream,
+                file_name: relative_path
+                    .rsplit('/')
+                    .next()
+                    .expect("file name")
+                    .to_string(),
+                path: root.join(relative_path),
+                started_at_ms: 1_700_000_000_000,
+                ended_at_ms: Some(1_700_000_000_500),
+                duration_ms: 500,
+                sample_rate_hz: 16_000,
+                channel_count: 1,
+                identity: DeviceIdentity::new("test", "Test Device", "fixture"),
+                bytes_written: 8,
+                sha256: sha256.to_string(),
+            }],
+            recovery: None,
+        }
     }
 
     #[derive(Default)]
@@ -3933,6 +5439,32 @@ mod tests {
                 streams: vec![StreamKind::Microphone],
                 recorder: Box::new(FakeActiveMicrophoneRecording {
                     session_dir: audio_root.join(recording_id),
+                    recording_id: recording_id.to_string(),
+                    started_at_ms,
+                }),
+            })
+        }
+    }
+
+    struct StartedFileMicrophoneRecorderFactory;
+
+    impl MicrophoneRecorderFactory for StartedFileMicrophoneRecorderFactory {
+        fn start(
+            &self,
+            audio_root: &Path,
+            recording_id: &str,
+            started_at_ms: u64,
+        ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
+            let session_dir = audio_root.join(recording_id);
+            fs::create_dir_all(&session_dir).map_err(|error| {
+                MicrophoneStartFailure::persistence(format!("create live test audio dir: {error}"))
+            })?;
+            write_minimal_wav(&session_dir.join("raw-mic.wav"));
+            Ok(StartedMicrophoneRecording {
+                sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone],
+                recorder: Box::new(FakeActiveMicrophoneRecording {
+                    session_dir,
                     recording_id: recording_id.to_string(),
                     started_at_ms,
                 }),

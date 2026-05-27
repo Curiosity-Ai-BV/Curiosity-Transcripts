@@ -25,6 +25,9 @@ The script runs:
    `.app` bundle target.
 4. `hdiutil create` against a staging folder containing the `.app` bundle and
    an `/Applications` symlink.
+5. `hdiutil verify` against the produced DMG.
+6. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
+   before the script reports success.
 
 Expected outputs:
 

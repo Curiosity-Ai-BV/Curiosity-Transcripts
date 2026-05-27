@@ -249,6 +249,14 @@ fn optional_real_whisper_smoke_is_skipped_without_explicit_paths_and_not_counted
     assert!(!status.passed());
 }
 
+#[test]
+fn whisper_smoke_with_zero_segments_is_not_counted_as_passed() {
+    let status = WhisperSmokeStatus::Passed { segment_count: 0 };
+
+    assert!(status.was_run());
+    assert!(!status.passed());
+}
+
 fn unique_test_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "curiosity-transcription-{name}-{}",

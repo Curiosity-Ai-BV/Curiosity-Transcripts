@@ -1,8 +1,8 @@
 use std::fs;
 
 use curiosity_audio::{
-    AudioCapture, CaptureConfiguration, FakeAudioCapture, ManifestStatus, RecordingMetadata,
-    StreamKind, StreamingWavRecorder,
+    AudioCapture, CaptureConfiguration, FakeAudioCapture, ManifestStatus, RecordingError,
+    RecordingMetadata, StreamKind, StreamingWavRecorder,
 };
 
 fn test_dir(name: &str) -> std::path::PathBuf {
@@ -155,4 +155,73 @@ fn stop_writes_mixed_microphone_and_system_wav_artifacts() {
     );
     assert!(root.join("session-mixed").join("raw-mic.wav").is_file());
     assert!(root.join("session-mixed").join("raw-system.wav").is_file());
+}
+
+#[test]
+fn mixed_recording_stop_fails_when_requested_system_audio_never_wrote_samples() {
+    let root = test_dir("mixed-missing-system-audio");
+    let capture = FakeAudioCapture::new_deterministic(48_000, 2, 1_700_000_000_000);
+    let snapshot = capture.device_snapshot().expect("fake snapshot");
+    let mut recorder = StreamingWavRecorder::start(
+        &root,
+        RecordingMetadata::new("session-mixed-missing-system", 1_700_000_000_000),
+        CaptureConfiguration::mixed().expect("mixed config"),
+        snapshot,
+    )
+    .expect("start recorder");
+
+    for frame in capture
+        .capture_frames()
+        .expect("fake frames")
+        .iter()
+        .filter(|frame| frame.stream == StreamKind::Microphone)
+    {
+        recorder.write_frame(frame).expect("write mic frame");
+    }
+
+    let error = recorder
+        .stop(1_700_000_000_001)
+        .expect_err("mixed recording without system samples must not complete");
+
+    assert!(matches!(
+        error,
+        RecordingError::MissingRequestedStream(StreamKind::SystemAudio)
+    ));
+}
+
+#[test]
+fn fail_finalizes_written_artifacts_with_nonrecoverable_failed_manifest() {
+    let root = test_dir("failed-finalized-manifest");
+    let capture = FakeAudioCapture::new_deterministic(48_000, 2, 1_700_000_000_000);
+    let snapshot = capture.device_snapshot().expect("fake snapshot");
+    let mut recorder = StreamingWavRecorder::start(
+        &root,
+        RecordingMetadata::new("session-failed-finalized", 1_700_000_000_000),
+        CaptureConfiguration::mixed().expect("mixed config"),
+        snapshot,
+    )
+    .expect("start recorder");
+
+    for frame in capture
+        .capture_frames()
+        .expect("fake frames")
+        .iter()
+        .filter(|frame| frame.stream == StreamKind::Microphone)
+    {
+        recorder.write_frame(frame).expect("write mic frame");
+    }
+
+    let manifest = recorder
+        .fail(1_700_000_000_001, "system audio stream produced no samples")
+        .expect("failed manifest");
+    let manifest_text =
+        fs::read_to_string(root.join("session-failed-finalized").join("manifest.txt"))
+            .expect("manifest text");
+
+    assert_eq!(manifest.status, ManifestStatus::Failed);
+    assert_eq!(manifest.artifacts.len(), 1);
+    assert!(manifest_text.contains("status=Failed"));
+    assert!(manifest_text.contains("recoverable=false"));
+    assert!(manifest_text.contains("recovery_reason=system audio stream produced no samples"));
+    assert!(manifest_text.contains("artifact=Microphone,raw-mic.wav,Interrupted,"));
 }

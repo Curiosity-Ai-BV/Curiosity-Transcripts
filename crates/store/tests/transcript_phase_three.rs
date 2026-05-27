@@ -5,7 +5,8 @@ use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
     RecordingStatus, SourceChannel, TranscriptSegment, TranscriptVersion,
 };
-use curiosity_store::Store;
+use curiosity_store::{Store, StoreError};
+use rusqlite::Connection;
 
 fn test_root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -594,6 +595,147 @@ fn correcting_transcript_text_preserves_original_timing_and_original_text() {
     assert_eq!(stored[0].start_ms, 0);
     assert_eq!(stored[0].end_ms, 1_200);
     assert_eq!(stored[0].transcript_version_id, "version-1");
+}
+
+#[test]
+fn transcript_replay_conflict_returns_typed_error_and_preserves_display_text() {
+    let root = test_root("typed-replay-conflict");
+    let store = migrated_store(&root);
+    seed_meeting_with_audio(&store);
+    let run = ModelRun::new(
+        "run-1",
+        "meeting-1",
+        "sha256:audio",
+        "fake-local",
+        "fixture-whisper",
+        false,
+        2_000,
+    );
+    let version = TranscriptVersion::new("version-1", "meeting-1", "run-1", 1, 2_010);
+    let original = TranscriptSegment::with_metadata(
+        "segment-1",
+        "meeting-1",
+        0,
+        1_200,
+        "hello world",
+        SourceChannel::Mixed,
+        "run-1",
+        "version-1",
+    );
+    store
+        .persist_transcript(&run, &version, std::slice::from_ref(&original))
+        .expect("persist transcript");
+
+    let changed = TranscriptSegment::with_metadata(
+        "segment-1",
+        "meeting-1",
+        0,
+        1_200,
+        "changed text",
+        SourceChannel::Mixed,
+        "run-1",
+        "version-1",
+    );
+    let err = store
+        .persist_transcript(&run, &version, &[changed])
+        .expect_err("changed transcript replay should conflict");
+
+    assert_eq!(
+        err.to_string(),
+        "transcript replay conflict: segment content changed"
+    );
+    match err {
+        StoreError::ReplayConflict(message) => {
+            assert_eq!(
+                message,
+                "transcript replay conflict: segment content changed"
+            );
+        }
+        other => panic!("expected replay conflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn failed_transcript_correction_rolls_back_text_history_version_and_search_state() {
+    let root = test_root("correction-atomic-search-failure");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.to_path_buf()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_with_audio(&store);
+    let run = ModelRun::new(
+        "run-1",
+        "meeting-1",
+        "sha256:audio",
+        "fake-local",
+        "fixture-whisper",
+        false,
+        2_000,
+    );
+    let version = TranscriptVersion::new("version-1", "meeting-1", "run-1", 1, 2_010);
+    store
+        .persist_transcript(
+            &run,
+            &version,
+            &[TranscriptSegment::with_metadata(
+                "segment-1",
+                "meeting-1",
+                0,
+                1_200,
+                "original atomic phrase",
+                SourceChannel::Mixed,
+                "run-1",
+                "version-1",
+            )],
+        )
+        .expect("persist transcript");
+
+    let db = Connection::open(&db_path).expect("open sqlite");
+    db.execute_batch(
+        "
+        DROP TABLE meeting_search;
+        CREATE TABLE meeting_search (
+            meeting_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            transcript_text TEXT NOT NULL,
+            CHECK (instr(transcript_text, 'corrected atomic phrase') = 0)
+        );
+        INSERT INTO meeting_search (meeting_id, title, transcript_text)
+        VALUES ('meeting-1', 'Planning', 'original atomic phrase');
+        ",
+    )
+    .expect("replace search table with failing test double");
+
+    let err = store
+        .correct_transcript_segment("segment-1", "corrected atomic phrase", 2_500)
+        .expect_err("search refresh failure should abort correction");
+
+    assert!(err.to_string().contains("CHECK constraint failed"));
+    let stored = store
+        .transcript_segments("meeting-1")
+        .expect("read transcript");
+    let edits = store
+        .transcript_segment_edits("segment-1")
+        .expect("read edit history");
+    let edited_at_ms: Option<u64> = db
+        .query_row(
+            "SELECT edited_at_ms FROM transcript_versions WHERE id = 'version-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read version edit timestamp");
+    let indexed_text: String = db
+        .query_row(
+            "SELECT transcript_text FROM meeting_search WHERE meeting_id = 'meeting-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read search row");
+
+    assert_eq!(stored[0].text, "original atomic phrase");
+    assert_eq!(stored[0].original_text, None);
+    assert!(edits.is_empty());
+    assert_eq!(edited_at_ms, None);
+    assert_eq!(indexed_text, "original atomic phrase");
 }
 
 #[test]

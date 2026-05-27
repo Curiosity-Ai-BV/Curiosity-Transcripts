@@ -13,9 +13,9 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:system-audio": "tauri dev --features system-audio-screencapturekit",
     "tauri:dev:no-whisper": "tauri dev --no-default-features",
-    "tauri:build:mac": "tauri build --features system-audio-screencapturekit --bundles app && ../../scripts/package-macos-dmg.sh",
-    "tauri:build:mac:unsigned": "tauri build --features system-audio-screencapturekit --bundles app --no-sign && CURIOSITY_SKIP_DMG_SIGN=1 ../../scripts/package-macos-dmg.sh",
-    "release:mac:dmg": "npm run test && npm run tauri:build:mac",
+    "tauri:build:mac": "../../scripts/build-macos-dmg.sh",
+    "tauri:build:mac:unsigned": "../../scripts/build-macos-dmg.sh --no-sign",
+    "release:mac:dmg": "../../scripts/build-macos-dmg.sh",
     "build": "tsc && vite build",
     "test": "vitest run"
   },

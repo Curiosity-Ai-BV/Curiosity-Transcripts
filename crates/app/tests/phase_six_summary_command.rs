@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::cell::Cell;
 
 use curiosity_analysis::{AnalysisInput, AnalysisOutcome, FakeMeetingAnalyzer, MeetingAnalyzer};
-use curiosity_app::{generate_summary_command, AnalysisCommandState};
+use curiosity_app::{
+    generate_summary_command, generate_summary_command_with_cancellation, AnalysisCommandState,
+};
 use curiosity_domain::{Meeting, ModelRun, SourceChannel, TranscriptSegment, TranscriptVersion};
 use curiosity_store::Store;
 
@@ -113,6 +115,62 @@ fn generate_summary_command_rejects_missing_transcript_before_analyzer_call() {
         .is_none());
 }
 
+#[test]
+fn canceled_summary_command_does_not_persist_completed_analyzer_output() {
+    let root = test_root("canceled-summary");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    let run = ModelRun::new(
+        "run-1",
+        "meeting-1",
+        "sha256:audio",
+        "fake-local",
+        "fixture-whisper",
+        false,
+        2_000,
+    );
+    let version = TranscriptVersion::new("version-1", "meeting-1", "run-1", 1, 2_010);
+    store
+        .persist_transcript(
+            &run,
+            &version,
+            &[TranscriptSegment::with_metadata(
+                "segment-1",
+                "meeting-1",
+                0,
+                1_000,
+                "We decided to ship the local recorder.",
+                SourceChannel::Mixed,
+                "run-1",
+                "version-1",
+            )],
+        )
+        .expect("persist transcript");
+    let cancelled = Cell::new(false);
+    let analyzer = CancelAfterAnalyzer {
+        inner: FakeMeetingAnalyzer::new("fake-model", "summary-v1"),
+        cancelled: &cancelled,
+    };
+
+    let dto =
+        generate_summary_command_with_cancellation(&store, &analyzer, "meeting-1", 3_000, || {
+            cancelled.get()
+        })
+        .expect("summary cancellation should be non-fatal");
+
+    assert!(
+        dto.is_none(),
+        "a cancel request after analysis but before persistence should suppress the command result"
+    );
+    assert!(store
+        .current_analysis_result("meeting-1")
+        .expect("read analysis")
+        .is_none());
+}
+
 struct CountingAnalyzer {
     calls: Cell<u32>,
 }
@@ -133,5 +191,18 @@ impl MeetingAnalyzer for CountingAnalyzer {
     fn analyze(&self, _input: AnalysisInput) -> AnalysisOutcome {
         self.calls.set(self.calls.get() + 1);
         panic!("app command should reject empty transcript before analyzer call");
+    }
+}
+
+struct CancelAfterAnalyzer<'a> {
+    inner: FakeMeetingAnalyzer,
+    cancelled: &'a Cell<bool>,
+}
+
+impl MeetingAnalyzer for CancelAfterAnalyzer<'_> {
+    fn analyze(&self, input: AnalysisInput) -> AnalysisOutcome {
+        let outcome = self.inner.analyze(input);
+        self.cancelled.set(true);
+        outcome
     }
 }

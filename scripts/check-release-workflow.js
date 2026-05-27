@@ -4,6 +4,9 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const workflowPath = path.join(root, ".github", "workflows", "release.yml");
 const readmePath = path.join(root, "README.md");
+const buildScriptPath = path.join(root, "scripts", "build-macos-dmg.sh");
+const packageScriptPath = path.join(root, "scripts", "package-macos-dmg.sh");
+const dmgDocsPath = path.join(root, "docs", "macos-dmg-release.md");
 const packagePath = path.join(root, "apps", "desktop", "package.json");
 const lockPath = path.join(root, "apps", "desktop", "package-lock.json");
 const tauriCargoPath = path.join(root, "apps", "desktop", "src-tauri", "Cargo.toml");
@@ -13,8 +16,14 @@ const requiredWorkflowText = [
   "macos-26",
   "contents: write",
   "'v*'",
+  "node scripts/check-release-workflow.js",
   "./scripts/build-macos-dmg.sh --no-sign",
+  'runner_arch="$(uname -m)"',
+  'if [ "$runner_arch" != "arm64" ]; then',
   "Curiosity-Transcripts-${version}-macos-aarch64.dmg",
+  'hdiutil verify "$release_asset"',
+  'hdiutil attach "$release_asset" -readonly -nobrowse',
+  '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
   "shasum -a 256",
   "gh release create",
   "gh release upload",
@@ -31,6 +40,26 @@ const requiredReadmeText = [
   "apps/desktop/src-tauri/tauri.conf.json",
   "GitHub Release",
   "Curiosity-Transcripts-<version>-macos-aarch64.dmg",
+];
+
+const requiredBuildScriptText = [
+  "npm ci",
+  "npm run test",
+  "tauri build --features system-audio-screencapturekit --bundles app --ci",
+  "scripts/package-macos-dmg.sh",
+];
+
+const requiredPackageScriptText = [
+  'hdiutil verify "$DMG_PATH"',
+  'hdiutil attach "$DMG_PATH" -readonly -nobrowse',
+  '[[ ! -d "$VERIFY_MOUNT_DIR/$APP_NAME.app" ]]',
+  'Curiosity Transcripts.app',
+];
+
+const requiredDmgDocsText = [
+  "hdiutil verify",
+  "read-only attach",
+  "Curiosity Transcripts.app",
 ];
 
 let ok = true;
@@ -50,6 +79,9 @@ function readRequired(filePath, label) {
 
 const workflow = readRequired(workflowPath, ".github/workflows/release.yml");
 const readme = readRequired(readmePath, "README.md");
+const buildScript = readRequired(buildScriptPath, "scripts/build-macos-dmg.sh");
+const packageScript = readRequired(packageScriptPath, "scripts/package-macos-dmg.sh");
+const dmgDocs = readRequired(dmgDocsPath, "docs/macos-dmg-release.md");
 
 for (const text of requiredWorkflowText) {
   if (!workflow.includes(text)) {
@@ -60,6 +92,24 @@ for (const text of requiredWorkflowText) {
 for (const text of requiredReadmeText) {
   if (!readme.includes(text)) {
     fail("README.md", `Missing required versioning documentation: ${text}`);
+  }
+}
+
+for (const text of requiredBuildScriptText) {
+  if (!buildScript.includes(text)) {
+    fail("scripts/build-macos-dmg.sh", `Missing required release build script content: ${text}`);
+  }
+}
+
+for (const text of requiredPackageScriptText) {
+  if (!packageScript.includes(text)) {
+    fail("scripts/package-macos-dmg.sh", `Missing required DMG verification content: ${text}`);
+  }
+}
+
+for (const text of requiredDmgDocsText) {
+  if (!dmgDocs.includes(text)) {
+    fail("docs/macos-dmg-release.md", `Missing required DMG release documentation: ${text}`);
   }
 }
 
@@ -75,6 +125,21 @@ const lockVersion = lock.packages?.[""]?.version ?? lock.version;
 
 if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) {
   fail("apps/desktop/package.json", "Desktop package version must be SemVer without a leading v");
+}
+
+const expectedDesktopScripts = {
+  "tauri:build:mac": "../../scripts/build-macos-dmg.sh",
+  "tauri:build:mac:unsigned": "../../scripts/build-macos-dmg.sh --no-sign",
+  "release:mac:dmg": "../../scripts/build-macos-dmg.sh",
+};
+
+for (const [scriptName, expectedCommand] of Object.entries(expectedDesktopScripts)) {
+  if (pkg.scripts?.[scriptName] !== expectedCommand) {
+    fail(
+      "apps/desktop/package.json",
+      `${scriptName} must delegate to ${expectedCommand} so it cannot bypass npm ci or tauri --ci`,
+    );
+  }
 }
 
 if (lockVersion !== pkg.version) {

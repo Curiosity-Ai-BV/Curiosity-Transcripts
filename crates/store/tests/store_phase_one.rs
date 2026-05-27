@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, RecordingSession, RecordingSource,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, RecordingSession,
+    RecordingSource, RecordingStatus,
 };
 use curiosity_store::{
     ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
@@ -186,6 +187,113 @@ fn startup_repair_reconciles_incomplete_db_rows_with_artifact_manifests_after_cr
     assert_eq!(
         store.meeting_status("meeting-1").expect("meeting status"),
         "Recovered"
+    );
+}
+
+#[test]
+fn startup_repair_skips_deleted_tombstoned_artifact_manifest_without_recovering_rows_or_jobs() {
+    let root = test_root("repair-deleted-tombstoned");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_crashed_meeting(&store, &root);
+
+    store
+        .tombstone_audio_artifact("artifact-1")
+        .expect("tombstone artifact");
+    {
+        let conn = Connection::open(&db_path).expect("delete intent db connection");
+        conn.execute(
+            "UPDATE meetings SET status = 'Deleted', deleted_at_ms = 1234 WHERE id = ?1",
+            ["meeting-1"],
+        )
+        .expect("mark meeting deleted");
+    }
+
+    let report = store.repair_startup().expect("repair startup");
+
+    assert!(report.recovered_artifacts.is_empty(), "{report:?}");
+    assert!(report.recovered_jobs.is_empty(), "{report:?}");
+    assert_eq!(
+        report.conflicts,
+        vec![RepairConflict::DeletedOrTombstonedArtifact {
+            artifact_id: "artifact-1".to_string(),
+        }]
+    );
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Recording"
+    );
+    assert_eq!(
+        store.meeting_status("meeting-1").expect("meeting status"),
+        "Deleted"
+    );
+    assert!(store
+        .artifact_tombstoned("artifact-1")
+        .expect("artifact remains tombstoned"));
+}
+
+#[test]
+fn startup_repair_skips_failed_recording_manifest_without_recovering_rows_or_jobs() {
+    let root = test_root("repair-failed-recording");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_crashed_meeting(&store, &root);
+    store
+        .update_recording_session_status(
+            "session-1",
+            RecordingStatus::Failed,
+            Some(2_000),
+            Some("stop failed"),
+        )
+        .expect("mark session failed");
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Failed, Some(2_000))
+        .expect("mark meeting failed");
+
+    let report = store.repair_startup().expect("repair startup");
+
+    assert!(report.recovered_artifacts.is_empty(), "{report:?}");
+    assert!(report.recovered_jobs.is_empty(), "{report:?}");
+    assert_eq!(
+        report.conflicts,
+        vec![RepairConflict::InactiveRecordingArtifact {
+            artifact_id: "artifact-1".to_string(),
+            meeting_status: "Failed".to_string(),
+            session_status: "Failed".to_string(),
+        }]
+    );
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Failed"
+    );
+    assert_eq!(
+        store.meeting_status("meeting-1").expect("meeting status"),
+        "Failed"
     );
 }
 
@@ -399,6 +507,108 @@ fn delete_meeting_skips_symlink_artifact_paths_that_escape_app_storage() {
     assert!(report.deleted_private_artifacts.is_empty());
     assert_eq!(report.skipped_private_artifacts, vec![root.join(db_path)]);
     assert!(outside_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_repair_and_delete_ignore_symlinked_manifest_outside_app_storage() {
+    let root = test_root("symlink-manifest");
+    let outside_root = test_root("symlink-manifest-outside");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+
+    let private_path = root.join("meetings/meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(private_path.parent().expect("artifact parent")).expect("artifact parent");
+    fs::write(&private_path, b"partial wav").expect("artifact file");
+    let artifact = AudioArtifact::new_private(
+        "artifact-1",
+        "session-1",
+        ArtifactKind::RawMic,
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    );
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
+
+    let outside_manifest = outside_root.join("manifest.json");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(&outside_manifest)
+    .expect("write outside manifest");
+    let manifest_link = root.join("meetings/meeting-1/manifest.json");
+    std::os::unix::fs::symlink(&outside_manifest, &manifest_link)
+        .expect("symlink manifest outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+    let repair_status = store
+        .artifact_recovery_status("artifact-1")
+        .expect("artifact recovery status");
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(repair_status, RepairStatus::NotNeeded);
+    assert!(fs::symlink_metadata(&manifest_link).is_ok());
+    assert!(outside_manifest.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_repair_ignores_symlinked_meeting_directory_manifest_outside_app_storage() {
+    let root = test_root("symlink-meeting-dir");
+    let outside_root = test_root("symlink-meeting-dir-outside");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+
+    let private_path = root.join("meetings/meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(private_path.parent().expect("artifact parent")).expect("artifact parent");
+    fs::write(&private_path, b"partial wav").expect("artifact file");
+    let artifact = AudioArtifact::new_private(
+        "artifact-1",
+        "session-1",
+        ArtifactKind::RawMic,
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    );
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
+    fs::remove_dir_all(root.join("meetings/meeting-1")).expect("remove private meeting dir");
+
+    fs::create_dir_all(outside_root.join("meeting-1")).expect("outside meeting dir");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(outside_root.join("meeting-1/manifest.json"))
+    .expect("write outside manifest");
+    std::os::unix::fs::symlink(
+        outside_root.join("meeting-1"),
+        root.join("meetings/meeting-1"),
+    )
+    .expect("symlink meeting dir outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+    let repair_status = store
+        .artifact_recovery_status("artifact-1")
+        .expect("artifact recovery status");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(repair_status, RepairStatus::NotNeeded);
 }
 
 #[test]
