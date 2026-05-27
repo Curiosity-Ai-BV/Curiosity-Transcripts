@@ -232,6 +232,7 @@ describe("typed desktop command facade", () => {
 
     const facade = createDesktopCommandFacade(fetchCommand);
 
+    await facade.desktopSnapshot();
     await facade.searchMeetings({ query: "retention" });
     await facade.startRecording({ title: "MVP sync" });
     await facade.stopRecording();
@@ -248,6 +249,7 @@ describe("typed desktop command facade", () => {
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
     expect(calls).toEqual([
+      { command: "desktop_snapshot", args: undefined },
       { command: "search_meetings", args: { query: "retention" } },
       {
         command: "start_microphone_recording",

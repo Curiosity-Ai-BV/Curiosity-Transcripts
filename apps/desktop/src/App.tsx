@@ -34,6 +34,7 @@ import {
 import "./styles.css";
 
 const appVersion = packageInfo.version;
+const ACTIVE_JOB_POLL_INTERVAL_MS = 250;
 
 interface AppProps {
   snapshot?: DesktopSnapshot;
@@ -160,6 +161,39 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     };
   }, [commandFacade, commandSurfaceReady, query]);
 
+  useEffect(() => {
+    if (!commandFacade || !commandSurfaceReady || !snapshotHasActiveCommandJob(currentSnapshot)) {
+      return;
+    }
+
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      commandFacade.desktopSnapshot()
+        .then((nextSnapshot) => {
+          if (!cancelled) {
+            applyDesktopSnapshot(nextSnapshot);
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setCommandError(commandErrorMessage(error));
+          }
+        });
+    }, ACTIVE_JOB_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    commandFacade,
+    commandSurfaceReady,
+    currentSnapshot.transcriptionJob?.id,
+    currentSnapshot.transcriptionJob?.state,
+    currentSnapshot.summaryJob?.id,
+    currentSnapshot.summaryJob?.state,
+  ]);
+
   const isRecordingActive =
     currentSnapshot.recording.permission_state === "Ready" &&
     (currentSnapshot.recording.state === "Recording" || currentSnapshot.recording.state === "Paused");
@@ -216,13 +250,13 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const cancelTranscriptionDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.transcriptionJob ||
-    commandBusy ||
+    (commandBusy && pendingCommand !== "transcribe") ||
     currentSnapshot.transcriptionJob.state !== "Running" ||
     currentSnapshot.transcriptionJob.cancelRequested;
   const cancelSummaryDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.summaryJob ||
-    commandBusy ||
+    (commandBusy && pendingCommand !== "summary") ||
     currentSnapshot.summaryJob.state !== "Running" ||
     currentSnapshot.summaryJob.cancelRequested;
 
@@ -230,7 +264,11 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     pending: Exclude<PendingCommand, null>,
     command: (commands: DesktopCommandFacade) => Promise<DesktopSnapshot>,
   ) {
-    if (!commandFacade || !commandSurfaceReady || commandBusy) {
+    if (
+      !commandFacade ||
+      !commandSurfaceReady ||
+      (commandBusy && !commandAllowedDuringBusy(pending, pendingCommand))
+    ) {
       return;
     }
 
@@ -238,14 +276,21 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     setCommandError(null);
     try {
       const nextSnapshot = await command(commandFacade);
-      setCurrentSnapshot(nextSnapshot);
-      setSelectedMeetingId((current) => resolveSelectedMeetingId(nextSnapshot, current));
+      applyDesktopSnapshot(nextSnapshot);
       setRecordingTitle("");
     } catch (error) {
       setCommandError(commandErrorMessage(error));
     } finally {
       setPendingCommand(null);
     }
+  }
+
+  function applyDesktopSnapshot(nextSnapshot: DesktopSnapshot) {
+    setCurrentSnapshot((current) => {
+      const merged = preserveCommandJobProgress(current, nextSnapshot);
+      setSelectedMeetingId((selected) => resolveSelectedMeetingId(merged, selected));
+      return merged;
+    });
   }
 
   function startRecording() {
@@ -1010,6 +1055,49 @@ function resolveSelectedMeetingId(snapshot: DesktopSnapshot, current: string | n
     return current;
   }
   return snapshot.meetings[0]?.id ?? null;
+}
+
+function commandAllowedDuringBusy(
+  next: Exclude<PendingCommand, null>,
+  current: PendingCommand,
+): boolean {
+  return (
+    (current === "transcribe" && next === "cancel-transcription") ||
+    (current === "summary" && next === "cancel-summary")
+  );
+}
+
+function snapshotHasActiveCommandJob(snapshot: DesktopSnapshot): boolean {
+  return (
+    snapshot.transcriptionJob?.state === "Running" ||
+    snapshot.transcriptionJob?.state === "CancelRequested" ||
+    snapshot.summaryJob?.state === "Running" ||
+    snapshot.summaryJob?.state === "CancelRequested"
+  );
+}
+
+function preserveCommandJobProgress(
+  current: DesktopSnapshot,
+  next: DesktopSnapshot,
+): DesktopSnapshot {
+  return {
+    ...next,
+    transcriptionJob: preserveJobProgress(current.transcriptionJob, next.transcriptionJob),
+    summaryJob: preserveJobProgress(current.summaryJob, next.summaryJob),
+  };
+}
+
+function preserveJobProgress<T extends DesktopSnapshot["transcriptionJob"]>(
+  current: T,
+  next: T,
+): T {
+  if (!current || !next || current.id !== next.id) {
+    return next;
+  }
+  if (current.state !== "Running" && next.state === "Running") {
+    return current;
+  }
+  return next;
 }
 
 function captureLabel(state: DesktopSnapshot["capture"]["microphone"]) {

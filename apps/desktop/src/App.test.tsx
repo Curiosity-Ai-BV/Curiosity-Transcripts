@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -1160,6 +1160,104 @@ describe("desktop workspace shell", () => {
     ]);
   });
 
+  it("keeps cancel enabled for a running transcription job while the matching command is pending", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    let finishTranscription!: () => void;
+    const snapshot = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Running",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+      },
+    });
+    const pendingTranscription = new Promise<typeof snapshot>((resolve) => {
+      finishTranscription = () => resolve(snapshot);
+    });
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async () => {
+        calls.push("transcribeMeeting");
+        return pendingTranscription;
+      },
+      cancelTranscription: async () => {
+        calls.push("cancelTranscription");
+        return {
+          ...snapshot,
+          transcriptionJob: {
+            ...snapshot.transcriptionJob!,
+            state: "CancelRequested",
+            cancelRequested: true,
+          },
+        };
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    await user.click(screen.getByRole("button", { name: "Transcribe" }));
+    expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
+
+    expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]);
+    await act(async () => {
+      finishTranscription();
+      await pendingTranscription;
+    });
+    expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeDisabled();
+  });
+
+  it("polls the desktop snapshot while a command job is active", async () => {
+    let pollCount = 0;
+    const running = connectedSnapshot({
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Running",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+      },
+    });
+    const complete = connectedSnapshot({
+      transcription: {
+        meetingId: "circuit-review",
+        state: "Complete",
+        failure: null,
+      },
+      transcriptionJob: {
+        ...running.transcriptionJob!,
+        state: "Complete",
+      },
+    });
+    const commandFacade = {
+      ...fakeCommandFacade(),
+      desktopSnapshot: async () => {
+        pollCount += 1;
+        return complete;
+      },
+    };
+
+    render(<App snapshot={running} commandFacade={commandFacade} />);
+
+    expect(screen.getByText("Transcription running")).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(pollCount).toBeGreaterThan(0);
+        expect(screen.getByText("Transcription complete")).toBeInTheDocument();
+      },
+      { timeout: 1_000 },
+    );
+  });
+
   it("shows Ollama setup failures returned by summary generation", async () => {
     const user = userEvent.setup();
     const initial = connectedSnapshot();
@@ -1292,6 +1390,7 @@ function connectedSnapshot(overrides: Partial<ReturnType<typeof getMockDesktopSn
 function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): DesktopCommandFacade {
   const snapshot = connectedSnapshot();
   return {
+    desktopSnapshot: async () => snapshot,
     searchMeetings: async () => [],
     startRecording: async () => snapshot,
     stopRecording: async () => snapshot,

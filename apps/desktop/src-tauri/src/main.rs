@@ -243,22 +243,60 @@ fn generate_summary(
         .path()
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
-    let job = {
-        let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        match command_state.begin_summary_job(&meeting_id, current_timestamp_ms()) {
-            Ok(job) => job,
-            Err(_) => {
-                let snapshot_state = command_state.snapshot_state();
-                drop(command_state);
-                return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
-            }
+    let (job, snapshot) = match start_summary_job_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        current_timestamp_ms(),
+    ) {
+        Ok(started) => started,
+        Err(_) => {
+            let snapshot_state = {
+                let command_state = state.lock().map_err(|error| error.to_string())?;
+                command_state.snapshot_state()
+            };
+            return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
         }
     };
-    let command = generate_summary_for_app_root_with_cancellation(&app_root, &meeting_id, || {
-        summary_job_cancel_requested(state.inner(), &job.id)
+    spawn_summary_job(app, app_root, job, meeting_id);
+    Ok(snapshot)
+}
+
+fn spawn_summary_job(
+    app: tauri::AppHandle,
+    app_root: PathBuf,
+    job: CommandJobView,
+    meeting_id: String,
+) {
+    std::thread::spawn(move || {
+        let command_state = app.state::<Mutex<DesktopCommandState>>();
+        if let Err(error) = finish_summary_job_for_app_root(
+            &app_root,
+            command_state.inner(),
+            job,
+            &meeting_id,
+            current_timestamp_ms(),
+        ) {
+            eprintln!("summary job failed: {error}");
+        }
     });
+}
+
+fn finish_summary_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    job: CommandJobView,
+    meeting_id: &str,
+    created_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let command = generate_summary_for_app_root_with_cancellation(
+        app_root,
+        meeting_id,
+        created_at_ms,
+        || summary_job_cancel_requested(command_state, &job.id),
+    );
     let snapshot_state = {
-        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
         match &command {
             Ok(Some(command)) => {
                 let finish_state = if command.state == AnalysisCommandState::Failed {
@@ -279,7 +317,7 @@ fn generate_summary(
         command_state.snapshot_state()
     };
     command?;
-    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
 #[tauri::command]
@@ -480,89 +518,86 @@ fn transcribe_meeting(
     let model_path = resolved_whisper_model_path(&settings);
     let model_name = model_name_for_path(&model_path);
     let started_at_ms = current_timestamp_ms();
-    let job = {
-        let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        match command_state.begin_transcription_job(&meeting_id, started_at_ms) {
-            Ok(job) => job,
-            Err(_) => {
-                let snapshot_state = command_state.snapshot_state();
-                drop(command_state);
-                return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
-            }
+    let (job, snapshot) = match start_transcription_job_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        started_at_ms,
+    ) {
+        Ok(started) => started,
+        Err(_) => {
+            let snapshot_state = {
+                let command_state = state.lock().map_err(|error| error.to_string())?;
+                command_state.snapshot_state()
+            };
+            return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
         }
     };
 
     #[cfg(feature = "whisper-rs")]
     {
-        let transcription = transcribe_meeting_command_with_cancellation(
-            &app_root,
-            &meeting_id,
-            PathBuf::from(model_path),
-            model_name,
-            RealWhisperBackend,
-            started_at_ms,
-            || transcription_job_cancel_requested(state.inner(), &job.id),
+        spawn_transcription_job(
+            app,
+            TranscriptionJobWork {
+                app_root,
+                job,
+                meeting_id,
+                model_path: PathBuf::from(model_path),
+                model_name,
+                backend: RealWhisperBackend,
+                created_at_ms: started_at_ms,
+            },
         );
-        let snapshot_state = {
-            let mut command_state = state.lock().map_err(|error| error.to_string())?;
-            match &transcription {
-                Ok(Some(transcription)) => {
-                    let finish_state = if transcription.state == TranscriptionCommandState::Failed {
-                        CommandJobFinishState::Failed
-                    } else {
-                        CommandJobFinishState::Complete
-                    };
-                    command_state.finish_transcription_job(&job, finish_state);
-                    command_state.last_transcription = Some(transcription.clone());
-                }
-                Ok(None) => {
-                    command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
-                }
-                Err(_) => {
-                    command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
-                }
-            }
-            command_state.snapshot_state()
-        };
-        transcription?;
-        desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+        Ok(snapshot)
     }
 
     #[cfg(not(feature = "whisper-rs"))]
     {
-        let transcription = transcribe_meeting_command_with_cancellation(
-            &app_root,
-            &meeting_id,
-            PathBuf::from(model_path),
-            model_name,
-            BackendUnavailableWhisperBackend,
-            started_at_ms,
-            || transcription_job_cancel_requested(state.inner(), &job.id),
+        spawn_transcription_job(
+            app,
+            TranscriptionJobWork {
+                app_root,
+                job,
+                meeting_id,
+                model_path: PathBuf::from(model_path),
+                model_name,
+                backend: BackendUnavailableWhisperBackend,
+                created_at_ms: started_at_ms,
+            },
         );
-        let snapshot_state = {
-            let mut command_state = state.lock().map_err(|error| error.to_string())?;
-            match &transcription {
-                Ok(Some(transcription)) => {
-                    let finish_state = if transcription.state == TranscriptionCommandState::Failed {
-                        CommandJobFinishState::Failed
-                    } else {
-                        CommandJobFinishState::Complete
-                    };
-                    command_state.finish_transcription_job(&job, finish_state);
-                    command_state.last_transcription = Some(transcription.clone());
-                }
-                Ok(None) => {
-                    command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
-                }
-                Err(_) => {
-                    command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
-                }
-            }
-            command_state.snapshot_state()
-        };
-        transcription?;
-        desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+        Ok(snapshot)
     }
+}
+
+struct TranscriptionJobWork<B> {
+    app_root: PathBuf,
+    job: CommandJobView,
+    meeting_id: String,
+    model_path: PathBuf,
+    model_name: String,
+    backend: B,
+    created_at_ms: u64,
+}
+
+fn spawn_transcription_job<B>(app: tauri::AppHandle, work: TranscriptionJobWork<B>)
+where
+    B: WhisperBackend + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let command_state = app.state::<Mutex<DesktopCommandState>>();
+        if let Err(error) = finish_transcription_job_for_app_root(
+            &work.app_root,
+            command_state.inner(),
+            work.job,
+            &work.meeting_id,
+            work.model_path,
+            work.model_name,
+            work.backend,
+            work.created_at_ms,
+        ) {
+            eprintln!("transcription job failed: {error}");
+        }
+    });
 }
 
 #[tauri::command]
@@ -841,6 +876,7 @@ fn delete_meeting_command_state_for_app_root(
 fn generate_summary_for_app_root_with_cancellation(
     app_root: &Path,
     meeting_id: &str,
+    created_at_ms: u64,
     is_cancelled: impl Fn() -> bool,
 ) -> Result<Option<AnalysisCommandView>, String> {
     let settings = app_settings_for_app_root(app_root)?;
@@ -852,7 +888,7 @@ fn generate_summary_for_app_root_with_cancellation(
         meeting_id,
         client,
         model_name,
-        current_timestamp_ms(),
+        created_at_ms,
         is_cancelled,
     )
 }
@@ -965,7 +1001,6 @@ where
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
-#[cfg(test)]
 fn begin_summary_job_for_app_root(
     _app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
@@ -976,6 +1011,28 @@ fn begin_summary_job_for_app_root(
     command_state
         .begin_summary_job(meeting_id, started_at_ms)
         .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))
+}
+
+fn start_summary_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<(CommandJobView, DesktopSnapshot), String> {
+    let job = begin_summary_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
+    let snapshot_state = {
+        let command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    let snapshot = match desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    Ok((job, snapshot))
 }
 
 fn cancel_summary_job_for_app_root(
@@ -1994,7 +2051,6 @@ fn transcribe_meeting_for_app_root<B: WhisperBackend>(
     desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
 }
 
-#[cfg(test)]
 fn begin_transcription_job_for_app_root(
     _app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
@@ -2012,6 +2068,29 @@ fn begin_transcription_job_for_app_root(
         })
 }
 
+fn start_transcription_job_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    started_at_ms: u64,
+) -> Result<(CommandJobView, DesktopSnapshot), String> {
+    let job =
+        begin_transcription_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
+    let snapshot_state = {
+        let command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    let snapshot = match desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    Ok((job, snapshot))
+}
+
 fn cancel_transcription_job_for_app_root(
     app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
@@ -2025,10 +2104,9 @@ fn cancel_transcription_job_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
-#[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "test helper keeps the job boundary and injected backend explicit"
+    reason = "job completion keeps state ownership, job identity, and backend inputs explicit"
 )]
 fn finish_transcription_job_for_app_root<B: WhisperBackend>(
     app_root: &Path,
@@ -2048,22 +2126,29 @@ fn finish_transcription_job_for_app_root<B: WhisperBackend>(
         backend,
         created_at_ms,
         || transcription_job_cancel_requested(command_state, &job.id),
-    )?;
+    );
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-        if let Some(transcription) = transcription {
-            let finish_state = if transcription.state == TranscriptionCommandState::Failed {
-                CommandJobFinishState::Failed
-            } else {
-                CommandJobFinishState::Complete
-            };
-            command_state.finish_transcription_job(&job, finish_state);
-            command_state.last_transcription = Some(transcription);
-        } else {
-            command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
+        match &transcription {
+            Ok(Some(transcription)) => {
+                let finish_state = if transcription.state == TranscriptionCommandState::Failed {
+                    CommandJobFinishState::Failed
+                } else {
+                    CommandJobFinishState::Complete
+                };
+                command_state.finish_transcription_job(&job, finish_state);
+                command_state.last_transcription = Some(transcription.clone());
+            }
+            Ok(None) => {
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
+            }
+            Err(_) => {
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            }
         }
         command_state.snapshot_state()
     };
+    transcription?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
@@ -5063,6 +5148,66 @@ mod tests {
     }
 
     #[test]
+    fn transcription_job_start_returns_running_snapshot_before_worker_persists_transcript() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let (started, snapshot) = start_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("start transcription job");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(json["transcriptionJob"]["id"], started.id);
+        assert_eq!(json["transcriptionJob"]["state"], "Running");
+        assert!(json["transcription"].is_null());
+        assert!(
+            store
+                .transcript_segments(&meeting_id)
+                .expect("query transcript segments")
+                .is_empty(),
+            "starting the job must return before worker persistence"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_start_marks_job_failed_when_running_snapshot_cannot_be_built() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("create invalid app root file");
+        let command_state = Mutex::new(DesktopCommandState::default());
+
+        let error = start_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            1_700_000_001_000,
+        )
+        .expect_err("snapshot creation should fail for invalid app root");
+        let job = command_state
+            .lock()
+            .expect("command state")
+            .transcription_job
+            .clone()
+            .expect("failed transcription job remains visible");
+
+        assert!(!error.is_empty());
+        assert_eq!(job.state, CommandJobState::Failed);
+        assert!(!job.cancel_requested);
+
+        fs::remove_file(root).expect("cleanup");
+    }
+
+    #[test]
     fn transcribe_persistence_conflict_replaces_stale_success_with_visible_failure() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -5182,6 +5327,53 @@ mod tests {
         assert!(finish_json["meetings"][0]["analysis"].is_null());
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_returns_running_snapshot_before_worker_persists_analysis() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let (started, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("start summary job");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Running");
+        assert!(json["analysisCommand"].is_null());
+        assert!(json["meetings"][0]["analysis"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_marks_job_failed_when_running_snapshot_cannot_be_built() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("create invalid app root file");
+        let command_state = Mutex::new(DesktopCommandState::default());
+
+        let error =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect_err("snapshot creation should fail for invalid app root");
+        let job = command_state
+            .lock()
+            .expect("command state")
+            .summary_job
+            .clone()
+            .expect("failed summary job remains visible");
+
+        assert!(!error.is_empty());
+        assert_eq!(job.state, CommandJobState::Failed);
+        assert!(!job.cancel_requested);
+
+        fs::remove_file(root).expect("cleanup");
     }
 
     fn seed_stopped_fake_recording(root: &Path, command_state: &mut DesktopCommandState) -> String {

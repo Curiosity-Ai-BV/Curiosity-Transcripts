@@ -182,6 +182,7 @@ export interface DesktopSnapshot {
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export interface DesktopCommandFacade {
+  desktopSnapshot(): Promise<DesktopSnapshot>;
   searchMeetings(args: { query: string }): Promise<MeetingSearchResult[]>;
   startRecording(args?: { title?: string }): Promise<DesktopSnapshot>;
   stopRecording(): Promise<DesktopSnapshot>;
@@ -1065,6 +1066,7 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
   }
 
   return {
+    desktopSnapshot: () => snapshotCommand("desktop_snapshot"),
     searchMeetings: ({ query }) => fetchCommand<MeetingSearchResult[]>("search_meetings", { query }),
     startRecording: (args) =>
       snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
