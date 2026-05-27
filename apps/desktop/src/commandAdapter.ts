@@ -34,6 +34,7 @@ export interface StatusView {
 }
 
 export interface CommandSurfaceState {
+  ready: boolean;
   detail: string;
 }
 
@@ -195,6 +196,12 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   }
 
   const root = requireContractRecord(value, "desktop_snapshot");
+  requireBoolean(root.loading, "desktop_snapshot.loading");
+  const commandSurface = requireContractRecord(root.commandSurface, "desktop_snapshot.commandSurface");
+  requireBoolean(commandSurface.ready, "desktop_snapshot.commandSurface.ready");
+  requireString(commandSurface.detail, "desktop_snapshot.commandSurface.detail");
+  requireNullableString(root.selectedMeetingId, "desktop_snapshot.selectedMeetingId");
+
   requireContractArray(root.meetings, "desktop_snapshot.meetings").forEach((meeting, index) => {
     const meetingPath = `desktop_snapshot.meetings[${index}]`;
     for (const path of REQUIRED_MEETING_PATHS) {
@@ -202,31 +209,92 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
     }
 
     const meetingRecord = requireContractRecord(meeting, meetingPath);
+    requireString(meetingRecord.id, `${meetingPath}.id`);
+    requireString(meetingRecord.title, `${meetingPath}.title`);
+    requireString(meetingRecord.startedAt, `${meetingPath}.startedAt`);
+    requireString(meetingRecord.duration, `${meetingPath}.duration`);
+    requireString(meetingRecord.status, `${meetingPath}.status`);
+    requireEnum(meetingRecord.transcriptState, ["Ready", "Transcribing", "Unavailable"], `${meetingPath}.transcriptState`);
+    requireString(meetingRecord.transcriptText, `${meetingPath}.transcriptText`);
+    const privacy = requireContractRecord(meetingRecord.privacy, `${meetingPath}.privacy`);
+    requireString(privacy.storageLabel, `${meetingPath}.privacy.storageLabel`);
+    requireString(privacy.storagePath, `${meetingPath}.privacy.storagePath`);
+    requireEnum(
+      privacy.rawAudioRetention,
+      ["Retain", "DeleteAfterTranscription", "NeverSave"],
+      `${meetingPath}.privacy.rawAudioRetention`,
+    );
+    requireBoolean(privacy.localOnly, `${meetingPath}.privacy.localOnly`);
+    validateExportCommandState(meetingRecord.exportState, `${meetingPath}.exportState`);
+    validateDeleteCommandState(meetingRecord.deleteState, `${meetingPath}.deleteState`);
     requireContractArray(meetingRecord.segments, `${meetingPath}.segments`).forEach(
       (segment, segmentIndex) => {
         const segmentPath = `${meetingPath}.segments[${segmentIndex}]`;
         for (const path of REQUIRED_SEGMENT_PATHS) {
           requireContractPath(segment, path, segmentPath);
         }
+        const segmentRecord = requireContractRecord(segment, segmentPath);
+        requireString(segmentRecord.id, `${segmentPath}.id`);
+        requireNumber(segmentRecord.startMs, `${segmentPath}.startMs`);
+        requireNumber(segmentRecord.endMs, `${segmentPath}.endMs`);
+        requireString(segmentRecord.text, `${segmentPath}.text`);
+        requireString(segmentRecord.sourceChannel, `${segmentPath}.sourceChannel`);
+        requireString(segmentRecord.modelRunId, `${segmentPath}.modelRunId`);
+        requireString(segmentRecord.transcriptVersionId, `${segmentPath}.transcriptVersionId`);
       },
     );
-    requireNullableContractObject(
-      meetingRecord.analysis,
-      `${meetingPath}.analysis`,
-      REQUIRED_ANALYSIS_DISCLOSURE_PATHS,
-    );
+    validateAnalysisDisclosureState(meetingRecord.analysis, `${meetingPath}.analysis`);
   });
 
-  requireNullableContractObject(
-    root.transcription,
-    "desktop_snapshot.transcription",
-    REQUIRED_TRANSCRIPTION_PATHS,
+  const recording = requireContractRecord(root.recording, "desktop_snapshot.recording");
+  requireString(recording.meeting_id, "desktop_snapshot.recording.meeting_id");
+  requireNullableString(recording.recording_id, "desktop_snapshot.recording.recording_id");
+  requireEnum(
+    recording.state,
+    ["Idle", "Recording", "Paused", "Stopping", "Interrupted", "Recovering", "Complete"],
+    "desktop_snapshot.recording.state",
   );
-  requireNullableContractObject(
-    root.analysisCommand,
-    "desktop_snapshot.analysisCommand",
-    REQUIRED_ANALYSIS_COMMAND_PATHS,
+  requireEnum(
+    recording.permission_state,
+    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
+    "desktop_snapshot.recording.permission_state",
   );
+  const storageLocation = requireContractRecord(recording.storage_location, "desktop_snapshot.recording.storage_location");
+  requireString(storageLocation.app_private_path, "desktop_snapshot.recording.storage_location.app_private_path");
+  requireEnum(
+    recording.raw_audio_retention,
+    ["Retain", "DeleteAfterTranscription", "NeverSave"],
+    "desktop_snapshot.recording.raw_audio_retention",
+  );
+  requireBoolean(recording.recoverable, "desktop_snapshot.recording.recoverable");
+  requireString(recording.recovery_action, "desktop_snapshot.recording.recovery_action");
+
+  const model = requireContractRecord(root.model, "desktop_snapshot.model");
+  requireEnum(model.kind, ["ready", "missing", "transcribing"], "desktop_snapshot.model.kind");
+  requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
+
+  const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
+  requireString(settings.whisperModelPath, "desktop_snapshot.settings.whisperModelPath");
+  requireString(settings.ollamaBaseUrl, "desktop_snapshot.settings.ollamaBaseUrl");
+  requireString(settings.ollamaModel, "desktop_snapshot.settings.ollamaModel");
+  requireNullableString(settings.exportDirectory, "desktop_snapshot.settings.exportDirectory");
+
+  const capture = requireContractRecord(root.capture, "desktop_snapshot.capture");
+  requireEnum(
+    capture.microphone,
+    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
+    "desktop_snapshot.capture.microphone",
+  );
+  requireEnum(
+    capture.systemAudio,
+    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
+    "desktop_snapshot.capture.systemAudio",
+  );
+  validateExportCommandState(root.exportCommand, "desktop_snapshot.exportCommand");
+  validateDeleteCommandState(root.deleteCommand, "desktop_snapshot.deleteCommand");
+
+  validateTranscriptionCommandView(root.transcription, "desktop_snapshot.transcription");
+  validateAnalysisCommandView(root.analysisCommand, "desktop_snapshot.analysisCommand");
 }
 
 export function isTauriRuntime(): boolean {
@@ -521,6 +589,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
   return {
     loading: variant === "state-matrix",
     commandSurface: {
+      ready: false,
       detail: "Preview shell: backend command wiring is not connected in this browser/dev fixture.",
     },
     meetings,
@@ -571,6 +640,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
   return {
     loading: false,
     commandSurface: {
+      ready: false,
       detail,
     },
     meetings: [],
@@ -649,6 +719,7 @@ type ContractRecord = Record<string, unknown>;
 
 const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["loading"],
+  ["commandSurface", "ready"],
   ["commandSurface", "detail"],
   ["meetings"],
   ["selectedMeetingId"],
@@ -702,43 +773,6 @@ const REQUIRED_SEGMENT_PATHS: readonly ContractPath[] = [
   ["transcriptVersionId"],
 ];
 
-const REQUIRED_ANALYSIS_DISCLOSURE_PATHS: readonly ContractPath[] = [
-  ["provider"],
-  ["modelName"],
-  ["networkUsed"],
-  ["disclosureRequired"],
-  ["disclosureConfirmed"],
-  ["summary"],
-  ["createdAtMs"],
-  ["promptTemplateVersion"],
-];
-
-const REQUIRED_TRANSCRIPTION_PATHS: readonly ContractPath[] = [
-  ["meetingId"],
-  ["state"],
-  ["failure"],
-];
-
-const REQUIRED_ANALYSIS_COMMAND_PATHS: readonly ContractPath[] = [
-  ["meetingId"],
-  ["state"],
-  ["analysis"],
-  ["failure"],
-];
-
-const REQUIRED_COMMAND_FAILURE_PATHS: readonly ContractPath[] = [
-  ["code"],
-  ["message"],
-  ["setupGuidance"],
-];
-
-const REQUIRED_ANALYSIS_RESULT_PATHS: readonly ContractPath[] = [
-  ["provider"],
-  ["modelName"],
-  ["networkUsed"],
-  ["summary"],
-];
-
 const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "desktop_snapshot",
   "delete_meeting",
@@ -752,35 +786,6 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "stop_microphone_recording",
   "transcribe_meeting",
 ]);
-
-function requireNullableContractObject(
-  value: unknown,
-  pathLabel: string,
-  requiredPaths: readonly ContractPath[],
-) {
-  if (value === null) {
-    return;
-  }
-  for (const path of requiredPaths) {
-    requireContractPath(value, path, pathLabel);
-  }
-
-  const record = requireContractRecord(value, pathLabel);
-  if (Object.prototype.hasOwnProperty.call(record, "failure")) {
-    requireNullableContractObject(
-      record.failure,
-      `${pathLabel}.failure`,
-      REQUIRED_COMMAND_FAILURE_PATHS,
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(record, "analysis")) {
-    requireNullableContractObject(
-      record.analysis,
-      `${pathLabel}.analysis`,
-      REQUIRED_ANALYSIS_RESULT_PATHS,
-    );
-  }
-}
 
 function requireContractPath(value: unknown, path: ContractPath, rootLabel: string): unknown {
   let current = value;
@@ -810,6 +815,134 @@ function requireContractArray(value: unknown, pathLabel: string): unknown[] {
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be an array`);
   }
   return value;
+}
+
+function requireString(value: unknown, pathLabel: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a string`);
+  }
+  return value;
+}
+
+function requireNullableString(value: unknown, pathLabel: string): string | null {
+  if (value === null) {
+    return value;
+  }
+  return requireString(value, pathLabel);
+}
+
+function requireNumber(value: unknown, pathLabel: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a finite number`);
+  }
+  return value;
+}
+
+function requireBoolean(value: unknown, pathLabel: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a boolean`);
+  }
+  return value;
+}
+
+function requireEnum<const T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  pathLabel: string,
+): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+function validateExportCommandState(value: unknown, pathLabel: string): void {
+  const state = requireContractRecord(value, pathLabel);
+  requireEnum(state.state, ["idle", "exporting", "exported", "failed"], `${pathLabel}.state`);
+  if (Object.prototype.hasOwnProperty.call(state, "meetingId")) {
+    requireNullableString(state.meetingId, `${pathLabel}.meetingId`);
+  }
+  if (Object.prototype.hasOwnProperty.call(state, "path")) {
+    requireNullableString(state.path, `${pathLabel}.path`);
+  }
+  if (Object.prototype.hasOwnProperty.call(state, "message")) {
+    requireNullableString(state.message, `${pathLabel}.message`);
+  }
+}
+
+function validateDeleteCommandState(value: unknown, pathLabel: string): void {
+  const state = requireContractRecord(value, pathLabel);
+  requireEnum(state.state, ["idle", "deleting", "deleted", "failed"], `${pathLabel}.state`);
+  if (Object.prototype.hasOwnProperty.call(state, "meetingId")) {
+    requireNullableString(state.meetingId, `${pathLabel}.meetingId`);
+  }
+  if (Object.prototype.hasOwnProperty.call(state, "message")) {
+    requireNullableString(state.message, `${pathLabel}.message`);
+  }
+  for (const field of ["deletedPrivateArtifacts", "skippedPrivateArtifacts", "remainingExports"]) {
+    if (Object.prototype.hasOwnProperty.call(state, field)) {
+      requireContractArray(state[field], `${pathLabel}.${field}`).forEach((item, index) => {
+        requireString(item, `${pathLabel}.${field}[${index}]`);
+      });
+    }
+  }
+}
+
+function validateAnalysisDisclosureState(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const state = requireContractRecord(value, pathLabel);
+  requireString(state.provider, `${pathLabel}.provider`);
+  requireString(state.modelName, `${pathLabel}.modelName`);
+  requireBoolean(state.networkUsed, `${pathLabel}.networkUsed`);
+  requireBoolean(state.disclosureRequired, `${pathLabel}.disclosureRequired`);
+  requireBoolean(state.disclosureConfirmed, `${pathLabel}.disclosureConfirmed`);
+  requireString(state.summary, `${pathLabel}.summary`);
+  requireNumber(state.createdAtMs, `${pathLabel}.createdAtMs`);
+  requireString(state.promptTemplateVersion, `${pathLabel}.promptTemplateVersion`);
+}
+
+function validateCommandFailureView(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const failure = requireContractRecord(value, pathLabel);
+  requireString(failure.code, `${pathLabel}.code`);
+  requireString(failure.message, `${pathLabel}.message`);
+  requireString(failure.setupGuidance, `${pathLabel}.setupGuidance`);
+}
+
+function validateAnalysisResultView(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const analysis = requireContractRecord(value, pathLabel);
+  requireString(analysis.provider, `${pathLabel}.provider`);
+  requireString(analysis.modelName, `${pathLabel}.modelName`);
+  requireBoolean(analysis.networkUsed, `${pathLabel}.networkUsed`);
+  requireString(analysis.summary, `${pathLabel}.summary`);
+}
+
+function validateTranscriptionCommandView(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const command = requireContractRecord(value, pathLabel);
+  requireString(command.meetingId, `${pathLabel}.meetingId`);
+  requireEnum(command.state, ["Complete", "Failed"], `${pathLabel}.state`);
+  validateCommandFailureView(command.failure, `${pathLabel}.failure`);
+}
+
+function validateAnalysisCommandView(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const command = requireContractRecord(value, pathLabel);
+  requireString(command.meetingId, `${pathLabel}.meetingId`);
+  requireEnum(command.state, ["Complete", "Failed"], `${pathLabel}.state`);
+  validateAnalysisResultView(command.analysis, `${pathLabel}.analysis`);
+  validateCommandFailureView(command.failure, `${pathLabel}.failure`);
 }
 
 function retentionDetail(policy: RawAudioRetentionPolicy): string {

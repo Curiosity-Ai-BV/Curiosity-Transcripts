@@ -28,6 +28,7 @@ describe("desktop command-state mapping", () => {
       meetings: [],
       selectedMeetingId: null,
       commandSurface: {
+        ready: true,
         detail: "Connected to local desktop commands.",
       },
     };
@@ -427,6 +428,7 @@ describe("desktop workspace shell", () => {
         snapshot={{
           ...getMockDesktopSnapshot(),
           commandSurface: {
+            ready: true,
             detail: "Connected to local desktop commands.",
           },
           recording: {
@@ -459,6 +461,7 @@ describe("desktop workspace shell", () => {
         snapshot={{
           ...getMockDesktopSnapshot(),
           commandSurface: {
+            ready: true,
             detail: "Connected to local desktop commands.",
           },
           transcription: {
@@ -557,7 +560,7 @@ describe("desktop workspace shell", () => {
     const loading = getUnavailableDesktopSnapshot("Loading local desktop commands.");
     const loaded = {
       ...getMockDesktopSnapshot(),
-      commandSurface: { detail: "Connected to local desktop commands." },
+      commandSurface: { ready: true, detail: "Connected to local desktop commands." },
       selectedMeetingId: "design-standup",
     };
     const { rerender } = render(<App snapshot={{ ...loading, loading: true }} />);
@@ -603,6 +606,33 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("heading", { name: "Design Standup" })).toBeInTheDocument();
     expect(screen.getAllByText("Recording").length).toBeGreaterThan(0);
     expect(screen.getAllByText("meetings/design-standup/audio").length).toBeGreaterThan(0);
+  });
+
+  it("uses explicit command readiness instead of exact detail copy", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const initial = connectedSnapshot({
+      commandSurface: {
+        ready: true,
+        detail: "Local desktop commands are connected.",
+      },
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const returned = connectedSnapshot();
+    const fetchCommand: CommandFetcher = async (command, args) => {
+      calls.push({ command, args });
+      return returned as never;
+    };
+
+    render(<App snapshot={initial} fetchCommand={fetchCommand} />);
+
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(calls).toEqual([{ command: "start_microphone_recording", args: undefined }]);
   });
 
   it("enables stop for active recordings and disables start until the returned snapshot lands", async () => {
@@ -1139,6 +1169,7 @@ function connectedSnapshot(overrides: Partial<ReturnType<typeof getMockDesktopSn
   return {
     ...base,
     commandSurface: {
+      ready: true,
       detail: "Connected to local desktop commands.",
     },
     capture: {

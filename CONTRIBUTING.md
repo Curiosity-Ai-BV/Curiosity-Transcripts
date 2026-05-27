@@ -13,6 +13,14 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Run desktop Rust backend checks from the repository root:
+
+```sh
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
 Run desktop checks from `apps/desktop`:
 
 ```sh

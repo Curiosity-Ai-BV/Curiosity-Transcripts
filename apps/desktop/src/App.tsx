@@ -69,8 +69,6 @@ interface SettingsFeedback {
   message: string;
 }
 
-const connectedCommandSurface = "Connected to local desktop commands.";
-
 export default function App({ snapshot, fetchCommand }: AppProps) {
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
@@ -98,7 +96,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   }, [snapshot]);
 
   const commandUnavailable = currentSnapshot.commandSurface.detail;
-  const commandSurfaceReady = Boolean(fetchCommand && commandUnavailable === connectedCommandSurface);
+  const commandSurfaceReady = Boolean(fetchCommand && currentSnapshot.commandSurface.ready);
   const commandUnavailableTitle = commandSurfaceReady
     ? ""
     : fetchCommand || commandUnavailable.startsWith("Preview shell")

@@ -4,8 +4,12 @@ fn main() {
     let status = run_optional_real_whisper_smoke_from_env();
 
     match status {
-        WhisperSmokeStatus::Passed { segment_count } => {
+        WhisperSmokeStatus::Passed { segment_count } if segment_count > 0 => {
             println!("Passed: transcribed {segment_count} segment(s)");
+        }
+        WhisperSmokeStatus::Passed { segment_count } => {
+            println!("Failed: transcribed {segment_count} segment(s)");
+            std::process::exit(1);
         }
         WhisperSmokeStatus::Skipped { reason } => {
             println!("Skipped: {reason}");

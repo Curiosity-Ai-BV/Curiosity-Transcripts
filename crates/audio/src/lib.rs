@@ -611,6 +611,7 @@ pub enum RecordingError {
     Wav(hound::Error),
     StreamNotRequested(StreamKind),
     MissingStreamMetadata(StreamKind),
+    MissingRequestedStream(StreamKind),
     MismatchedFrameFormat {
         stream: StreamKind,
         expected_sample_rate_hz: u32,
@@ -635,6 +636,11 @@ impl fmt::Display for RecordingError {
             RecordingError::MissingStreamMetadata(stream) => write!(
                 f,
                 "missing device metadata for requested stream: {}",
+                stream.as_manifest_str()
+            ),
+            RecordingError::MissingRequestedStream(stream) => write!(
+                f,
+                "requested stream produced no samples: {}",
                 stream.as_manifest_str()
             ),
             RecordingError::MismatchedFrameFormat {
@@ -663,6 +669,7 @@ impl Error for RecordingError {
             RecordingError::Wav(error) => Some(error),
             RecordingError::StreamNotRequested(_)
             | RecordingError::MissingStreamMetadata(_)
+            | RecordingError::MissingRequestedStream(_)
             | RecordingError::MismatchedFrameFormat { .. } => None,
         }
     }
@@ -794,8 +801,48 @@ impl StreamingWavRecorder {
     }
 
     pub fn stop(mut self, ended_at_ms: u64) -> Result<ArtifactManifest, RecordingError> {
-        self.manifest.status = ManifestStatus::Complete;
         self.manifest.ended_at_ms = Some(ended_at_ms);
+        self.finalize_active_artifacts()?;
+        if let Some(missing_stream) = self.config.requested_streams().into_iter().find(|stream| {
+            !self
+                .manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.stream == *stream)
+        }) {
+            self.manifest.status = ManifestStatus::Failed;
+            self.manifest.recovery = Some(RecoveryMetadata {
+                recoverable: false,
+                reason: format!(
+                    "requested {} stream produced no samples",
+                    missing_stream.as_manifest_str()
+                ),
+            });
+            self.write_manifest()?;
+            return Err(RecordingError::MissingRequestedStream(missing_stream));
+        }
+        self.manifest.status = ManifestStatus::Complete;
+        self.write_manifest()?;
+        Ok(self.manifest)
+    }
+
+    pub fn fail(
+        mut self,
+        ended_at_ms: u64,
+        reason: impl Into<String>,
+    ) -> Result<ArtifactManifest, RecordingError> {
+        self.manifest.ended_at_ms = Some(ended_at_ms);
+        self.finalize_active_artifacts()?;
+        self.manifest.status = ManifestStatus::Failed;
+        self.manifest.recovery = Some(RecoveryMetadata {
+            recoverable: false,
+            reason: reason.into(),
+        });
+        self.write_manifest()?;
+        Ok(self.manifest)
+    }
+
+    fn finalize_active_artifacts(&mut self) -> Result<(), RecordingError> {
         for (stream, artifact) in std::mem::take(&mut self.active) {
             artifact.writer.finalize()?;
             let bytes_written = fs::metadata(&artifact.path)?.len();
@@ -817,8 +864,7 @@ impl StreamingWavRecorder {
                 sha256,
             });
         }
-        self.write_manifest()?;
-        Ok(self.manifest)
+        Ok(())
     }
 
     fn write_manifest(&self) -> Result<(), RecordingError> {
@@ -2093,8 +2139,11 @@ fn run_desktop_audio_writer(
                     .map(|errors| errors.clone())
                     .unwrap_or_default();
                 microphone_capture_stream_result(wrote_mic_samples, &mic_errors)?;
-                if wrote_system_samples || !system_errors.is_empty() {
-                    system_audio_capture_stream_result(wrote_system_samples, &system_errors)?;
+                if let Err(error) =
+                    system_audio_capture_stream_result(wrote_system_samples, &system_errors)
+                {
+                    let _ = recorder.fail(ended_at_ms, error.to_string());
+                    return Err(error);
                 }
                 return recorder.stop(ended_at_ms).map_err(CaptureError::from);
             }

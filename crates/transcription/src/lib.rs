@@ -441,7 +441,7 @@ impl WhisperSmokeStatus {
     }
 
     pub fn passed(&self) -> bool {
-        matches!(self, Self::Passed { .. })
+        matches!(self, Self::Passed { segment_count } if *segment_count > 0)
     }
 }
 
@@ -789,6 +789,9 @@ fn backend_failed(provider: &str, error: impl fmt::Display) -> TranscriptionErro
 #[cfg(feature = "whisper-rs")]
 fn run_real_whisper_smoke(model_path: PathBuf, audio_path: PathBuf) -> WhisperSmokeStatus {
     match RealWhisperBackend.transcribe(&model_path, &audio_path) {
+        Ok(segments) if segments.is_empty() => WhisperSmokeStatus::Failed {
+            message: "Whisper smoke produced zero transcript segments".to_string(),
+        },
         Ok(segments) => WhisperSmokeStatus::Passed {
             segment_count: segments.len(),
         },

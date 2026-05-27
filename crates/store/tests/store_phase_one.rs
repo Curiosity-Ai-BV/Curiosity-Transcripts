@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, RecordingSession, RecordingSource,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, RecordingSession,
+    RecordingSource, RecordingStatus,
 };
 use curiosity_store::{
     ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
@@ -186,6 +187,113 @@ fn startup_repair_reconciles_incomplete_db_rows_with_artifact_manifests_after_cr
     assert_eq!(
         store.meeting_status("meeting-1").expect("meeting status"),
         "Recovered"
+    );
+}
+
+#[test]
+fn startup_repair_skips_deleted_tombstoned_artifact_manifest_without_recovering_rows_or_jobs() {
+    let root = test_root("repair-deleted-tombstoned");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_crashed_meeting(&store, &root);
+
+    store
+        .tombstone_audio_artifact("artifact-1")
+        .expect("tombstone artifact");
+    {
+        let conn = Connection::open(&db_path).expect("delete intent db connection");
+        conn.execute(
+            "UPDATE meetings SET status = 'Deleted', deleted_at_ms = 1234 WHERE id = ?1",
+            ["meeting-1"],
+        )
+        .expect("mark meeting deleted");
+    }
+
+    let report = store.repair_startup().expect("repair startup");
+
+    assert!(report.recovered_artifacts.is_empty(), "{report:?}");
+    assert!(report.recovered_jobs.is_empty(), "{report:?}");
+    assert_eq!(
+        report.conflicts,
+        vec![RepairConflict::DeletedOrTombstonedArtifact {
+            artifact_id: "artifact-1".to_string(),
+        }]
+    );
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Recording"
+    );
+    assert_eq!(
+        store.meeting_status("meeting-1").expect("meeting status"),
+        "Deleted"
+    );
+    assert!(store
+        .artifact_tombstoned("artifact-1")
+        .expect("artifact remains tombstoned"));
+}
+
+#[test]
+fn startup_repair_skips_failed_recording_manifest_without_recovering_rows_or_jobs() {
+    let root = test_root("repair-failed-recording");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_crashed_meeting(&store, &root);
+    store
+        .update_recording_session_status(
+            "session-1",
+            RecordingStatus::Failed,
+            Some(2_000),
+            Some("stop failed"),
+        )
+        .expect("mark session failed");
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Failed, Some(2_000))
+        .expect("mark meeting failed");
+
+    let report = store.repair_startup().expect("repair startup");
+
+    assert!(report.recovered_artifacts.is_empty(), "{report:?}");
+    assert!(report.recovered_jobs.is_empty(), "{report:?}");
+    assert_eq!(
+        report.conflicts,
+        vec![RepairConflict::InactiveRecordingArtifact {
+            artifact_id: "artifact-1".to_string(),
+            meeting_status: "Failed".to_string(),
+            session_status: "Failed".to_string(),
+        }]
+    );
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .recording_session_status("session-1")
+            .expect("session status"),
+        "Failed"
+    );
+    assert_eq!(
+        store.meeting_status("meeting-1").expect("meeting status"),
+        "Failed"
     );
 }
 

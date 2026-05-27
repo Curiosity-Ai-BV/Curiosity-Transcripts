@@ -2015,10 +2015,17 @@ impl Store {
                     audio_artifacts.path,
                     audio_artifacts.sha256,
                     audio_artifacts.write_status,
-                    audio_artifacts.recovery_status
+                    audio_artifacts.recovery_status,
+                    recording_sessions.status,
+                    meetings.status,
+                    meetings.deleted_at_ms,
+                    audio_artifacts.retained,
+                    audio_artifacts.tombstoned
                 FROM audio_artifacts
                 JOIN recording_sessions
                   ON recording_sessions.id = audio_artifacts.recording_session_id
+                JOIN meetings
+                  ON meetings.id = recording_sessions.meeting_id
                 WHERE audio_artifacts.id = ?1
                 ",
                 params![artifact_id],
@@ -2032,6 +2039,11 @@ impl Store {
                         sha256: row.get(5)?,
                         write_status: row.get(6)?,
                         recovery_status: row.get(7)?,
+                        session_status: row.get(8)?,
+                        meeting_status: row.get(9)?,
+                        meeting_deleted_at_ms: row.get(10)?,
+                        retained: row.get(11)?,
+                        tombstoned: row.get(12)?,
                     })
                 },
             )
@@ -2140,6 +2152,14 @@ pub enum RepairConflict {
         artifact_id: String,
         manifest_status: String,
         db_status: String,
+    },
+    DeletedOrTombstonedArtifact {
+        artifact_id: String,
+    },
+    InactiveRecordingArtifact {
+        artifact_id: String,
+        meeting_status: String,
+        session_status: String,
     },
     UnsafePath {
         artifact_id: String,
@@ -2554,6 +2574,11 @@ struct DbArtifactForRepair {
     sha256: String,
     write_status: String,
     recovery_status: String,
+    session_status: String,
+    meeting_status: String,
+    meeting_deleted_at_ms: Option<u64>,
+    retained: u8,
+    tombstoned: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -2612,6 +2637,27 @@ fn repair_conflict(
             artifact_id: manifest.artifact_id.clone(),
             manifest_status: manifest_recovery_status.to_string(),
             db_status: db_artifact.recovery_status.clone(),
+        });
+    }
+    if db_artifact.meeting_status == "Deleted"
+        || db_artifact.meeting_deleted_at_ms.is_some()
+        || db_artifact.retained == 0
+        || db_artifact.tombstoned != 0
+    {
+        return Some(RepairConflict::DeletedOrTombstonedArtifact {
+            artifact_id: manifest.artifact_id.clone(),
+        });
+    }
+    if db_artifact.meeting_status == "Failed"
+        || matches!(
+            db_artifact.session_status.as_str(),
+            "Complete" | "Failed" | "Recovered"
+        )
+    {
+        return Some(RepairConflict::InactiveRecordingArtifact {
+            artifact_id: manifest.artifact_id.clone(),
+            meeting_status: db_artifact.meeting_status.clone(),
+            session_status: db_artifact.session_status.clone(),
         });
     }
     None

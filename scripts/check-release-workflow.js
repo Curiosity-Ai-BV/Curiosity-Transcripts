@@ -13,6 +13,7 @@ const requiredWorkflowText = [
   "macos-26",
   "contents: write",
   "'v*'",
+  "node scripts/check-release-workflow.js",
   "./scripts/build-macos-dmg.sh --no-sign",
   "Curiosity-Transcripts-${version}-macos-aarch64.dmg",
   "shasum -a 256",

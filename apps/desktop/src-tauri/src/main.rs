@@ -400,7 +400,11 @@ fn desktop_snapshot_for_app_root_with_state(
     app_root: &Path,
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
-    let store = open_store(app_root)?;
+    let store = if command_state.active_recording.is_some() {
+        open_store(app_root)?
+    } else {
+        open_store_with_startup_repair(app_root)?
+    };
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
@@ -480,6 +484,7 @@ fn desktop_snapshot_for_app_root_with_state(
     Ok(DesktopSnapshot {
         loading: false,
         command_surface: CommandSurfaceState {
+            ready: true,
             detail: "Connected to local desktop commands.".to_string(),
         },
         meetings,
@@ -499,11 +504,21 @@ fn desktop_snapshot_for_app_root_with_state(
 }
 
 fn open_store(app_root: &Path) -> Result<Store, String> {
+    open_store_for_app_root(app_root, false)
+}
+
+fn open_store_with_startup_repair(app_root: &Path) -> Result<Store, String> {
+    open_store_for_app_root(app_root, true)
+}
+
+fn open_store_for_app_root(app_root: &Path, repair_startup: bool) -> Result<Store, String> {
     std::fs::create_dir_all(app_root).map_err(|error| error.to_string())?;
     let store = Store::open(app_root.join("curiosity.sqlite3"), app_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
-    store.repair_startup().map_err(|error| error.to_string())?;
+    if repair_startup {
+        store.repair_startup().map_err(|error| error.to_string())?;
+    }
     Ok(store)
 }
 
@@ -583,6 +598,19 @@ fn delete_meeting_for_app_root(
     command_state: &mut DesktopCommandState,
     meeting_id: &str,
 ) -> Result<DesktopSnapshot, String> {
+    if command_state
+        .active_recording
+        .as_ref()
+        .map(|recording| recording.meeting_id == meeting_id)
+        .unwrap_or(false)
+    {
+        command_state.last_delete = Some(DeleteCommandState::failed(
+            meeting_id,
+            "Cannot delete a meeting while it has an active recording.".to_string(),
+        ));
+        return desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state());
+    }
+
     let store = open_store(app_root)?;
     command_state.last_delete = match delete_meeting_command(&store, meeting_id) {
         Ok(deleted) => Some(DeleteCommandState::deleted(deleted)),
@@ -2242,6 +2270,7 @@ struct DesktopSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 struct CommandSurfaceState {
+    ready: bool,
     detail: String,
 }
 
@@ -2577,6 +2606,7 @@ mod tests {
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(json["loading"], false);
+        assert_eq!(json["commandSurface"]["ready"], true);
         assert_eq!(
             json["commandSurface"]["detail"],
             "Connected to local desktop commands."
@@ -3365,6 +3395,44 @@ mod tests {
     }
 
     #[test]
+    fn delete_meeting_rejects_active_recording_meeting_without_corrupting_state() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Do not delete active".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+
+        let snapshot = delete_meeting_for_app_root(&root, &mut command_state, &meeting_id)
+            .expect("active delete returns visible failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(command_state.active_recording.is_some());
+        assert_eq!(json["recording"]["meeting_id"], meeting_id);
+        assert_eq!(json["recording"]["state"], "Recording");
+        assert_eq!(json["deleteCommand"]["state"], "failed");
+        assert_eq!(json["deleteCommand"]["meetingId"], meeting_id);
+        assert!(json["deleteCommand"]["message"]
+            .as_str()
+            .expect("delete message")
+            .contains("active recording"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .any(|meeting| meeting["id"] == meeting_id));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn start_microphone_recording_with_fake_recorder_returns_active_snapshot() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -3386,6 +3454,46 @@ mod tests {
         assert_eq!(json["meetings"][0]["status"], "Recording");
         assert_eq!(json["selectedMeetingId"], json["recording"]["meeting_id"]);
         assert!(command_state.active_recording.is_some());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn active_recording_snapshot_does_not_run_startup_repair_on_live_manifest() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = StartedFileMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+
+        let snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Still recording".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording with live file");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot.recording.recording_id.expect("recording id");
+        let store = open_store(&root).expect("open store");
+
+        assert!(command_state.active_recording.is_some());
+        assert_eq!(
+            store.meeting_status(&meeting_id).expect("meeting status"),
+            "Recording"
+        );
+        assert_eq!(
+            store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Recording"
+        );
+        assert_eq!(
+            store
+                .artifact_recovery_status(&artifact_id(&recording_id))
+                .expect("artifact status"),
+            curiosity_store::RepairStatus::NotNeeded
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -3487,7 +3595,7 @@ mod tests {
         fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
         write_minimal_wav(&artifact_path);
 
-        let restarted_store = open_store(&root).expect("open repaired store");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
         let artifact = restarted_store
             .completed_wav_artifact_for_transcription(&meeting_id)
             .expect("query completed artifact")
@@ -3536,7 +3644,7 @@ mod tests {
         write_minimal_wav(&mic_path);
         write_minimal_wav(&system_path);
 
-        let restarted_store = open_store(&root).expect("open repaired store");
+        let restarted_store = open_store_with_startup_repair(&root).expect("open repaired store");
         let artifacts = restarted_store
             .completed_wav_artifacts_for_transcription(&meeting_id)
             .expect("query completed artifacts");
@@ -3933,6 +4041,32 @@ mod tests {
                 streams: vec![StreamKind::Microphone],
                 recorder: Box::new(FakeActiveMicrophoneRecording {
                     session_dir: audio_root.join(recording_id),
+                    recording_id: recording_id.to_string(),
+                    started_at_ms,
+                }),
+            })
+        }
+    }
+
+    struct StartedFileMicrophoneRecorderFactory;
+
+    impl MicrophoneRecorderFactory for StartedFileMicrophoneRecorderFactory {
+        fn start(
+            &self,
+            audio_root: &Path,
+            recording_id: &str,
+            started_at_ms: u64,
+        ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
+            let session_dir = audio_root.join(recording_id);
+            fs::create_dir_all(&session_dir).map_err(|error| {
+                MicrophoneStartFailure::persistence(format!("create live test audio dir: {error}"))
+            })?;
+            write_minimal_wav(&session_dir.join("raw-mic.wav"));
+            Ok(StartedMicrophoneRecording {
+                sample_rate_hz: 48_000,
+                streams: vec![StreamKind::Microphone],
+                recorder: Box::new(FakeActiveMicrophoneRecording {
+                    session_dir,
                     recording_id: recording_id.to_string(),
                     started_at_ms,
                 }),

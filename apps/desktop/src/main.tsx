@@ -52,6 +52,7 @@ function DesktopRoot() {
               : {
                   ...getMockDesktopSnapshot(),
                   commandSurface: {
+                    ready: false,
                     detail: `Preview shell: ${message}.`,
                   },
                 },
