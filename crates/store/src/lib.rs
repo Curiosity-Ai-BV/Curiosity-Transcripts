@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -12,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub type StoreResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type StoreResult<T> = Result<T, StoreError>;
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
@@ -23,6 +25,107 @@ const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
 const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
 const SETTING_OLLAMA_MODEL: &str = "ollama_model";
 const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
+
+#[derive(Debug)]
+pub enum StoreError {
+    Io(io::Error),
+    Sqlite(rusqlite::Error),
+    Serde(serde_json::Error),
+    ReplayConflict(String),
+    UnsafePath(String),
+    NotFound(String),
+    RepairConflict(String),
+    InvariantViolation(String),
+    Message(String),
+}
+
+impl StoreError {
+    fn from_message(message: String) -> Self {
+        if message.contains("replay conflict") {
+            Self::ReplayConflict(message)
+        } else if message.contains("repair conflict") {
+            Self::RepairConflict(message)
+        } else if message.contains("not safe")
+            || message.contains("unsafe")
+            || message.contains("outside app")
+            || message.contains("escape app")
+        {
+            Self::UnsafePath(message)
+        } else if message.contains("not found") {
+            Self::NotFound(message)
+        } else if message.contains("requires")
+            || message.contains("unexpected")
+            || message.contains("unknown ")
+            || message.contains("unsupported")
+        {
+            Self::InvariantViolation(message)
+        } else {
+            Self::Message(message)
+        }
+    }
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(err) => write!(formatter, "{err}"),
+            Self::Sqlite(err) => write!(formatter, "{err}"),
+            Self::Serde(err) => write!(formatter, "{err}"),
+            Self::ReplayConflict(message)
+            | Self::UnsafePath(message)
+            | Self::NotFound(message)
+            | Self::RepairConflict(message)
+            | Self::InvariantViolation(message)
+            | Self::Message(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl Error for StoreError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Sqlite(err) => Some(err),
+            Self::Serde(err) => Some(err),
+            Self::ReplayConflict(_)
+            | Self::UnsafePath(_)
+            | Self::NotFound(_)
+            | Self::RepairConflict(_)
+            | Self::InvariantViolation(_)
+            | Self::Message(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for StoreError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Sqlite(err)
+    }
+}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serde(err)
+    }
+}
+
+impl From<String> for StoreError {
+    fn from(message: String) -> Self {
+        Self::from_message(message)
+    }
+}
+
+impl From<&str> for StoreError {
+    fn from(message: &str) -> Self {
+        Self::from_message(message.to_string())
+    }
+}
 
 /// SQLite-backed local store.
 ///
@@ -1588,6 +1691,33 @@ impl Store {
         corrected_text: &str,
         edited_at_ms: u64,
     ) -> StoreResult<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = self.correct_transcript_segment_in_transaction(
+            segment_id,
+            corrected_text,
+            edited_at_ms,
+        );
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn correct_transcript_segment_in_transaction(
+        &self,
+        segment_id: &str,
+        corrected_text: &str,
+        edited_at_ms: u64,
+    ) -> StoreResult<()> {
         let (version_id, previous_text): (String, String) = self.conn.query_row(
             "SELECT transcript_version_id, text FROM transcript_segments WHERE id = ?1",
             params![segment_id],
@@ -2315,9 +2445,15 @@ fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(meetings)? {
         let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
         let path = entry.path().join("manifest.json");
-        if path.exists() {
-            paths.push(path);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => paths.push(path),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
         }
     }
     Ok(paths)

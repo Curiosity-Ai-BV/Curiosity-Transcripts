@@ -8,10 +8,38 @@ use curiosity_domain::{
     AudioArtifact, Meeting, MeetingAnalysis, MeetingStatus, RecordingSession, RecordingSource,
     RecordingStatus,
 };
-use curiosity_store::Store;
+use curiosity_store::{Store, StoreError};
 use serde::{Deserialize, Serialize};
 
 pub type AppResult<T> = Result<T, RecordingError>;
+pub type CommandResult<T> = Result<T, CommandError>;
+
+#[derive(Debug)]
+pub enum CommandError {
+    Store(StoreError),
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(err) => write!(formatter, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(err) => Some(err),
+        }
+    }
+}
+
+impl From<StoreError> for CommandError {
+    fn from(err: StoreError) -> Self {
+        Self::Store(err)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum CommandRecordingState {
@@ -170,10 +198,7 @@ pub struct AnalysisCitationDto {
     pub end_ms: u64,
 }
 
-pub fn meeting_detail_dto(
-    store: &Store,
-    meeting_id: &str,
-) -> curiosity_store::StoreResult<MeetingDetailDto> {
+pub fn meeting_detail_dto(store: &Store, meeting_id: &str) -> CommandResult<MeetingDetailDto> {
     let title = store.meeting_title(meeting_id)?;
     let transcript_segments = store
         .transcript_segments(meeting_id)?
@@ -196,7 +221,7 @@ pub fn meeting_detail_dto(
     })
 }
 
-pub fn list_meetings_dto(store: &Store) -> curiosity_store::StoreResult<Vec<MeetingSummaryDto>> {
+pub fn list_meetings_dto(store: &Store) -> CommandResult<Vec<MeetingSummaryDto>> {
     Ok(store
         .list_meetings()?
         .into_iter()
@@ -207,7 +232,7 @@ pub fn list_meetings_dto(store: &Store) -> curiosity_store::StoreResult<Vec<Meet
 pub fn search_meetings_dto(
     store: &Store,
     query: &str,
-) -> curiosity_store::StoreResult<Vec<MeetingSearchResultDto>> {
+) -> CommandResult<Vec<MeetingSearchResultDto>> {
     Ok(store
         .search_meetings(query)?
         .into_iter()
@@ -222,7 +247,7 @@ pub fn rename_meeting_command(
     store: &Store,
     meeting_id: &str,
     title: &str,
-) -> curiosity_store::StoreResult<MeetingSummaryDto> {
+) -> CommandResult<MeetingSummaryDto> {
     Ok(meeting_summary_dto(
         store.rename_meeting(meeting_id, title)?,
     ))
@@ -232,7 +257,7 @@ pub fn export_meeting_json_command(
     store: &Store,
     meeting_id: &str,
     export_root: impl AsRef<std::path::Path>,
-) -> curiosity_store::StoreResult<ExportedMeetingDto> {
+) -> CommandResult<ExportedMeetingDto> {
     let path = store.export_meeting_json(meeting_id, export_root.as_ref())?;
     Ok(ExportedMeetingDto {
         meeting_id: meeting_id.to_string(),
@@ -240,10 +265,7 @@ pub fn export_meeting_json_command(
     })
 }
 
-pub fn delete_meeting_command(
-    store: &Store,
-    meeting_id: &str,
-) -> curiosity_store::StoreResult<DeletedMeetingDto> {
+pub fn delete_meeting_command(store: &Store, meeting_id: &str) -> CommandResult<DeletedMeetingDto> {
     let report = store.delete_meeting(meeting_id)?;
     Ok(DeletedMeetingDto {
         meeting_id: meeting_id.to_string(),
@@ -270,10 +292,27 @@ pub fn generate_summary_command(
     analyzer: &impl MeetingAnalyzer,
     meeting_id: &str,
     created_at_ms: u64,
-) -> curiosity_store::StoreResult<AnalysisCommandDto> {
+) -> CommandResult<AnalysisCommandDto> {
+    Ok(generate_summary_command_with_cancellation(
+        store,
+        analyzer,
+        meeting_id,
+        created_at_ms,
+        || false,
+    )?
+    .expect("non-cancelable summary command cannot be canceled"))
+}
+
+pub fn generate_summary_command_with_cancellation(
+    store: &Store,
+    analyzer: &impl MeetingAnalyzer,
+    meeting_id: &str,
+    created_at_ms: u64,
+    is_cancelled: impl Fn() -> bool,
+) -> CommandResult<Option<AnalysisCommandDto>> {
     let transcript_segments = store.transcript_segments(meeting_id)?;
     if transcript_segments.is_empty() {
-        return Ok(AnalysisCommandDto {
+        return Ok(Some(AnalysisCommandDto {
             meeting_id: meeting_id.to_string(),
             state: AnalysisCommandState::Failed,
             analysis: None,
@@ -282,24 +321,30 @@ pub fn generate_summary_command(
                 message: "Generate a transcript before requesting a summary.".to_string(),
                 setup_guidance: String::new(),
             }),
-        });
+        }));
+    }
+    if is_cancelled() {
+        return Ok(None);
     }
     let outcome = analyzer.analyze(AnalysisInput {
         meeting_id: meeting_id.to_string(),
         created_at_ms,
         transcript_segments,
     });
+    if is_cancelled() {
+        return Ok(None);
+    }
     match outcome {
         AnalysisOutcome::Completed(analysis) => {
             store.persist_analysis_result(&analysis)?;
-            Ok(AnalysisCommandDto {
+            Ok(Some(AnalysisCommandDto {
                 meeting_id: meeting_id.to_string(),
                 state: AnalysisCommandState::Complete,
                 analysis: Some(meeting_analysis_dto(analysis)),
                 failure: None,
-            })
+            }))
         }
-        AnalysisOutcome::Failed(failure) => Ok(AnalysisCommandDto {
+        AnalysisOutcome::Failed(failure) => Ok(Some(AnalysisCommandDto {
             meeting_id: meeting_id.to_string(),
             state: AnalysisCommandState::Failed,
             analysis: None,
@@ -308,7 +353,7 @@ pub fn generate_summary_command(
                 message: failure.message,
                 setup_guidance: failure.setup_guidance,
             }),
-        }),
+        })),
     }
 }
 

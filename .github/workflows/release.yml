@@ -59,15 +59,34 @@ jobs:
             exit 1
           fi
 
+          runner_arch="$(uname -m)"
+          if [ "$runner_arch" != "arm64" ]; then
+            echo "::error::Release workflow names the DMG macos-aarch64 but the runner architecture is $runner_arch"
+            exit 1
+          fi
+
           mkdir -p release-assets
-          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
-          if [ -z "$dmg_path" ]; then
-            echo "::error::No DMG was produced"
+          dmg_path="apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_${version}_aarch64.dmg"
+          if [ ! -f "$dmg_path" ]; then
+            echo "::error::Expected DMG was not produced: $dmg_path"
             exit 1
           fi
 
           release_asset="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.dmg"
           cp "$dmg_path" "$release_asset"
+
+          hdiutil verify "$release_asset"
+          mount_dir="$(mktemp -d)"
+          hdiutil attach "$release_asset" -readonly -nobrowse -mountpoint "$mount_dir"
+          if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
+            echo "::error::Release DMG is missing Curiosity Transcripts.app"
+            hdiutil detach "$mount_dir" || true
+            rm -rf "$mount_dir"
+            exit 1
+          fi
+          hdiutil detach "$mount_dir"
+          rm -rf "$mount_dir"
+
           shasum -a 256 "$release_asset" | tee "$release_asset.sha256"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"

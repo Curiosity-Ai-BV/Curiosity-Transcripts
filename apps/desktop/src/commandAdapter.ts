@@ -153,6 +153,15 @@ export interface CaptureStatus {
   systemAudio: AppPermissionState;
 }
 
+export interface CommandJobView {
+  id: string;
+  kind: "Transcription" | "Summary";
+  meetingId: string;
+  state: "Running" | "CancelRequested" | "Complete" | "Failed" | "Canceled";
+  cancelRequested: boolean;
+  startedAtMs: number;
+}
+
 export interface DesktopSnapshot {
   loading: boolean;
   commandSurface: CommandSurfaceState;
@@ -163,12 +172,31 @@ export interface DesktopSnapshot {
   settings: AppSettings;
   capture: CaptureStatus;
   transcription: TranscriptionCommandView | null;
+  transcriptionJob: CommandJobView | null;
   exportCommand: ExportCommandState;
   deleteCommand: DeleteCommandState;
   analysisCommand: AnalysisCommandView | null;
+  summaryJob: CommandJobView | null;
 }
 
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+export interface DesktopCommandFacade {
+  searchMeetings(args: { query: string }): Promise<MeetingSearchResult[]>;
+  startRecording(args?: { title?: string }): Promise<DesktopSnapshot>;
+  stopRecording(): Promise<DesktopSnapshot>;
+  transcribeMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  cancelTranscription(args: { jobId: string }): Promise<DesktopSnapshot>;
+  renameMeeting(args: { meetingId: string; title: string }): Promise<DesktopSnapshot>;
+  exportMeetingJson(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  deleteMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  generateSummary(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  cancelSummary(args: { jobId: string }): Promise<DesktopSnapshot>;
+  saveWhisperModelPath(args: { whisperModelPath: string }): Promise<DesktopSnapshot>;
+  saveAnalysisSettings(args: { ollamaBaseUrl: string; ollamaModel: string }): Promise<DesktopSnapshot>;
+  testWhisperModelPath(args: { path: string }): Promise<WhisperModelPathTestResult>;
+  testOllamaConnection(args: { baseUrl: string; model: string }): Promise<OllamaConnectionTestResult>;
+}
 
 interface LoadDesktopSnapshotOptions {
   fetchCommand?: CommandFetcher;
@@ -294,7 +322,9 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   validateDeleteCommandState(root.deleteCommand, "desktop_snapshot.deleteCommand");
 
   validateTranscriptionCommandView(root.transcription, "desktop_snapshot.transcription");
+  validateCommandJobView(root.transcriptionJob, "desktop_snapshot.transcriptionJob");
   validateAnalysisCommandView(root.analysisCommand, "desktop_snapshot.analysisCommand");
+  validateCommandJobView(root.summaryJob, "desktop_snapshot.summaryJob");
 }
 
 export function isTauriRuntime(): boolean {
@@ -380,6 +410,43 @@ export function mapTranscriptionState(state: TranscriptionCommandView | null): S
     label: "Transcript ready",
     tone: "ready",
     detail: "Local Whisper transcript persisted in private storage.",
+  };
+}
+
+export function mapCommandJobState(job: CommandJobView): StatusView {
+  const kind = job.kind === "Transcription" ? "Transcription" : "Summary";
+  if (job.state === "CancelRequested") {
+    return {
+      label: `${kind} cancel requested`,
+      tone: "warn",
+      detail: `${job.meetingId} / ${job.id}`,
+    };
+  }
+  if (job.state === "Running") {
+    return {
+      label: `${kind} running`,
+      tone: "active",
+      detail: `${job.meetingId} / ${job.id}`,
+    };
+  }
+  if (job.state === "Failed") {
+    return {
+      label: `${kind} failed`,
+      tone: "blocked",
+      detail: `${job.meetingId} / ${job.id}`,
+    };
+  }
+  if (job.state === "Canceled") {
+    return {
+      label: `${kind} canceled`,
+      tone: "warn",
+      detail: `${job.meetingId} / ${job.id}`,
+    };
+  }
+  return {
+    label: `${kind} complete`,
+    tone: "ready",
+    detail: `${job.meetingId} / ${job.id}`,
   };
 }
 
@@ -626,6 +693,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
             systemAudio: "SystemAudioDenied",
           },
     transcription: null,
+    transcriptionJob: null,
     exportCommand: {
       state: "idle",
     },
@@ -633,6 +701,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       state: "idle",
     },
     analysisCommand: null,
+    summaryJob: null,
   };
 }
 
@@ -667,6 +736,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       systemAudio: "SystemAudioUnavailable",
     },
     transcription: null,
+    transcriptionJob: null,
     exportCommand: {
       state: "idle",
     },
@@ -674,6 +744,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       state: "idle",
     },
     analysisCommand: null,
+    summaryJob: null,
   };
 }
 
@@ -740,9 +811,11 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["capture", "microphone"],
   ["capture", "systemAudio"],
   ["transcription"],
+  ["transcriptionJob"],
   ["exportCommand", "state"],
   ["deleteCommand", "state"],
   ["analysisCommand"],
+  ["summaryJob"],
 ];
 
 const REQUIRED_MEETING_PATHS: readonly ContractPath[] = [
@@ -778,6 +851,7 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "delete_meeting",
   "export_meeting_json",
   "generate_summary",
+  "cancel_summary",
   "rename_meeting",
   "save_analysis_settings",
   "save_whisper_model_path",
@@ -785,6 +859,7 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "start_microphone_recording",
   "stop_microphone_recording",
   "transcribe_meeting",
+  "cancel_transcription",
 ]);
 
 function requireContractPath(value: unknown, path: ContractPath, rootLabel: string): unknown {
@@ -934,6 +1009,19 @@ function validateTranscriptionCommandView(value: unknown, pathLabel: string): vo
   validateCommandFailureView(command.failure, `${pathLabel}.failure`);
 }
 
+function validateCommandJobView(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const job = requireContractRecord(value, pathLabel);
+  requireString(job.id, `${pathLabel}.id`);
+  requireEnum(job.kind, ["Transcription", "Summary"], `${pathLabel}.kind`);
+  requireString(job.meetingId, `${pathLabel}.meetingId`);
+  requireEnum(job.state, ["Running", "CancelRequested", "Complete", "Failed", "Canceled"], `${pathLabel}.state`);
+  requireBoolean(job.cancelRequested, `${pathLabel}.cancelRequested`);
+  requireNumber(job.startedAtMs, `${pathLabel}.startedAtMs`);
+}
+
 function validateAnalysisCommandView(value: unknown, pathLabel: string): void {
   if (value === null) {
     return;
@@ -967,4 +1055,39 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
     }
     return result as T;
   };
+}
+
+export function createDesktopCommandFacade(fetchCommand: CommandFetcher): DesktopCommandFacade {
+  async function snapshotCommand(command: string, args?: Record<string, unknown>): Promise<DesktopSnapshot> {
+    const result = await fetchCommand<unknown>(command, args);
+    assertDesktopSnapshotContract(result);
+    return result;
+  }
+
+  return {
+    searchMeetings: ({ query }) => fetchCommand<MeetingSearchResult[]>("search_meetings", { query }),
+    startRecording: (args) =>
+      snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
+    stopRecording: () => snapshotCommand("stop_microphone_recording"),
+    transcribeMeeting: ({ meetingId }) => snapshotCommand("transcribe_meeting", { meetingId }),
+    cancelTranscription: ({ jobId }) => snapshotCommand("cancel_transcription", { jobId }),
+    renameMeeting: ({ meetingId, title }) => snapshotCommand("rename_meeting", { meetingId, title }),
+    exportMeetingJson: ({ meetingId }) => snapshotCommand("export_meeting_json", { meetingId }),
+    deleteMeeting: ({ meetingId }) => snapshotCommand("delete_meeting", { meetingId }),
+    generateSummary: ({ meetingId }) => snapshotCommand("generate_summary", { meetingId }),
+    cancelSummary: ({ jobId }) => snapshotCommand("cancel_summary", { jobId }),
+    saveWhisperModelPath: ({ whisperModelPath }) =>
+      snapshotCommand("save_whisper_model_path", { whisperModelPath }),
+    saveAnalysisSettings: ({ ollamaBaseUrl, ollamaModel }) =>
+      snapshotCommand("save_analysis_settings", { ollamaBaseUrl, ollamaModel }),
+    testWhisperModelPath: ({ path }) =>
+      fetchCommand<WhisperModelPathTestResult>("test_whisper_model_path", { path }),
+    testOllamaConnection: ({ baseUrl, model }) =>
+      fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", { baseUrl, model }),
+  };
+}
+
+export function getDesktopCommandFacade(): DesktopCommandFacade | undefined {
+  const fetchCommand = getDesktopCommandFetcher();
+  return fetchCommand ? createDesktopCommandFacade(fetchCommand) : undefined;
 }

@@ -8,6 +8,7 @@ BUNDLE_DIR="$DESKTOP_DIR/src-tauri/target/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/$APP_NAME.app"
 DMG_DIR="$BUNDLE_DIR/dmg"
 VERSION="$(node -p "require('$DESKTOP_DIR/package.json').version")"
+VERIFY_MOUNT_DIR=""
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Missing app bundle: $APP_PATH" >&2
@@ -32,9 +33,29 @@ DMG_PATH="$DMG_DIR/${APP_NAME}_${VERSION}_${ARCH}.dmg"
 STAGING_DIR="$(mktemp -d)"
 
 cleanup() {
+  if [[ -n "$VERIFY_MOUNT_DIR" && -d "$VERIFY_MOUNT_DIR" ]]; then
+    hdiutil detach "$VERIFY_MOUNT_DIR" >/dev/null 2>&1 || true
+    rm -rf "$VERIFY_MOUNT_DIR"
+  fi
   rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
+
+verify_dmg() {
+  hdiutil verify "$DMG_PATH"
+
+  VERIFY_MOUNT_DIR="$(mktemp -d)"
+  hdiutil attach "$DMG_PATH" -readonly -nobrowse -mountpoint "$VERIFY_MOUNT_DIR"
+
+  if [[ ! -d "$VERIFY_MOUNT_DIR/$APP_NAME.app" ]]; then
+    echo "Verified DMG is missing Curiosity Transcripts.app" >&2
+    exit 1
+  fi
+
+  hdiutil detach "$VERIFY_MOUNT_DIR"
+  rm -rf "$VERIFY_MOUNT_DIR"
+  VERIFY_MOUNT_DIR=""
+}
 
 cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
@@ -67,5 +88,7 @@ elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}
     --wait
   xcrun stapler staple "$DMG_PATH"
 fi
+
+verify_dmg
 
 echo "Created DMG: $DMG_PATH"

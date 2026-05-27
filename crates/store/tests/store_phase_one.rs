@@ -509,6 +509,108 @@ fn delete_meeting_skips_symlink_artifact_paths_that_escape_app_storage() {
     assert!(outside_path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn startup_repair_and_delete_ignore_symlinked_manifest_outside_app_storage() {
+    let root = test_root("symlink-manifest");
+    let outside_root = test_root("symlink-manifest-outside");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+
+    let private_path = root.join("meetings/meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(private_path.parent().expect("artifact parent")).expect("artifact parent");
+    fs::write(&private_path, b"partial wav").expect("artifact file");
+    let artifact = AudioArtifact::new_private(
+        "artifact-1",
+        "session-1",
+        ArtifactKind::RawMic,
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    );
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
+
+    let outside_manifest = outside_root.join("manifest.json");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(&outside_manifest)
+    .expect("write outside manifest");
+    let manifest_link = root.join("meetings/meeting-1/manifest.json");
+    std::os::unix::fs::symlink(&outside_manifest, &manifest_link)
+        .expect("symlink manifest outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+    let repair_status = store
+        .artifact_recovery_status("artifact-1")
+        .expect("artifact recovery status");
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(repair_status, RepairStatus::NotNeeded);
+    assert!(fs::symlink_metadata(&manifest_link).is_ok());
+    assert!(outside_manifest.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_repair_ignores_symlinked_meeting_directory_manifest_outside_app_storage() {
+    let root = test_root("symlink-meeting-dir");
+    let outside_root = test_root("symlink-meeting-dir-outside");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+
+    let private_path = root.join("meetings/meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(private_path.parent().expect("artifact parent")).expect("artifact parent");
+    fs::write(&private_path, b"partial wav").expect("artifact file");
+    let artifact = AudioArtifact::new_private(
+        "artifact-1",
+        "session-1",
+        ArtifactKind::RawMic,
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    );
+    store
+        .insert_audio_artifact(&artifact)
+        .expect("insert artifact");
+    fs::remove_dir_all(root.join("meetings/meeting-1")).expect("remove private meeting dir");
+
+    fs::create_dir_all(outside_root.join("meeting-1")).expect("outside meeting dir");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(outside_root.join("meeting-1/manifest.json"))
+    .expect("write outside manifest");
+    std::os::unix::fs::symlink(
+        outside_root.join("meeting-1"),
+        root.join("meetings/meeting-1"),
+    )
+    .expect("symlink meeting dir outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+    let repair_status = store
+        .artifact_recovery_status("artifact-1")
+        .expect("artifact recovery status");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(repair_status, RepairStatus::NotNeeded);
+}
+
 #[test]
 fn startup_repair_reports_manifest_db_conflicts_without_recovering_rows_or_jobs() {
     let cases = [

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use curiosity_app::{
     delete_meeting_command, export_meeting_json_command, list_meetings_dto, meeting_detail_dto,
-    rename_meeting_command, search_meetings_dto,
+    rename_meeting_command, search_meetings_dto, CommandError,
 };
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
@@ -59,6 +59,27 @@ fn phase_four_commands_find_open_rename_delete_and_export_without_provider_depen
     assert!(search_meetings_dto(&store, "local")
         .expect("search after delete")
         .is_empty());
+}
+
+#[test]
+fn command_helpers_preserve_typed_store_errors_for_shell_callers() {
+    let root = test_root("command-error-boundary");
+    let store = migrated_store(&root);
+
+    let error = rename_meeting_command(&store, "missing-meeting", "Renamed")
+        .expect_err("missing meeting should surface a typed command error");
+    let display_text = error.to_string();
+
+    match error {
+        CommandError::Store(curiosity_store::StoreError::NotFound(message)) => {
+            assert_eq!(message, "meeting not found or deleted: missing-meeting");
+            assert_eq!(
+                display_text,
+                "meeting not found or deleted: missing-meeting"
+            );
+        }
+        other => panic!("expected typed store not-found error, got {other:?}"),
+    }
 }
 
 fn migrated_store(root: &Path) -> Store {

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import {
   DesktopSnapshot,
-  getDesktopCommandFetcher,
+  getDesktopCommandFacade,
   getMockDesktopSnapshot,
   getUnavailableDesktopSnapshot,
   isTauriRuntime,
@@ -24,7 +24,7 @@ createRoot(root).render(
 );
 
 function DesktopRoot() {
-  const commandFetcher = getDesktopCommandFetcher();
+  const commandFacade = getDesktopCommandFacade();
   const [snapshot, setSnapshot] = useState<DesktopSnapshot>(() =>
     isTauriRuntime()
       ? {
@@ -65,5 +65,5 @@ function DesktopRoot() {
     };
   }, []);
 
-  return <App snapshot={snapshot} fetchCommand={commandFetcher} />;
+  return <App snapshot={snapshot} commandFacade={commandFacade} />;
 }

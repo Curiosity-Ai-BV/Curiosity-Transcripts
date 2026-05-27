@@ -74,7 +74,11 @@ require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Relea
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
 require_text .github/workflows/release.yml 'gh release upload' 'versioned GitHub Release asset upload'
+require_text .github/workflows/release.yml 'runner_arch="\$\(uname -m\)"' 'release runner architecture assertion before aarch64 asset naming'
+require_text .github/workflows/release.yml 'if \[ "\$runner_arch" != "arm64" \]; then' 'arm64 runner assertion before aarch64 asset naming'
 require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-macos-aarch64\.dmg' 'versioned macOS DMG release asset name'
+require_text .github/workflows/release.yml 'hdiutil verify "\$release_asset"' 'release asset hdiutil verification before upload'
+require_text .github/workflows/release.yml 'hdiutil attach "\$release_asset" -readonly -nobrowse' 'release asset read-only attach verification before upload'
 require_text site/index.html 'https://curiosityai\.nl' 'CuriosityAI maker link'
 require_text site/index.html 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable homepage DMG download link'
 

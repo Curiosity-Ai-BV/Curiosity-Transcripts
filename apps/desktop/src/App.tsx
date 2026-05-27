@@ -16,21 +16,19 @@ import { useEffect, useMemo, useState } from "react";
 
 import packageInfo from "../package.json";
 import {
-  CommandFetcher,
+  DesktopCommandFacade,
   DesktopSnapshot,
   getMockDesktopSnapshot,
   mapAnalysisDisclosure,
+  mapCommandJobState,
   mapDeleteState,
   mapExportState,
   mapModelStatus,
   mapPermissionState,
   mapRecordingState,
   mapTranscriptionState,
-  MeetingSearchResult,
-  OllamaConnectionTestResult,
   searchMeetings,
   Tone,
-  WhisperModelPathTestResult,
 } from "./commandAdapter";
 
 import "./styles.css";
@@ -39,7 +37,7 @@ const appVersion = packageInfo.version;
 
 interface AppProps {
   snapshot?: DesktopSnapshot;
-  fetchCommand?: CommandFetcher;
+  commandFacade?: DesktopCommandFacade;
 }
 
 type PendingCommand =
@@ -50,6 +48,8 @@ type PendingCommand =
   | "export"
   | "delete"
   | "summary"
+  | "cancel-transcription"
+  | "cancel-summary"
   | "test-whisper"
   | "test-ollama"
   | "save-whisper"
@@ -69,7 +69,7 @@ interface SettingsFeedback {
   message: string;
 }
 
-export default function App({ snapshot, fetchCommand }: AppProps) {
+export default function App({ snapshot, commandFacade }: AppProps) {
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
@@ -96,10 +96,10 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   }, [snapshot]);
 
   const commandUnavailable = currentSnapshot.commandSurface.detail;
-  const commandSurfaceReady = Boolean(fetchCommand && currentSnapshot.commandSurface.ready);
+  const commandSurfaceReady = Boolean(commandFacade && currentSnapshot.commandSurface.ready);
   const commandUnavailableTitle = commandSurfaceReady
     ? ""
-    : fetchCommand || commandUnavailable.startsWith("Preview shell")
+    : commandFacade || commandUnavailable.startsWith("Preview shell")
       ? commandUnavailable || "Desktop command surface is unavailable."
       : "Desktop command surface is unavailable in this runtime.";
   const meetings = useMemo(() => {
@@ -131,7 +131,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   }, [selectedMeeting?.id, selectedMeeting?.title]);
 
   useEffect(() => {
-    if (!fetchCommand || !commandSurfaceReady) {
+    if (!commandFacade || !commandSurfaceReady) {
       setConnectedSearchResultIds(null);
       return;
     }
@@ -142,7 +142,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     }
 
     let cancelled = false;
-    fetchCommand<MeetingSearchResult[]>("search_meetings", { query: searchQuery })
+    commandFacade.searchMeetings({ query: searchQuery })
       .then((results) => {
         if (!cancelled) {
           setConnectedSearchResultIds(results.map((result) => result.meeting_id));
@@ -158,7 +158,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [commandSurfaceReady, fetchCommand, query]);
+  }, [commandFacade, commandSurfaceReady, query]);
 
   const isRecordingActive =
     currentSnapshot.recording.permission_state === "Ready" &&
@@ -173,6 +173,10 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     : mapRecordingState(currentSnapshot.recording);
   const model = mapModelStatus(currentSnapshot.model);
   const transcription = mapTranscriptionState(currentSnapshot.transcription);
+  const transcriptionJob = currentSnapshot.transcriptionJob
+    ? mapCommandJobState(currentSnapshot.transcriptionJob)
+    : null;
+  const summaryJob = currentSnapshot.summaryJob ? mapCommandJobState(currentSnapshot.summaryJob) : null;
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
@@ -209,20 +213,31 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     !selectedMeeting ||
     commandBusy ||
     selectedMeeting.segments.length === 0;
+  const cancelTranscriptionDisabled =
+    !commandSurfaceReady ||
+    !currentSnapshot.transcriptionJob ||
+    commandBusy ||
+    currentSnapshot.transcriptionJob.state !== "Running" ||
+    currentSnapshot.transcriptionJob.cancelRequested;
+  const cancelSummaryDisabled =
+    !commandSurfaceReady ||
+    !currentSnapshot.summaryJob ||
+    commandBusy ||
+    currentSnapshot.summaryJob.state !== "Running" ||
+    currentSnapshot.summaryJob.cancelRequested;
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
-    command: string,
-    args?: Record<string, unknown>,
+    command: (commands: DesktopCommandFacade) => Promise<DesktopSnapshot>,
   ) {
-    if (!fetchCommand || !commandSurfaceReady || commandBusy) {
+    if (!commandFacade || !commandSurfaceReady || commandBusy) {
       return;
     }
 
     setPendingCommand(pending);
     setCommandError(null);
     try {
-      const nextSnapshot = await fetchCommand<DesktopSnapshot>(command, args);
+      const nextSnapshot = await command(commandFacade);
       setCurrentSnapshot(nextSnapshot);
       setSelectedMeetingId((current) => resolveSelectedMeetingId(nextSnapshot, current));
       setRecordingTitle("");
@@ -237,22 +252,21 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     const title = recordingTitle.trim();
     void runSnapshotCommand(
       "start",
-      "start_microphone_recording",
-      title ? { title } : undefined,
+      (commands) => commands.startRecording(title ? { title } : undefined),
     );
   }
 
   function stopRecording() {
-    void runSnapshotCommand("stop", "stop_microphone_recording");
+    void runSnapshotCommand("stop", (commands) => commands.stopRecording());
   }
 
   function transcribeSelectedMeeting() {
     if (!selectedMeeting) {
       return;
     }
-    void runSnapshotCommand("transcribe", "transcribe_meeting", {
-      meetingId: selectedMeeting.id,
-    });
+    void runSnapshotCommand("transcribe", (commands) =>
+      commands.transcribeMeeting({ meetingId: selectedMeeting.id }),
+    );
   }
 
   function renameSelectedMeeting() {
@@ -263,58 +277,74 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     if (!title) {
       return;
     }
-    void runSnapshotCommand("rename", "rename_meeting", {
-      meetingId: selectedMeeting.id,
-      title,
-    });
+    void runSnapshotCommand("rename", (commands) =>
+      commands.renameMeeting({ meetingId: selectedMeeting.id, title }),
+    );
   }
 
   function exportSelectedMeeting() {
     if (!selectedMeeting) {
       return;
     }
-    void runSnapshotCommand("export", "export_meeting_json", {
-      meetingId: selectedMeeting.id,
-    });
+    void runSnapshotCommand("export", (commands) =>
+      commands.exportMeetingJson({ meetingId: selectedMeeting.id }),
+    );
   }
 
   function deleteSelectedMeeting() {
     if (!selectedMeeting) {
       return;
     }
-    void runSnapshotCommand("delete", "delete_meeting", {
-      meetingId: selectedMeeting.id,
-    });
+    void runSnapshotCommand("delete", (commands) =>
+      commands.deleteMeeting({ meetingId: selectedMeeting.id }),
+    );
   }
 
   function generateSelectedSummary() {
     if (!selectedMeeting) {
       return;
     }
-    void runSnapshotCommand("summary", "generate_summary", {
-      meetingId: selectedMeeting.id,
-    });
+    void runSnapshotCommand("summary", (commands) =>
+      commands.generateSummary({ meetingId: selectedMeeting.id }),
+    );
+  }
+
+  function cancelTranscriptionJob() {
+    const job = currentSnapshot.transcriptionJob;
+    if (!job) {
+      return;
+    }
+    void runSnapshotCommand("cancel-transcription", (commands) =>
+      commands.cancelTranscription({ jobId: job.id }),
+    );
+  }
+
+  function cancelSummaryJob() {
+    const job = currentSnapshot.summaryJob;
+    if (!job) {
+      return;
+    }
+    void runSnapshotCommand("cancel-summary", (commands) => commands.cancelSummary({ jobId: job.id }));
   }
 
   function retryFailedDelete() {
     if (!failedDeleteMeetingId) {
       return;
     }
-    void runSnapshotCommand("delete", "delete_meeting", {
-      meetingId: failedDeleteMeetingId,
-    });
+    void runSnapshotCommand("delete", (commands) =>
+      commands.deleteMeeting({ meetingId: failedDeleteMeetingId }),
+    );
   }
 
   async function runSettingsSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
-    command: string,
-    args: Record<string, unknown>,
+    command: (commands: DesktopCommandFacade) => Promise<DesktopSnapshot>,
     successMessage: string,
   ) {
     if (commandBusy) {
       return;
     }
-    if (!fetchCommand || !commandSurfaceReady) {
+    if (!commandFacade || !commandSurfaceReady) {
       setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
@@ -323,7 +353,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
-      const nextSnapshot = await fetchCommand<DesktopSnapshot>(command, args);
+      const nextSnapshot = await command(commandFacade);
       setCurrentSnapshot(nextSnapshot);
       setSelectedMeetingId((current) => resolveSelectedMeetingId(nextSnapshot, current));
       setSettingsForm(settingsFormFromSnapshot(nextSnapshot));
@@ -339,7 +369,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     if (commandBusy) {
       return;
     }
-    if (!fetchCommand || !commandSurfaceReady) {
+    if (!commandFacade || !commandSurfaceReady) {
       setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
@@ -348,9 +378,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
-      const result = await fetchCommand<WhisperModelPathTestResult>("test_whisper_model_path", {
-        path: settingsForm.whisperModelPath,
-      });
+      const result = await commandFacade.testWhisperModelPath({ path: settingsForm.whisperModelPath });
       setSettingsFeedback({
         tone: result.state === "Valid" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,
@@ -366,7 +394,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     if (commandBusy) {
       return;
     }
-    if (!fetchCommand || !commandSurfaceReady) {
+    if (!commandFacade || !commandSurfaceReady) {
       setSettingsFeedback({ tone: "blocked", message: commandUnavailableTitle });
       return;
     }
@@ -375,7 +403,7 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
-      const result = await fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", {
+      const result = await commandFacade.testOllamaConnection({
         baseUrl: settingsForm.ollamaBaseUrl,
         model: settingsForm.ollamaModel,
       });
@@ -403,8 +431,8 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   function saveWhisperModelPath() {
     void runSettingsSnapshotCommand(
       "save-whisper",
-      "save_whisper_model_path",
-      { whisperModelPath: settingsForm.whisperModelPath },
+      (commands) =>
+        commands.saveWhisperModelPath({ whisperModelPath: settingsForm.whisperModelPath }),
       "Whisper model path saved.",
     );
   }
@@ -412,11 +440,11 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
   function saveAnalysisSettings() {
     void runSettingsSnapshotCommand(
       "save-analysis",
-      "save_analysis_settings",
-      {
-        ollamaBaseUrl: settingsForm.ollamaBaseUrl,
-        ollamaModel: settingsForm.ollamaModel,
-      },
+      (commands) =>
+        commands.saveAnalysisSettings({
+          ollamaBaseUrl: settingsForm.ollamaBaseUrl,
+          ollamaModel: settingsForm.ollamaModel,
+        }),
       "Analysis settings saved.",
     );
   }
@@ -766,6 +794,52 @@ export default function App({ snapshot, fetchCommand }: AppProps) {
             <div className="engine-stack" aria-label="Model and capture status">
               <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
               <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
+              {transcriptionJob ? (
+                <>
+                  <StatusLine
+                    icon={<FileText size={18} weight="regular" />}
+                    label={transcriptionJob.label}
+                    value={transcriptionJob.detail}
+                    tone={transcriptionJob.tone}
+                  />
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={cancelTranscriptionDisabled}
+                    title={
+                      commandSurfaceReady
+                        ? "Request cancellation for the active transcription job."
+                        : commandUnavailableTitle
+                    }
+                    onClick={cancelTranscriptionJob}
+                  >
+                    {pendingCommand === "cancel-transcription" ? "Canceling transcription" : "Cancel transcription"}
+                  </button>
+                </>
+              ) : null}
+              {summaryJob ? (
+                <>
+                  <StatusLine
+                    icon={<FileText size={18} weight="regular" />}
+                    label={summaryJob.label}
+                    value={summaryJob.detail}
+                    tone={summaryJob.tone}
+                  />
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={cancelSummaryDisabled}
+                    title={
+                      commandSurfaceReady
+                        ? "Request cancellation for the active summary job."
+                        : commandUnavailableTitle
+                    }
+                    onClick={cancelSummaryJob}
+                  >
+                    {pendingCommand === "cancel-summary" ? "Canceling summary" : "Cancel summary"}
+                  </button>
+                </>
+              ) : null}
               <StatusLine
                 icon={<Microphone size={18} weight="regular" />}
                 label={captureLabel(currentSnapshot.capture.microphone)}
