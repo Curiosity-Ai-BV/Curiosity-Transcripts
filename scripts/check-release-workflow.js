@@ -53,6 +53,9 @@ const requiredBuildScriptText = [
 ];
 
 const requiredPackageScriptText = [
+  'codesign --force --deep --sign - "$APP_PATH"',
+  'codesign --verify --deep --strict --verbose=2 "$APP_PATH"',
+  'codesign --verify --deep --strict --verbose=2 "$VERIFY_MOUNT_DIR/$APP_NAME.app"',
   'hdiutil verify "$DMG_PATH"',
   'hdiutil attach "$DMG_PATH" -readonly -nobrowse',
   '[[ ! -d "$VERIFY_MOUNT_DIR/$APP_NAME.app" ]]',

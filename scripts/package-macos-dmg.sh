@@ -41,6 +41,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+sign_app_bundle() {
+  if [[ -z "${CURIOSITY_SKIP_DMG_SIGN:-}" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+    codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+  else
+    codesign --force --deep --sign - "$APP_PATH"
+  fi
+
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+}
+
 verify_dmg() {
   hdiutil verify "$DMG_PATH"
 
@@ -52,10 +62,14 @@ verify_dmg() {
     exit 1
   fi
 
+  codesign --verify --deep --strict --verbose=2 "$VERIFY_MOUNT_DIR/$APP_NAME.app"
+
   hdiutil detach "$VERIFY_MOUNT_DIR"
   rm -rf "$VERIFY_MOUNT_DIR"
   VERIFY_MOUNT_DIR=""
 }
+
+sign_app_bundle
 
 cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"

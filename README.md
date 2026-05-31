@@ -127,8 +127,9 @@ Near-term product hardening:
 - Finish per-meeting privacy controls for raw-audio retention, local-only versus
   hosted-provider use, storage location, and remaining exported files after
   deletion.
-- Keep the macOS installer path reproducible with unsigned local builds, then
-  add Developer ID signing and notarization for browser-distributed releases.
+- Keep the macOS installer path reproducible with ad-hoc signed local builds,
+  then add Developer ID signing and notarization for browser-distributed
+  releases.
 
 Calendar roadmap:
 
@@ -258,7 +259,8 @@ ScreenCaptureKit system-audio feature enabled, then package it into a DMG:
 ./scripts/build-macos-dmg.sh
 ```
 
-When signing credentials are not available, local unsigned verification can use:
+When Developer ID signing credentials are not available, local ad-hoc signed
+verification can use:
 
 ```sh
 ./scripts/build-macos-dmg.sh --no-sign
@@ -278,9 +280,9 @@ checklist, signing environment variables, and manual installer smoke path.
 ## GitHub Pages Homepage
 
 The static homepage under `site/` is published by `.github/workflows/pages.yml`.
-On each `main` deployment, GitHub Actions builds the unsigned macOS DMG on a
-macOS 26 runner, copies it into the Pages artifact, and updates the stable
-download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+On each `main` deployment, GitHub Actions builds the ad-hoc signed,
+non-notarized macOS DMG on a macOS 26 runner, copies it into the Pages artifact,
+and updates the stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
@@ -309,7 +311,7 @@ Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
 ```
 
 Until Developer ID signing and notarization are configured, release DMGs are
-explicitly unsigned and intended for testing the public release path.
+ad-hoc signed and intended for testing the public release path.
 
 ## License And Attribution
 
