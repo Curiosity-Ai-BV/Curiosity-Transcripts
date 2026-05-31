@@ -6,7 +6,12 @@ const workflowPath = path.join(root, ".github", "workflows", "pages.yml");
 
 const requiredText = [
   "macos-26",
-  "./scripts/build-macos-dmg.sh --no-sign",
+  "APPLE_CERTIFICATE_P12_BASE64",
+  "APPLE_API_KEY_ID",
+  "./scripts/configure-apple-signing-ci.sh",
+  "./scripts/build-macos-dmg.sh",
+  "xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg",
+  "spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg",
   "actions/upload-artifact@v4",
   "actions/download-artifact@v4",
   "downloads/Curiosity-Transcripts-latest.dmg",

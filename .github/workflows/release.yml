@@ -15,6 +15,17 @@ concurrency:
 jobs:
   build-release-dmg:
     runs-on: macos-26
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -34,8 +45,11 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build ad-hoc signed macOS DMG
-        run: ./scripts/build-macos-dmg.sh --no-sign
+      - name: Configure Apple signing credentials
+        run: ./scripts/configure-apple-signing-ci.sh
+
+      - name: Build signed and notarized macOS DMG
+        run: ./scripts/build-macos-dmg.sh
 
       - name: Stage versioned release assets
         id: stage_assets
@@ -59,6 +73,8 @@ jobs:
           cp "$dmg_path" "$release_asset"
 
           hdiutil verify "$release_asset"
+          xcrun stapler validate "$release_asset"
+          spctl -a -vvv -t open --context context:primary-signature "$release_asset"
           mount_dir="$(mktemp -d)"
           hdiutil attach "$release_asset" -readonly -nobrowse -mountpoint "$mount_dir"
           if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
@@ -67,6 +83,8 @@ jobs:
             rm -rf "$mount_dir"
             exit 1
           fi
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
           hdiutil detach "$mount_dir"
           rm -rf "$mount_dir"
 
@@ -88,8 +106,8 @@ jobs:
           {
             echo "Curiosity Transcripts ${RELEASE_VERSION}"
             echo
-            echo "Ad-hoc signed, non-notarized macOS DMG for testing the open-source release path."
-            echo "Developer ID signed and notarized distribution remains a separate release step."
+            echo "Developer ID signed and notarized macOS DMG."
+            echo "The workflow verifies the disk image, stapled notarization ticket, app bundle signature, and Gatekeeper assessment before upload."
           } > "$release_notes"
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

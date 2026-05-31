@@ -108,8 +108,8 @@ Remaining gaps:
 - Imported-audio workflow and transcript correction UI.
 - Calendar integration, starting with Apple Calendar context before cloud
   calendar connectors.
-- Unsigned macOS DMG build/release workflows exist; Developer ID signing,
-  notarization, and expanded contributor onboarding/process docs remain.
+- Developer ID signed and notarized macOS DMG workflows exist; Apple signing
+  credentials and expanded contributor onboarding/process docs remain.
 
 ## Roadmap
 
@@ -128,8 +128,7 @@ Near-term product hardening:
   hosted-provider use, storage location, and remaining exported files after
   deletion.
 - Keep the macOS installer path reproducible with ad-hoc signed local builds,
-  then add Developer ID signing and notarization for browser-distributed
-  releases.
+  then keep browser-distributed releases Developer ID signed and notarized.
 
 Calendar roadmap:
 
@@ -273,16 +272,17 @@ apps/desktop/src-tauri/target/release/bundle/macos/
 apps/desktop/src-tauri/target/release/bundle/dmg/
 ```
 
-Browser-distributed macOS releases still require a Developer ID Application
+Browser-distributed macOS releases require a Developer ID Application
 certificate and notarization. See `docs/macos-dmg-release.md` for the release
-checklist, signing environment variables, and manual installer smoke path.
+checklist, GitHub secret names, signing environment variables, and manual
+installer smoke path.
 
 ## GitHub Pages Homepage
 
 The static homepage under `site/` is published by `.github/workflows/pages.yml`.
-On each `main` deployment, GitHub Actions builds the ad-hoc signed,
-non-notarized macOS DMG on a macOS 26 runner, copies it into the Pages artifact,
-and updates the stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+On each `main` deployment, GitHub Actions builds the Developer ID signed and
+notarized macOS DMG on a macOS 26 runner, copies it into the Pages artifact, and
+updates the stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
@@ -310,8 +310,9 @@ Curiosity-Transcripts-<version>-macos-aarch64.dmg
 Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
 ```
 
-Until Developer ID signing and notarization are configured, release DMGs are
-ad-hoc signed and intended for testing the public release path.
+Release DMGs are Developer ID signed and notarized before upload. Local
+`--no-sign` builds remain available for testing the packaging path without
+Apple credentials.
 
 ## License And Attribution
 

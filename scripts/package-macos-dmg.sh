@@ -9,6 +9,7 @@ APP_PATH="$BUNDLE_DIR/macos/$APP_NAME.app"
 DMG_DIR="$BUNDLE_DIR/dmg"
 VERSION="$(node -p "require('$DESKTOP_DIR/package.json').version")"
 VERIFY_MOUNT_DIR=""
+NOTARIZED_DMG=0
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Missing app bundle: $APP_PATH" >&2
@@ -43,12 +44,23 @@ trap cleanup EXIT
 
 sign_app_bundle() {
   if [[ -z "${CURIOSITY_SKIP_DMG_SIGN:-}" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-    codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
+    local codesign_args=(--force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY")
+    if [[ -n "${APPLE_SIGNING_KEYCHAIN_PATH:-}" ]]; then
+      codesign_args+=(--keychain "$APPLE_SIGNING_KEYCHAIN_PATH")
+    fi
+    codesign "${codesign_args[@]}" "$APP_PATH"
   else
     codesign --force --deep --sign - "$APP_PATH"
   fi
 
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+}
+
+has_notarization_credentials() {
+  local api_key_id="${APPLE_API_KEY_ID:-${APPLE_API_KEY:-}}"
+
+  [[ -n "${APPLE_API_ISSUER:-}" && -n "$api_key_id" && -n "${APPLE_API_KEY_PATH:-}" ]] ||
+    [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]
 }
 
 verify_dmg() {
@@ -64,10 +76,22 @@ verify_dmg() {
 
   codesign --verify --deep --strict --verbose=2 "$VERIFY_MOUNT_DIR/$APP_NAME.app"
 
+  if [[ "$NOTARIZED_DMG" -eq 1 ]]; then
+    xcrun stapler validate "$DMG_PATH"
+    spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH"
+    spctl -a -vvv -t exec "$VERIFY_MOUNT_DIR/$APP_NAME.app"
+  fi
+
   hdiutil detach "$VERIFY_MOUNT_DIR"
   rm -rf "$VERIFY_MOUNT_DIR"
   VERIFY_MOUNT_DIR=""
 }
+
+if [[ -z "${CURIOSITY_SKIP_DMG_SIGN:-}" ]] && has_notarization_credentials && [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  echo "Notarization credentials were provided, but APPLE_SIGNING_IDENTITY is missing." >&2
+  echo "macOS notarization requires a Developer ID signed app." >&2
+  exit 1
+fi
 
 sign_app_bundle
 
@@ -82,18 +106,25 @@ hdiutil create \
   "$DMG_PATH"
 
 if [[ -z "${CURIOSITY_SKIP_DMG_SIGN:-}" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-  codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$DMG_PATH"
+  dmg_codesign_args=(--force --timestamp --sign "$APPLE_SIGNING_IDENTITY")
+  if [[ -n "${APPLE_SIGNING_KEYCHAIN_PATH:-}" ]]; then
+    dmg_codesign_args+=(--keychain "$APPLE_SIGNING_KEYCHAIN_PATH")
+  fi
+  codesign "${dmg_codesign_args[@]}" "$DMG_PATH"
 fi
 
 if [[ -n "${CURIOSITY_SKIP_DMG_SIGN:-}" ]]; then
   echo "Skipping DMG signing and notarization because CURIOSITY_SKIP_DMG_SIGN is set."
-elif [[ -n "${APPLE_API_ISSUER:-}" && -n "${APPLE_API_KEY:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+elif [[ -n "${APPLE_API_ISSUER:-}" && -n "${APPLE_API_KEY_ID:-${APPLE_API_KEY:-}}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+  api_key_id="${APPLE_API_KEY_ID:-${APPLE_API_KEY:-}}"
   xcrun notarytool submit "$DMG_PATH" \
     --issuer "$APPLE_API_ISSUER" \
-    --key-id "$APPLE_API_KEY" \
+    --key-id "$api_key_id" \
     --key "$APPLE_API_KEY_PATH" \
     --wait
   xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  NOTARIZED_DMG=1
 elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
   xcrun notarytool submit "$DMG_PATH" \
     --apple-id "$APPLE_ID" \
@@ -101,6 +132,8 @@ elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}
     --team-id "$APPLE_TEAM_ID" \
     --wait
   xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  NOTARIZED_DMG=1
 fi
 
 verify_dmg

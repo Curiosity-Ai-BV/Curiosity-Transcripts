@@ -18,6 +18,17 @@ concurrency:
 jobs:
   build-macos-dmg:
     runs-on: macos-26
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -34,8 +45,11 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build ad-hoc signed macOS DMG
-        run: ./scripts/build-macos-dmg.sh --no-sign
+      - name: Configure Apple signing credentials
+        run: ./scripts/configure-apple-signing-ci.sh
+
+      - name: Build signed and notarized macOS DMG
+        run: ./scripts/build-macos-dmg.sh
 
       - name: Stage latest DMG artifact
         run: |
@@ -46,6 +60,8 @@ jobs:
             exit 1
           fi
           cp "$dmg_path" pages-download/Curiosity-Transcripts-latest.dmg
+          xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg
+          spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4

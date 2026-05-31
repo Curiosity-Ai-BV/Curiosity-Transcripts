@@ -18,13 +18,20 @@ const requiredWorkflowText = [
   "contents: write",
   "'v*'",
   "node scripts/check-release-workflow.js",
-  "./scripts/build-macos-dmg.sh --no-sign",
+  "APPLE_CERTIFICATE_P12_BASE64",
+  "APPLE_API_KEY_ID",
+  "./scripts/configure-apple-signing-ci.sh",
+  "./scripts/build-macos-dmg.sh",
   'runner_arch="$(uname -m)"',
   'if [ "$runner_arch" != "arm64" ]; then',
   "Curiosity-Transcripts-${version}-macos-aarch64.dmg",
   'hdiutil verify "$release_asset"',
+  'xcrun stapler validate "$release_asset"',
+  'spctl -a -vvv -t open --context context:primary-signature "$release_asset"',
   'hdiutil attach "$release_asset" -readonly -nobrowse',
   '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
+  'codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"',
+  'spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"',
   "shasum -a 256",
   "gh release create",
   "gh release upload",
@@ -53,9 +60,14 @@ const requiredBuildScriptText = [
 ];
 
 const requiredPackageScriptText = [
+  "APPLE_API_KEY_ID",
   'codesign --force --deep --sign - "$APP_PATH"',
+  'codesign_args=(--force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY")',
   'codesign --verify --deep --strict --verbose=2 "$APP_PATH"',
   'codesign --verify --deep --strict --verbose=2 "$VERIFY_MOUNT_DIR/$APP_NAME.app"',
+  'xcrun stapler validate "$DMG_PATH"',
+  'spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH"',
+  'spctl -a -vvv -t exec "$VERIFY_MOUNT_DIR/$APP_NAME.app"',
   'hdiutil verify "$DMG_PATH"',
   'hdiutil attach "$DMG_PATH" -readonly -nobrowse',
   '[[ ! -d "$VERIFY_MOUNT_DIR/$APP_NAME.app" ]]',
@@ -63,7 +75,11 @@ const requiredPackageScriptText = [
 ];
 
 const requiredDmgDocsText = [
+  "APPLE_CERTIFICATE_P12_BASE64",
+  "APPLE_API_KEY_ID",
+  "Developer ID signed and notarized",
   "hdiutil verify",
+  "stapler validate",
   "read-only attach",
   "Curiosity Transcripts.app",
 ];
