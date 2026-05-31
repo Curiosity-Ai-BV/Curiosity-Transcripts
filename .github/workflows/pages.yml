@@ -34,7 +34,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build unsigned macOS DMG
+      - name: Build ad-hoc signed macOS DMG
         run: ./scripts/build-macos-dmg.sh --no-sign
 
       - name: Stage latest DMG artifact

@@ -34,7 +34,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build unsigned macOS DMG
+      - name: Build ad-hoc signed macOS DMG
         run: ./scripts/build-macos-dmg.sh --no-sign
 
       - name: Stage versioned release assets
@@ -88,8 +88,8 @@ jobs:
           {
             echo "Curiosity Transcripts ${RELEASE_VERSION}"
             echo
-            echo "Unsigned macOS DMG for testing the open-source release path."
-            echo "Signed and notarized distribution remains a separate release step."
+            echo "Ad-hoc signed, non-notarized macOS DMG for testing the open-source release path."
+            echo "Developer ID signed and notarized distribution remains a separate release step."
           } > "$release_notes"
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

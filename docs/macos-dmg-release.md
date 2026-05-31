@@ -25,27 +25,30 @@ The script runs:
    `.app` bundle target.
 4. `hdiutil create` against a staging folder containing the `.app` bundle and
    an `/Applications` symlink.
-5. `hdiutil verify` against the produced DMG.
-6. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
-   before the script reports success.
+5. `codesign` seals the `.app` bundle with Developer ID when credentials are
+   available, otherwise with an ad-hoc local signature.
+6. `hdiutil verify` against the produced DMG.
+7. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
+   and passes strict code-signature verification before the script reports
+   success.
 
 Expected outputs:
 
 ```text
 apps/desktop/src-tauri/target/release/bundle/macos/Curiosity Transcripts.app
-apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_0.1.17_<arch>.dmg
+apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_0.1.18_<arch>.dmg
 ```
 
-For local unsigned verification when Apple signing credentials are unavailable:
+For local ad-hoc signed verification when Apple signing credentials are unavailable:
 
 ```sh
 ./scripts/build-macos-dmg.sh --no-sign
 ```
 
-Unsigned or ad-hoc signed builds are useful for local smoke checks and for
-testing the public GitHub Pages and GitHub Release download paths. Production
-browser download distribution still requires Developer ID signing and
-notarization.
+Ad-hoc signed builds are useful for local smoke checks and for testing the
+public GitHub Pages and GitHub Release download paths. They are sealed so macOS
+does not report a malformed bundle, but production browser download
+distribution still requires Developer ID signing and notarization.
 
 ## macOS Signing And Notarization
 
