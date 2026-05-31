@@ -42,8 +42,10 @@ For local unsigned verification when Apple signing credentials are unavailable:
 ./scripts/build-macos-dmg.sh --no-sign
 ```
 
-Unsigned or ad-hoc signed builds are useful for local smoke checks, but they are
-not release artifacts for browser download distribution.
+Unsigned or ad-hoc signed builds are useful for local smoke checks and for
+testing the public GitHub Pages and GitHub Release download paths. Production
+browser download distribution still requires Developer ID signing and
+notarization.
 
 ## macOS Signing And Notarization
 

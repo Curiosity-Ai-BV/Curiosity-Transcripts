@@ -292,6 +292,7 @@ tags use `vMAJOR.MINOR.PATCH` and must match the same version in:
 
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
+- root `Cargo.toml` `[workspace.package] version`
 - `apps/desktop/src-tauri/Cargo.toml`
 - `apps/desktop/src-tauri/tauri.conf.json`
 
