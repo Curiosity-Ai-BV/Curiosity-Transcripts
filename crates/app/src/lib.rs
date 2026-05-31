@@ -717,7 +717,9 @@ where
                 .map(|stream| stream.sample_rate_hz)
                 .unwrap_or(48_000),
         );
-        meeting.start_recording(&session);
+        meeting
+            .start_recording(&session)
+            .map_err(|err| store_error(meeting_id, err.to_string()))?;
         let artifact = AudioArtifact::new_private(
             format!("artifact-{meeting_id}"),
             &recording_id,
