@@ -108,8 +108,8 @@ Remaining gaps:
 - Imported-audio workflow and transcript correction UI.
 - Calendar integration, starting with Apple Calendar context before cloud
   calendar connectors.
-- Release signing/notarization and broader contributor processes beyond the
-  initial license, attribution, security policy, and CI metadata gate.
+- Unsigned macOS DMG build/release workflows exist; Developer ID signing,
+  notarization, and expanded contributor onboarding/process docs remain.
 
 ## Roadmap
 
@@ -158,9 +158,9 @@ Engineering hardening before broader contributors:
   capture code each have clear locality.
 - Generate or lock the Rust-to-TypeScript command/view contracts so Tauri DTOs
   cannot drift silently from the frontend types.
-- Add a minimal CI gate for `cargo test --workspace`, desktop `npm run test`,
-  desktop `npm run build`, and the non-hardware smoke commands that must fail
-  loud when hardware or model prerequisites are absent.
+- Maintain and extend the existing CI gate for root Rust, desktop Rust, desktop
+  npm, release readiness, Pages/release workflow checks, and fail-loud smoke
+  commands as new surfaces are added.
 - Keep secrets, OAuth tokens, provider keys, and future encryption keys in the
   OS keychain rather than SQLite or plain settings files.
 
@@ -292,10 +292,11 @@ tags use `vMAJOR.MINOR.PATCH` and must match the same version in:
 
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
+- root `Cargo.toml` `[workspace.package] version`
 - `apps/desktop/src-tauri/Cargo.toml`
 - `apps/desktop/src-tauri/tauri.conf.json`
 
-For example, package version `0.1.16` is released from tag `v0.1.16`. A tag that
+For example, package version `0.1.17` is released from tag `v0.1.17`. A tag that
 does not match the app metadata fails before upload.
 
 The GitHub Pages workflow keeps the moving latest download at

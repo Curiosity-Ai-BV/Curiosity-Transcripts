@@ -12,7 +12,10 @@ This audit treats the MVP as functionally close, and focuses on maintainability,
 - The app should stay simple. Several proposals intentionally recommend narrow seams, typed boundaries, and small module splits instead of broad rewrites.
 
 Implementation status:
-The audit below is the pre-implementation assessment. The follow-up P1 hardening branch addresses the P1 findings with focused regressions and code changes; the P2/P3 sections remain forward-looking proposals.
+The audit below is the pre-implementation assessment. Follow-up hardening work
+has addressed the P1, P2, and P3 items with focused implementation commits.
+The finding bodies remain historical evidence and proposals; check current code,
+README, `CONTRIBUTING.md`, and release docs before treating any item as open.
 
 ## Priority Key
 
@@ -328,6 +331,8 @@ Proposal:
 
 ### 20. Workspace Policy Is Under-Centralized
 
+Status, 2026-05-31: addressed by follow-up P3 workspace-policy hardening.
+
 Evidence:
 - Root `Cargo.toml` only defines members and package metadata.
 - Each crate repeats `version = "0.1.16"` and `edition = "2021"`.
@@ -339,6 +344,8 @@ Proposal:
 - Add workspace lints gradually. Do not turn on `missing_docs` or strict pedantic lints all at once.
 
 ### 21. Domain Transitions Silently Ignore Invalid Inputs
+
+Status, 2026-05-31: addressed by follow-up P3 domain-transition hardening.
 
 Evidence:
 - `Meeting::start_recording` mutates only if session meeting ID matches in `crates/domain/src/lib.rs:50`.
@@ -353,6 +360,8 @@ Proposal:
 
 ### 22. Public Crate APIs Need Minimal Boundary Docs
 
+Status, 2026-05-31: addressed by follow-up P3 boundary-doc hardening.
+
 Evidence:
 - Several crates start directly with `use` statements and expose many public DTOs/traits without crate-level docs, including `crates/domain/src/lib.rs:1`, `crates/analysis/src/lib.rs:1`, and `crates/app/src/lib.rs:1`.
 
@@ -362,6 +371,8 @@ Proposal:
 - Use docs to defend boundaries, not to narrate implementation.
 
 ### 23. Historical Status Docs Can Mislead New Work
+
+Status, 2026-05-31: addressed by follow-up P3 docs-status alignment.
 
 Evidence:
 - `docs/mvp-status-and-full-cycle-plan.md` still describes some release/packaging work as outside or remaining even though release/CI workflows now exist.

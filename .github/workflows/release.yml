@@ -41,23 +41,6 @@ jobs:
         id: stage_assets
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
-          expected_tag="v${version}"
-          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
-            echo "::error::Release tag $GITHUB_REF_NAME must match apps/desktop/package.json version $version"
-            exit 1
-          fi
-
-          tauri_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -n 1)"
-          if [ "$tauri_version" != "$version" ]; then
-            echo "::error::apps/desktop/src-tauri/Cargo.toml version $tauri_version must match apps/desktop/package.json version $version"
-            exit 1
-          fi
-
-          lock_version="$(node -p "require('./apps/desktop/package-lock.json').packages[''].version")"
-          if [ "$lock_version" != "$version" ]; then
-            echo "::error::apps/desktop/package-lock.json version $lock_version must match apps/desktop/package.json version $version"
-            exit 1
-          fi
 
           runner_arch="$(uname -m)"
           if [ "$runner_arch" != "arm64" ]; then

@@ -1690,7 +1690,14 @@ fn start_microphone_recording_for_app_root(
         started_at_ms,
         sample_rate_hz,
     );
-    meeting.start_recording(&session);
+    if let Err(error) = meeting.start_recording(&session) {
+        return Err(metadata_persistence_failure(
+            error.to_string(),
+            recorder,
+            started_at_ms,
+            audio_root.join(&recording_id),
+        ));
+    }
     let artifacts = audio_artifacts_for_streams(&meeting_id, &recording_id, &streams);
 
     if let Err(error) = store.insert_recording_start_with_artifacts(&meeting, &session, &artifacts)

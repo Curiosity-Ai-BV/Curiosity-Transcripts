@@ -1,3 +1,9 @@
+//! Meeting analysis contracts and provider implementations.
+//!
+//! This crate owns structured analysis prompts, provider gates, and analyzer
+//! traits. It should not own transcript persistence, desktop command DTOs, or
+//! audio/transcription execution.
+
 use std::collections::HashSet;
 
 use curiosity_domain::{
@@ -38,6 +44,8 @@ impl AnalysisFailure {
     }
 }
 
+/// Failure reported by a provider text client before the analyzer can produce a
+/// structured meeting analysis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnalysisClientError {
     Unavailable(String),
@@ -54,6 +62,7 @@ impl std::fmt::Display for AnalysisClientError {
 
 impl std::error::Error for AnalysisClientError {}
 
+/// Text-completion boundary used by analyzers to call local or hosted models.
 pub trait ProviderTextClient {
     fn complete(&self, model_name: &str, prompt: &str) -> Result<String, AnalysisClientError>;
 
@@ -62,6 +71,7 @@ pub trait ProviderTextClient {
     }
 }
 
+/// Produces one structured analysis outcome for a transcript snapshot.
 pub trait MeetingAnalyzer {
     fn analyze(&self, input: AnalysisInput) -> AnalysisOutcome;
 }

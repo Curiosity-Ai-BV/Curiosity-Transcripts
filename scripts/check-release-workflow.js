@@ -7,6 +7,7 @@ const readmePath = path.join(root, "README.md");
 const buildScriptPath = path.join(root, "scripts", "build-macos-dmg.sh");
 const packageScriptPath = path.join(root, "scripts", "package-macos-dmg.sh");
 const dmgDocsPath = path.join(root, "docs", "macos-dmg-release.md");
+const workspaceCargoPath = path.join(root, "Cargo.toml");
 const packagePath = path.join(root, "apps", "desktop", "package.json");
 const lockPath = path.join(root, "apps", "desktop", "package-lock.json");
 const tauriCargoPath = path.join(root, "apps", "desktop", "src-tauri", "Cargo.toml");
@@ -36,6 +37,8 @@ const requiredReadmeText = [
   "vMAJOR.MINOR.PATCH",
   "apps/desktop/package.json",
   "apps/desktop/package-lock.json",
+  "Cargo.toml",
+  "[workspace.package]",
   "apps/desktop/src-tauri/Cargo.toml",
   "apps/desktop/src-tauri/tauri.conf.json",
   "GitHub Release",
@@ -77,6 +80,26 @@ function readRequired(filePath, label) {
   return fs.readFileSync(filePath, "utf8");
 }
 
+function readTomlSectionValue(text, sectionName, key) {
+  let inSection = false;
+
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\[[^\]]+\]\s*$/.test(line)) {
+      inSection = line.trim() === `[${sectionName}]`;
+      continue;
+    }
+
+    if (inSection) {
+      const match = line.match(new RegExp(`^${key} = "([^"]+)"$`));
+      if (match) {
+        return match[1];
+      }
+    }
+  }
+
+  return undefined;
+}
+
 const workflow = readRequired(workflowPath, ".github/workflows/release.yml");
 const readme = readRequired(readmePath, "README.md");
 const buildScript = readRequired(buildScriptPath, "scripts/build-macos-dmg.sh");
@@ -115,16 +138,28 @@ for (const text of requiredDmgDocsText) {
 
 const pkg = JSON.parse(readRequired(packagePath, "apps/desktop/package.json"));
 const lock = JSON.parse(readRequired(lockPath, "apps/desktop/package-lock.json"));
+const workspaceCargo = readRequired(workspaceCargoPath, "Cargo.toml");
 const tauriCargo = readRequired(tauriCargoPath, "apps/desktop/src-tauri/Cargo.toml");
 const tauriConfig = JSON.parse(
   readRequired(tauriConfigPath, "apps/desktop/src-tauri/tauri.conf.json"),
 );
+const workspaceVersion = readTomlSectionValue(workspaceCargo, "workspace.package", "version");
 const tauriVersionMatch = tauriCargo.match(/^version = "([^"]+)"$/m);
 const tauriVersion = tauriVersionMatch?.[1];
 const lockVersion = lock.packages?.[""]?.version ?? lock.version;
 
 if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) {
   fail("apps/desktop/package.json", "Desktop package version must be SemVer without a leading v");
+}
+
+if (process.env.GITHUB_REF_NAME) {
+  const expectedTag = `v${pkg.version}`;
+  if (process.env.GITHUB_REF_NAME !== expectedTag) {
+    fail(
+      ".github/workflows/release.yml",
+      `Release tag ${process.env.GITHUB_REF_NAME} must match apps/desktop/package.json version ${pkg.version}`,
+    );
+  }
 }
 
 const expectedDesktopScripts = {
@@ -144,6 +179,10 @@ for (const [scriptName, expectedCommand] of Object.entries(expectedDesktopScript
 
 if (lockVersion !== pkg.version) {
   fail("apps/desktop/package-lock.json", "Root lockfile package version must match apps/desktop/package.json");
+}
+
+if (workspaceVersion !== pkg.version) {
+  fail("Cargo.toml", "[workspace.package] version must match apps/desktop/package.json");
 }
 
 if (tauriVersion !== pkg.version) {

@@ -1,3 +1,10 @@
+//! Shared domain model for meetings, recordings, transcripts, artifacts, jobs,
+//! and analysis data.
+//!
+//! This crate owns portable product state and transition rules. It should not
+//! own persistence, desktop command DTOs, audio capture, transcription, or
+//! analysis provider behavior.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +40,45 @@ pub struct Meeting {
     pub transcript_segments: Vec<TranscriptSegment>,
 }
 
+/// Error returned when a domain transition would cross aggregate boundaries or
+/// violate the expected source state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DomainTransitionError {
+    MismatchedAggregateIds {
+        meeting_id: String,
+        session_meeting_id: String,
+    },
+    InvalidRecordingSessionStatus {
+        transition: &'static str,
+        expected: RecordingStatus,
+        actual: RecordingStatus,
+    },
+}
+
+impl std::fmt::Display for DomainTransitionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MismatchedAggregateIds {
+                meeting_id,
+                session_meeting_id,
+            } => write!(
+                formatter,
+                "recording session belongs to meeting {session_meeting_id}, not {meeting_id}"
+            ),
+            Self::InvalidRecordingSessionStatus {
+                transition,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "cannot {transition} from recording session status {actual:?}; expected {expected:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DomainTransitionError {}
+
 impl Meeting {
     pub fn new_manual(id: impl Into<String>, title: impl Into<String>, started_at_ms: u64) -> Self {
         Self {
@@ -47,22 +93,53 @@ impl Meeting {
         }
     }
 
-    pub fn start_recording(&mut self, session: &RecordingSession) {
-        if session.meeting_id == self.id {
-            self.status = MeetingStatus::Recording;
-        }
+    pub fn start_recording(
+        &mut self,
+        session: &RecordingSession,
+    ) -> Result<(), DomainTransitionError> {
+        self.validate_recording_session(session, RecordingStatus::Recording, "start recording")?;
+        self.status = MeetingStatus::Recording;
+        Ok(())
     }
 
-    pub fn mark_interrupted(&mut self, session: &RecordingSession) {
-        if session.meeting_id == self.id && session.status == RecordingStatus::Interrupted {
-            self.status = MeetingStatus::Interrupted;
-        }
+    pub fn mark_interrupted(
+        &mut self,
+        session: &RecordingSession,
+    ) -> Result<(), DomainTransitionError> {
+        self.validate_recording_session(session, RecordingStatus::Interrupted, "mark interrupted")?;
+        self.status = MeetingStatus::Interrupted;
+        Ok(())
     }
 
-    pub fn mark_recovered(&mut self, session: &RecordingSession) {
-        if session.meeting_id == self.id && session.status == RecordingStatus::Recovered {
-            self.status = MeetingStatus::Recovered;
+    pub fn mark_recovered(
+        &mut self,
+        session: &RecordingSession,
+    ) -> Result<(), DomainTransitionError> {
+        self.validate_recording_session(session, RecordingStatus::Recovered, "mark recovered")?;
+        self.status = MeetingStatus::Recovered;
+        Ok(())
+    }
+
+    fn validate_recording_session(
+        &self,
+        session: &RecordingSession,
+        expected: RecordingStatus,
+        transition: &'static str,
+    ) -> Result<(), DomainTransitionError> {
+        if session.meeting_id != self.id {
+            return Err(DomainTransitionError::MismatchedAggregateIds {
+                meeting_id: self.id.clone(),
+                session_meeting_id: session.meeting_id.clone(),
+            });
         }
+        if session.status != expected {
+            return Err(DomainTransitionError::InvalidRecordingSessionStatus {
+                transition,
+                expected,
+                actual: session.status,
+            });
+        }
+        Ok(())
     }
 
     pub fn start_transcribing(&mut self) {

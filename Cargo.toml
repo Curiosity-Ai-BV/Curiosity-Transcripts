@@ -3,6 +3,15 @@ members = ["crates/analysis", "crates/app", "crates/audio", "crates/domain", "cr
 resolver = "2"
 
 [workspace.package]
+version = "0.1.17"
+edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"
 homepage = "https://github.com/Curiosity-Ai-BV/Curiosity-Transcripts"
+
+[workspace.lints.rust]
+future-incompatible = "warn"
+nonstandard-style = "warn"
+
+[workspace.lints.clippy]
+all = "warn"

@@ -1,3 +1,10 @@
+//! Local transcription contracts, fixture transcription, Whisper integration,
+//! and transcript export helpers.
+//!
+//! This crate owns turning audio artifacts or fixtures into transcript
+//! documents. It should not own recording capture, meeting persistence,
+//! analysis, or desktop command DTOs.
+
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +16,7 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "whisper-rs")]
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Result type for transcription boundaries that can use multiple backends.
 pub type TranscriptionResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const MISSING_MODEL_GUIDANCE: &str = concat!(
@@ -77,6 +85,7 @@ pub struct TranscriptionDocument {
     pub segments: Vec<TranscriptSegment>,
 }
 
+/// User-actionable transcription failure before or during backend execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TranscriptionError {
     MissingModelPath { path: PathBuf, guidance: String },
@@ -170,6 +179,7 @@ impl WhisperBackendSegment {
     }
 }
 
+/// Backend boundary for local Whisper-compatible transcription engines.
 pub trait WhisperBackend {
     fn provider(&self) -> &'static str;
     fn transcribe(
@@ -470,6 +480,7 @@ pub fn run_optional_real_whisper_smoke_from_env() -> WhisperSmokeStatus {
     )
 }
 
+/// Transcribes deterministic fixtures into normalized transcript documents.
 pub trait LocalTranscriber {
     fn transcribe_fixture(
         &self,

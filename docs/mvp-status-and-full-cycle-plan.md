@@ -2,6 +2,11 @@
 
 Date: 2026-05-22
 
+Historical note, updated 2026-05-31: this document is a dated MVP-completion
+snapshot, not the current onboarding source of truth. Use `README.md`,
+`CONTRIBUTING.md`, and `docs/macos-dmg-release.md` for current CI, contributor,
+and macOS DMG release workflow details.
+
 ## Assumptions
 
 - macOS is the MVP platform.
@@ -141,7 +146,9 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
 
 ## Remaining Non-MVP Work
 
-- Production packaging and installer flow.
+- Developer ID signing/notarization for production distribution. The older
+  packaging note above predates the current unsigned macOS DMG build/release
+  workflow documented in `README.md` and `docs/macos-dmg-release.md`.
 - Calendar integration.
 - Whisper model download/management UI.
 - Hosted provider key selection and disclosure UX beyond the guarded backend paths.
