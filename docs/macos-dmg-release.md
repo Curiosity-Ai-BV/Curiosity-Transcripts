@@ -33,7 +33,7 @@ Expected outputs:
 
 ```text
 apps/desktop/src-tauri/target/release/bundle/macos/Curiosity Transcripts.app
-apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_0.1.16_<arch>.dmg
+apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_0.1.17_<arch>.dmg
 ```
 
 For local unsigned verification when Apple signing credentials are unavailable:
