@@ -1,3 +1,9 @@
+//! Service-facing command and DTO layer for the desktop shell.
+//!
+//! This crate owns command orchestration over audio, store, transcription, and
+//! analysis crates. It should not own persistence internals, capture backends,
+//! transcription engines, or Tauri/web UI state.
+
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -11,9 +17,12 @@ use curiosity_domain::{
 use curiosity_store::{Store, StoreError};
 use serde::{Deserialize, Serialize};
 
+/// Result for recording commands that must return the current trust state on failure.
 pub type AppResult<T> = Result<T, RecordingError>;
+/// Result for non-recording commands exposed through the app boundary.
 pub type CommandResult<T> = Result<T, CommandError>;
 
+/// Error contract for app commands that do not need recording trust-state details.
 #[derive(Debug)]
 pub enum CommandError {
     Store(StoreError),
@@ -444,6 +453,7 @@ fn analysis_citation_dto(citation: AnalysisCitation) -> AnalysisCitationDto {
     }
 }
 
+/// Stable categories callers can use to decide how to present recording failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordingErrorKind {
     DiskFull,
@@ -454,6 +464,7 @@ pub enum RecordingErrorKind {
     NoRecoverableRecording,
 }
 
+/// Recording command failure with enough state for callers to keep the UI truthful.
 #[derive(Debug)]
 pub struct RecordingError {
     pub kind: RecordingErrorKind,
@@ -475,6 +486,7 @@ pub struct StorageSetup {
     pub artifact_path: String,
 }
 
+/// Storage boundary used by recording commands to write and recover artifacts.
 pub trait ArtifactSink {
     fn setup_recording(&self, meeting_id: &str) -> Result<StorageSetup, StorageSetupError>;
     fn write_frames(
@@ -486,6 +498,7 @@ pub trait ArtifactSink {
     fn recover_recording(&self, setup: &StorageSetup) -> Result<(), StorageSetupError>;
 }
 
+/// Failure returned while preparing or writing recording artifact storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StorageSetupError {
     pub kind: RecordingErrorKind,

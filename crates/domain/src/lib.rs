@@ -1,3 +1,10 @@
+//! Shared domain model for meetings, recordings, transcripts, artifacts, jobs,
+//! and analysis data.
+//!
+//! This crate owns portable product state and transition rules. It should not
+//! own persistence, desktop command DTOs, audio capture, transcription, or
+//! analysis provider behavior.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +40,8 @@ pub struct Meeting {
     pub transcript_segments: Vec<TranscriptSegment>,
 }
 
+/// Error returned when a domain transition would cross aggregate boundaries or
+/// violate the expected source state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DomainTransitionError {
     MismatchedAggregateIds {

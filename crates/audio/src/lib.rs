@@ -1,3 +1,9 @@
+//! Audio capture contracts and artifact recording support.
+//!
+//! This crate owns capture configuration, permission/capability errors, frame
+//! capture traits, and WAV artifact writing. It should not own meeting
+//! persistence, transcript generation, analysis, or desktop command DTOs.
+
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -70,6 +76,7 @@ impl CaptureConfiguration {
     }
 }
 
+/// Error returned when a capture configuration cannot represent a valid request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CaptureConfigurationError {
     NoStreamsRequested,
@@ -129,6 +136,7 @@ pub struct AudioFrame {
     pub pcm_i16: Vec<i16>,
 }
 
+/// Boundary for code that can inspect audio devices and produce captured frames.
 pub trait AudioCapture {
     fn device_snapshot(&self) -> Result<DeviceSnapshot, CapturePermissionError>;
     fn capture_frames(&self) -> Result<Vec<AudioFrame>, CapturePermissionError>;
@@ -223,6 +231,7 @@ pub enum CaptureCapability {
     SystemAudio,
 }
 
+/// Permission failure for a requested capture capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapturePermissionError {
     pub permission: CapturePermission,
@@ -274,6 +283,7 @@ impl fmt::Display for CapturePermissionError {
 
 impl Error for CapturePermissionError {}
 
+/// Capability failure when the platform or device set cannot satisfy capture.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureUnavailable {
     pub capability: CaptureCapability,
@@ -334,6 +344,7 @@ impl fmt::Display for CaptureUnavailable {
 
 impl Error for CaptureUnavailable {}
 
+/// Top-level capture failure exposed by audio setup and recording entry points.
 #[derive(Debug)]
 pub enum CaptureError {
     Configuration(CaptureConfigurationError),
@@ -605,6 +616,7 @@ pub struct ArtifactManifest {
     pub recovery: Option<RecoveryMetadata>,
 }
 
+/// Error returned when requested audio streams cannot produce a valid artifact.
 #[derive(Debug)]
 pub enum RecordingError {
     Io(io::Error),

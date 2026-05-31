@@ -1,3 +1,9 @@
+//! SQLite-backed persistence for local transcript data.
+//!
+//! This crate owns migrations, search, export/delete, startup repair, settings,
+//! and persisted analysis records. It should not own desktop DTOs, capture
+//! devices, transcription engines, or provider calls.
+
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -14,6 +20,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Result type for operations at the persistence boundary.
 pub type StoreResult<T> = Result<T, StoreError>;
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
@@ -26,6 +33,7 @@ const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
 const SETTING_OLLAMA_MODEL: &str = "ollama_model";
 const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
 
+/// Typed store failure for storage, path safety, recovery, and invariant errors.
 #[derive(Debug)]
 pub enum StoreError {
     Io(io::Error),
