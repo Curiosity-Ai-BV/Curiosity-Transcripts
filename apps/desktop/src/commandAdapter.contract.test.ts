@@ -224,6 +224,9 @@ describe("typed desktop command facade", () => {
           state: "Available",
           message: "Ollama is reachable.",
           setupGuidance: "",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["qwen3.6:27b"],
+          pullCommand: null,
         } as never;
       }
       if (command === "search_meetings") {
@@ -314,5 +317,22 @@ describe("typed desktop command facade", () => {
     await expect(facade.testWhisperModelPath({ path: "/models/base.en.bin" })).rejects.toThrow(
       "test_whisper_model_path.fileSizeBytes",
     );
+  });
+
+  it("fails loudly when a reachable Ollama test omits setup metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_ollama_connection") {
+        return {
+          state: "Available",
+          message: "Ollama is reachable.",
+          setupGuidance: "",
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(
+      facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" }),
+    ).rejects.toThrow("test_ollama_connection.selectedLocalModelTag");
   });
 });

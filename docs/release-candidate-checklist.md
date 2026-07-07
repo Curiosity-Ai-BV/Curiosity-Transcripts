@@ -18,8 +18,10 @@ model paths, and any skipped item in the release notes.
 - Model setup: configure a local Whisper model path in Settings and record the
   path test's file size plus SHA-256 readability evidence. Treat the real
   Whisper smoke or a sample transcription as the compatibility check. Confirm
-  local Ollama base URL/model state, and verify missing models show actionable
-  setup guidance.
+  local Ollama base URL/model state, record the installed Ollama model evidence
+  reported by `/api/tags`, and verify missing models show the suggested
+  `ollama pull <model>` command as manual setup guidance. Actual Ollama model
+  pulls remain manual for now.
 - Offline-after-setup: after Whisper and Ollama setup, disable network access
   and confirm the local record, transcribe, search, JSON export, and delete path
   still works. Local Ollama may require the local server to remain running.

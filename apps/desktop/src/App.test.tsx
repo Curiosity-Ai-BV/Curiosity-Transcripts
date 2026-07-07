@@ -990,6 +990,9 @@ describe("desktop workspace shell", () => {
           state: "Available",
           message: "Ollama is reachable and qwen3.6:27b is installed.",
           setupGuidance: "",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["gemma4:31b", "qwen3.6:27b"],
+          pullCommand: null,
         };
       },
     });
@@ -1008,6 +1011,38 @@ describe("desktop workspace shell", () => {
       },
     ]);
     expect(screen.getByText("Ollama is reachable and qwen3.6:27b is installed.")).toBeInTheDocument();
+    expect(screen.getByText("Installed models: gemma4:31b, qwen3.6:27b")).toBeInTheDocument();
+  });
+
+  it("shows the manual Ollama pull command when the selected model is missing", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      testOllamaConnection: async () => ({
+        state: "Unavailable",
+        message: "Ollama is reachable, but qwen3.6:27b is not installed.",
+        setupGuidance: "Install the selected model with `ollama pull qwen3.6:27b`, then retry.",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: "ollama pull qwen3.6:27b",
+      }),
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.click(screen.getByRole("button", { name: "Test Ollama" }));
+
+    const feedback = screen.getByRole("status");
+    expect(within(feedback).getByText("Ollama is reachable, but qwen3.6:27b is not installed.")).toBeInTheDocument();
+    expect(within(feedback).getByText("Installed models: gemma4:31b")).toBeInTheDocument();
+    expect(within(feedback).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
   });
 
   it("clears successful Ollama reachability feedback when tested inputs change", async () => {
@@ -1025,6 +1060,9 @@ describe("desktop workspace shell", () => {
         state: "Available",
         message: "Ollama is reachable and qwen3.6:27b is installed.",
         setupGuidance: "",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
       }),
     });
 
@@ -1421,6 +1459,9 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
       state: "Available",
       message: "Ollama is reachable.",
       setupGuidance: "",
+      selectedLocalModelTag: "qwen3.6:27b",
+      installedLocalModels: ["qwen3.6:27b"],
+      pullCommand: null,
     }),
     ...overrides,
   };

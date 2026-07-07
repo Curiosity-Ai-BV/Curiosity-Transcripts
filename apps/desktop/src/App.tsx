@@ -68,10 +68,18 @@ interface SettingsFormState {
 interface SettingsFeedback {
   tone: Tone;
   message: string;
-  metadata?: {
-    fileSizeBytes: number;
-    sha256: string;
-  };
+  metadata?:
+    | {
+        kind: "whisper";
+        fileSizeBytes: number;
+        sha256: string;
+      }
+    | {
+        kind: "ollama";
+        selectedLocalModelTag: string | null;
+        installedLocalModels: string[] | null;
+        pullCommand: string | null;
+      };
 }
 
 export default function App({ snapshot, commandFacade }: AppProps) {
@@ -434,6 +442,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
         metadata:
           result.state === "Valid"
             ? {
+                kind: "whisper",
                 fileSizeBytes: result.fileSizeBytes,
                 sha256: result.sha256,
               }
@@ -466,6 +475,12 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       setSettingsFeedback({
         tone: result.state === "Available" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: result.selectedLocalModelTag,
+          installedLocalModels: result.installedLocalModels,
+          pullCommand: result.pullCommand,
+        },
       });
     } catch (error) {
       setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
@@ -995,8 +1010,29 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                   <span>{settingsFeedback.message}</span>
                   {settingsFeedback.metadata ? (
                     <span className="settings-feedback-metadata">
-                      <span>Size: {settingsFeedback.metadata.fileSizeBytes} bytes</span>
-                      <span>SHA-256: {settingsFeedback.metadata.sha256}</span>
+                      {settingsFeedback.metadata.kind === "whisper" ? (
+                        <>
+                          <span>Size: {settingsFeedback.metadata.fileSizeBytes} bytes</span>
+                          <span>SHA-256: {settingsFeedback.metadata.sha256}</span>
+                        </>
+                      ) : (
+                        <>
+                          {settingsFeedback.metadata.selectedLocalModelTag ? (
+                            <span>Selected model: {settingsFeedback.metadata.selectedLocalModelTag}</span>
+                          ) : null}
+                          {settingsFeedback.metadata.installedLocalModels ? (
+                            <span>
+                              Installed models:{" "}
+                              {settingsFeedback.metadata.installedLocalModels.length > 0
+                                ? settingsFeedback.metadata.installedLocalModels.join(", ")
+                                : "none reported"}
+                            </span>
+                          ) : null}
+                          {settingsFeedback.metadata.pullCommand ? (
+                            <span>Pull command: {settingsFeedback.metadata.pullCommand}</span>
+                          ) : null}
+                        </>
+                      )}
                     </span>
                   ) : null}
                 </div>

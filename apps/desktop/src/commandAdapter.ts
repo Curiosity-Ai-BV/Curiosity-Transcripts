@@ -71,6 +71,9 @@ export interface OllamaConnectionTestResult {
   state: "Available" | "Unavailable";
   message: string;
   setupGuidance: string;
+  selectedLocalModelTag: string | null;
+  installedLocalModels: string[] | null;
+  pullCommand: string | null;
 }
 
 export interface ExportCommandState {
@@ -918,6 +921,15 @@ function requireNullableString(value: unknown, pathLabel: string): string | null
   return requireString(value, pathLabel);
 }
 
+function requireNullableStringArray(value: unknown, pathLabel: string): string[] | null {
+  if (value === null) {
+    return value;
+  }
+  return requireContractArray(value, pathLabel).map((item, index) =>
+    requireString(item, `${pathLabel}[${index}]`),
+  );
+}
+
 function requireNumber(value: unknown, pathLabel: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a finite number`);
@@ -1063,6 +1075,16 @@ function assertWhisperModelPathTestContract(value: unknown): asserts value is Wh
   }
 }
 
+function assertOllamaConnectionTestContract(value: unknown): asserts value is OllamaConnectionTestResult {
+  const result = requireContractRecord(value, "test_ollama_connection");
+  requireEnum(result.state, ["Available", "Unavailable"], "test_ollama_connection.state");
+  requireString(result.message, "test_ollama_connection.message");
+  requireString(result.setupGuidance, "test_ollama_connection.setupGuidance");
+  requireNullableString(result.selectedLocalModelTag, "test_ollama_connection.selectedLocalModelTag");
+  requireNullableStringArray(result.installedLocalModels, "test_ollama_connection.installedLocalModels");
+  requireNullableString(result.pullCommand, "test_ollama_connection.pullCommand");
+}
+
 function retentionDetail(policy: RawAudioRetentionPolicy): string {
   if (policy === "DeleteAfterTranscription") {
     return "Raw audio will be deleted after transcription.";
@@ -1085,6 +1107,9 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
     }
     if (command === "test_whisper_model_path") {
       assertWhisperModelPathTestContract(result);
+    }
+    if (command === "test_ollama_connection") {
+      assertOllamaConnectionTestContract(result);
     }
     return result as T;
   };
@@ -1119,8 +1144,11 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       assertWhisperModelPathTestContract(result);
       return result;
     },
-    testOllamaConnection: ({ baseUrl, model }) =>
-      fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", { baseUrl, model }),
+    testOllamaConnection: async ({ baseUrl, model }) => {
+      const result = await fetchCommand<unknown>("test_ollama_connection", { baseUrl, model });
+      assertOllamaConnectionTestContract(result);
+      return result;
+    },
   };
 }
 

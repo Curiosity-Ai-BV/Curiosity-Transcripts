@@ -2856,13 +2856,15 @@ where
             "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
         );
     }
+    let selected_model_tag = canonical_local_ollama_model_tag(model_name);
     let url = match local_ollama_endpoint(base_url, "/api/tags") {
         Ok(url) => url,
         Err(error) => {
             return OllamaConnectionTestView::unavailable(
                 error.to_string(),
                 "Use a local Ollama base URL such as http://127.0.0.1:11434.",
-            );
+            )
+            .with_selected_local_model_tag(selected_model_tag);
         }
     };
     let response = match transport.get_json(&url) {
@@ -2871,32 +2873,41 @@ where
             return OllamaConnectionTestView::unavailable(
                 format!("Ollama is unavailable: {error}"),
                 "Start Ollama with `ollama serve`, then retry.",
-            );
+            )
+            .with_selected_local_model_tag(selected_model_tag);
         }
     };
     let installed_models = installed_ollama_model_names(&response);
     let matched_model = installed_models
         .iter()
-        .find(|installed_model| ollama_model_matches_request(installed_model, model_name));
+        .find(|installed_model| ollama_model_matches_request(installed_model, model_name))
+        .cloned();
     if let Some(installed_model) = matched_model {
         OllamaConnectionTestView {
             state: "Available".to_string(),
             message: format!("Ollama is reachable and {installed_model} is installed."),
             setup_guidance: String::new(),
+            selected_local_model_tag: Some(selected_model_tag),
+            installed_local_models: Some(installed_models),
+            pull_command: None,
         }
     } else {
-        let pull_model_name = canonical_local_ollama_model_tag(model_name);
+        let pull_command = format!("ollama pull {selected_model_tag}");
         let installed_hint = if installed_models.is_empty() {
             " No local models were reported by Ollama.".to_string()
         } else {
             format!(" Installed local models: {}.", installed_models.join(", "))
         };
-        OllamaConnectionTestView::unavailable(
-            format!("Ollama is reachable, but {pull_model_name} is not installed."),
+        let mut view = OllamaConnectionTestView::unavailable(
+            format!("Ollama is reachable, but {selected_model_tag} is not installed."),
             format!(
-                "Install the selected model with `ollama pull {pull_model_name}`, then retry.{installed_hint}"
+                "Install the selected model with `{pull_command}`, then retry.{installed_hint}"
             ),
         )
+        .with_selected_local_model_tag(selected_model_tag);
+        view.installed_local_models = Some(installed_models);
+        view.pull_command = Some(pull_command);
+        view
     }
 }
 
@@ -3181,6 +3192,9 @@ struct OllamaConnectionTestView {
     state: String,
     message: String,
     setup_guidance: String,
+    selected_local_model_tag: Option<String>,
+    installed_local_models: Option<Vec<String>>,
+    pull_command: Option<String>,
 }
 
 impl OllamaConnectionTestView {
@@ -3189,7 +3203,15 @@ impl OllamaConnectionTestView {
             state: "Unavailable".to_string(),
             message: message.into(),
             setup_guidance: setup_guidance.into(),
+            selected_local_model_tag: None,
+            installed_local_models: None,
+            pull_command: None,
         }
+    }
+
+    fn with_selected_local_model_tag(mut self, model_tag: String) -> Self {
+        self.selected_local_model_tag = Some(model_tag);
+        self
     }
 }
 
@@ -3631,6 +3653,15 @@ mod tests {
 
         assert_eq!(result.state, "Available");
         assert!(result.message.contains("qwen3.6:27b"));
+        assert_eq!(
+            result.selected_local_model_tag.as_deref(),
+            Some("qwen3.6:27b")
+        );
+        assert_eq!(
+            result.installed_local_models.as_deref(),
+            Some(["gemma4:31b".to_string(), "qwen3.6:27b".to_string()].as_slice())
+        );
+        assert_eq!(result.pull_command, None);
     }
 
     #[test]
@@ -3709,6 +3740,36 @@ mod tests {
         assert!(result
             .setup_guidance
             .contains("Installed local models: gemma4:31b"));
+        assert_eq!(
+            result.selected_local_model_tag.as_deref(),
+            Some("qwen3.6:27b")
+        );
+        assert_eq!(
+            result.installed_local_models.as_deref(),
+            Some(["gemma4:31b".to_string()].as_slice())
+        );
+        assert_eq!(
+            result.pull_command.as_deref(),
+            Some("ollama pull qwen3.6:27b")
+        );
+    }
+
+    #[test]
+    fn test_ollama_connection_rejects_cloud_model_without_local_setup_metadata() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        let result = test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "deepseek-v3.2:cloud",
+            &transport,
+        );
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result.message.contains("hosted or cloud model tags"));
+        assert_eq!(result.selected_local_model_tag, None);
+        assert_eq!(result.installed_local_models, None);
+        assert_eq!(result.pull_command, None);
     }
 
     #[test]
