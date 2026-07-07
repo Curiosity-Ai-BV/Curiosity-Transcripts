@@ -48,8 +48,10 @@ require_text README.md 'desktop app currently exposes JSON export only' 'current
 require_text README.md 'Markdown and SRT.*lower-level.*helpers' 'Markdown/SRT helper versus shipped desktop export distinction'
 require_text README.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link'
 require_text README.md 'arm64-only' 'first public release architecture documentation'
+require_text docs/production-readiness-roadmap.md 'check-tauri-security\.js' 'Tauri renderer CSP release gate documentation'
 require_text docs/production-readiness-roadmap.md 'First public release architecture: arm64-only macOS DMG' 'first public release architecture decision'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
+require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS permissions release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Model setup' 'model setup release-candidate smoke item'
@@ -90,6 +92,7 @@ require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publica
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
 require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Release workflow validation CI gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
 require_text .github/workflows/release.yml 'gh release upload' 'versioned GitHub Release asset upload'
@@ -142,6 +145,10 @@ if ! node scripts/check-pages-workflow.js; then
 fi
 
 if ! node scripts/check-release-workflow.js; then
+  failures=1
+fi
+
+if ! node scripts/check-tauri-security.js; then
   failures=1
 fi
 

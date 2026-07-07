@@ -7,6 +7,10 @@ builds are out of scope until workflows, QA, and public copy change together.
 Skipped smoke checks are not passes. Record the build, machine, macOS version,
 model paths, and any skipped item in the release notes.
 
+Automated release readiness must include `node scripts/check-tauri-security.js`
+through `bash scripts/check-publication-readiness.sh`; the gate fails null or
+loosened Tauri renderer CSP values before manual smoke starts.
+
 ## Manual Smoke Items
 
 - Clean-user install: on a clean macOS user account without the development

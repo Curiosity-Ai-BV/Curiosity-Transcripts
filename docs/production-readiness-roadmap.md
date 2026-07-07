@@ -119,7 +119,8 @@ Goal: make the local-first trust promise enforceable in the shipped app.
 Deliverables:
 
 - Replace the null Tauri CSP with a restrictive policy appropriate for a local
-  transcript renderer.
+  transcript renderer, guarded by `scripts/check-tauri-security.js` in
+  publication readiness.
 - Finish per-meeting privacy controls for raw-audio retention:
   retain, delete after transcription, never save where supported, storage
   location, provider/network use, and remaining exported files after deletion.
@@ -258,6 +259,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+node scripts/check-tauri-security.js
 bash scripts/check-publication-readiness.sh
 ```
 
