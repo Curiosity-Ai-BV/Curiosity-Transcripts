@@ -139,7 +139,10 @@ fn phase_four_commands_correct_transcript_segment_rejects_segment_outside_meetin
     }
 
     let second_detail = meeting_detail_dto(&store, "meeting-2").expect("open other meeting");
-    assert_eq!(second_detail.transcript_segments[0].text, "second meeting text");
+    assert_eq!(
+        second_detail.transcript_segments[0].text,
+        "second meeting text"
+    );
     assert!(store
         .transcript_segment_edits("meeting-2-segment-1")
         .expect("read other edit history")

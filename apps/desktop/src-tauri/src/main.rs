@@ -24,8 +24,9 @@ use curiosity_audio::{
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, Meeting, MeetingStatus, ModelRun, RecordingSession,
-    RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, ModelRun,
+    ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
+    TranscriptVersion,
 };
 use curiosity_store::{AppSettings, CompletedAudioArtifact, RecoverableArtifact, Store};
 #[cfg(feature = "whisper-rs")]
@@ -671,6 +672,20 @@ fn desktop_snapshot_for_app_root_with_state(
     } else {
         open_store_with_startup_repair(app_root)?
     };
+    let recovered_transcription_job =
+        if command_state.active_recording.is_none() && command_state.transcription_job.is_none() {
+            store
+                .recover_active_transcription_jobs(
+                    current_timestamp_ms(),
+                    "transcription worker was not running after app restart",
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .next()
+                .map(command_job_from_processing_job)
+        } else {
+            None
+        };
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
@@ -764,7 +779,10 @@ fn desktop_snapshot_for_app_root_with_state(
             system_audio: system_audio_capture_state(command_state, has_system_audio_transcript),
         },
         transcription: command_state.last_transcription.clone(),
-        transcription_job: command_state.transcription_job.clone(),
+        transcription_job: command_state
+            .transcription_job
+            .clone()
+            .or(recovered_transcription_job),
         export_command: command_state.last_export.clone().unwrap_or_default(),
         delete_command: command_state.last_delete.clone().unwrap_or_default(),
         analysis_command: command_state.last_analysis.clone(),
@@ -2112,20 +2130,159 @@ fn transcribe_meeting_for_app_root<B: WhisperBackend>(
 }
 
 fn begin_transcription_job_for_app_root(
-    _app_root: &Path,
+    app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
 ) -> Result<CommandJobView, String> {
-    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-    command_state
-        .begin_transcription_job(meeting_id, started_at_ms)
-        .map_err(|job| {
-            format!(
-                "{} already owns transcription for {}",
-                job.id, job.meeting_id
+    let job = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .begin_transcription_job(meeting_id, started_at_ms)
+            .map_err(|job| {
+                format!(
+                    "{} already owns transcription for {}",
+                    job.id, job.meeting_id
+                )
+            })?
+    };
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    let active_job = match store.active_transcription_job_for_meeting(meeting_id) {
+        Ok(active_job) => active_job,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error.to_string());
+        }
+    };
+    if let Some(active_job) = active_job {
+        let recovered_job = match store
+            .recover_processing_job(
+                &active_job.id,
+                started_at_ms,
+                "transcription worker was not running after app restart",
             )
-        })
+            .and_then(|_| store.processing_job(&active_job.id))
+        {
+            Ok(recovered_job) => recovered_job,
+            Err(error) => {
+                let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+                return Err(error.to_string());
+            }
+        };
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.transcription_job = Some(command_job_from_processing_job(recovered_job));
+        return Err(format!(
+            "{} already owns transcription for {}",
+            active_job.id, active_job.meeting_id
+        ));
+    }
+
+    let durable_job = processing_job_from_command_job(&job);
+    if let Err(error) = store.insert_processing_job(&durable_job) {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+        return Err(error.to_string());
+    }
+
+    Ok(job)
+}
+
+fn processing_job_from_command_job(job: &CommandJobView) -> ProcessingJob {
+    let mut processing_job = ProcessingJob::new(
+        &job.id,
+        &job.meeting_id,
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    processing_job.attempts = 1;
+    processing_job.started_at_ms = Some(job.started_at_ms);
+    processing_job.idempotency_key = Some(transcription_idempotency_key(&job.meeting_id));
+    processing_job
+}
+
+fn transcription_idempotency_key(meeting_id: &str) -> String {
+    format!("transcribe:{meeting_id}")
+}
+
+fn command_job_from_processing_job(job: ProcessingJob) -> CommandJobView {
+    CommandJobView {
+        id: job.id,
+        kind: CommandJobKind::Transcription,
+        meeting_id: job.meeting_id,
+        state: command_job_state_from_processing_status(job.status, job.cancel_requested),
+        cancel_requested: job.cancel_requested,
+        started_at_ms: job.started_at_ms.unwrap_or_default(),
+    }
+}
+
+fn command_job_state_from_processing_status(
+    status: JobStatus,
+    cancel_requested: bool,
+) -> CommandJobState {
+    match status {
+        JobStatus::Running if cancel_requested => CommandJobState::CancelRequested,
+        JobStatus::Running => CommandJobState::Running,
+        JobStatus::Succeeded => CommandJobState::Complete,
+        JobStatus::Canceled => CommandJobState::Canceled,
+        JobStatus::Queued | JobStatus::Failed | JobStatus::Retry | JobStatus::Recovery => {
+            CommandJobState::Failed
+        }
+    }
+}
+
+fn persist_transcription_job_cancel_request(app_root: &Path, job_id: &str) -> Result<(), String> {
+    open_store(app_root)?
+        .request_processing_job_cancel(job_id)
+        .map_err(|error| error.to_string())
+}
+
+fn persist_transcription_job_finish(
+    app_root: &Path,
+    job_id: &str,
+    finish_state: CommandJobFinishState,
+    finished_at_ms: u64,
+    last_error: Option<&str>,
+) -> Result<(), String> {
+    let store = open_store(app_root)?;
+    match finish_state {
+        CommandJobFinishState::Complete => store.complete_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Canceled => store.cancel_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Failed => {
+            store.fail_processing_job(job_id, finished_at_ms, last_error.unwrap_or("failed"))
+        }
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn transcription_command_last_error(transcription: &TranscriptionCommandView) -> Option<String> {
+    transcription
+        .failure
+        .as_ref()
+        .map(|failure| failure.message.clone())
+}
+
+fn finish_state_for_transcription(
+    transcription: &Result<Option<TranscriptionCommandView>, String>,
+) -> (CommandJobFinishState, Option<String>) {
+    match transcription {
+        Ok(Some(transcription)) if transcription.state == TranscriptionCommandState::Failed => (
+            CommandJobFinishState::Failed,
+            transcription_command_last_error(transcription),
+        ),
+        Ok(Some(_)) => (CommandJobFinishState::Complete, None),
+        Ok(None) => (CommandJobFinishState::Canceled, None),
+        Err(error) => (CommandJobFinishState::Failed, Some(error.clone())),
+    }
 }
 
 fn start_transcription_job_for_app_root(
@@ -2145,6 +2302,13 @@ fn start_transcription_job_for_app_root(
         Err(error) => {
             let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
             command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            let _ = persist_transcription_job_finish(
+                app_root,
+                &job.id,
+                CommandJobFinishState::Failed,
+                started_at_ms,
+                Some(&error),
+            );
             return Err(error);
         }
     };
@@ -2161,6 +2325,7 @@ fn cancel_transcription_job_for_app_root(
         command_state.request_transcription_cancel(job_id)?;
         command_state.snapshot_state()
     };
+    persist_transcription_job_cancel_request(app_root, job_id)?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
@@ -2187,27 +2352,30 @@ fn finish_transcription_job_for_app_root<B: WhisperBackend>(
         created_at_ms,
         || transcription_job_cancel_requested(command_state, &job.id),
     );
+    let (finish_state, last_error) = finish_state_for_transcription(&transcription);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
         match &transcription {
             Ok(Some(transcription)) => {
-                let finish_state = if transcription.state == TranscriptionCommandState::Failed {
-                    CommandJobFinishState::Failed
-                } else {
-                    CommandJobFinishState::Complete
-                };
                 command_state.finish_transcription_job(&job, finish_state);
                 command_state.last_transcription = Some(transcription.clone());
             }
             Ok(None) => {
-                command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
+                command_state.finish_transcription_job(&job, finish_state);
             }
             Err(_) => {
-                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+                command_state.finish_transcription_job(&job, finish_state);
             }
         }
         command_state.snapshot_state()
     };
+    persist_transcription_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
     transcription?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
@@ -4354,7 +4522,10 @@ mod tests {
 
         assert_eq!(json["selectedMeetingId"], "meeting-1");
         assert_eq!(json["meetings"][0]["transcriptText"], "hello launch plan");
-        assert_eq!(json["meetings"][0]["segments"][0]["text"], "hello launch plan");
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["text"],
+            "hello launch plan"
+        );
         assert_eq!(
             json["meetings"][0]["segments"][0]["originalText"],
             "helo launch plan"
@@ -5271,6 +5442,190 @@ mod tests {
             duplicate_json["transcriptionJob"]["id"]
                 .as_str()
                 .expect("job id")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_lifecycle_persists_durable_processing_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let store = open_store(&root).expect("open store");
+        let durable_started = store
+            .processing_job(&started.id)
+            .expect("durable started job");
+
+        assert_eq!(durable_started.kind, curiosity_domain::JobKind::Transcribe);
+        assert_eq!(durable_started.status, curiosity_domain::JobStatus::Running);
+        assert_eq!(durable_started.attempts, 1);
+        assert_eq!(durable_started.started_at_ms, Some(1_700_000_001_000));
+        assert_eq!(
+            durable_started.idempotency_key.as_deref(),
+            Some(transcription_idempotency_key(&meeting_id).as_str())
+        );
+        assert!(!durable_started.cancel_requested);
+
+        cancel_transcription_job_for_app_root(&root, &command_state, &started.id)
+            .expect("request transcription cancel");
+        let durable_cancel = store
+            .processing_job(&started.id)
+            .expect("durable cancel-requested job");
+        assert!(durable_cancel.cancel_requested);
+
+        finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started.clone(),
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "durable canceled",
+            )]),
+            1_700_000_001_500,
+        )
+        .expect("finish transcription job");
+        let durable_finished = store
+            .processing_job(&started.id)
+            .expect("durable finished job");
+
+        assert_eq!(
+            durable_finished.status,
+            curiosity_domain::JobStatus::Canceled
+        );
+        assert_eq!(durable_finished.finished_at_ms, Some(1_700_000_001_500));
+        assert!(!durable_finished.cancel_requested);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_ownership_uses_durable_active_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            &meeting_id,
+            1_700_000_001_100,
+        )
+        .expect_err("durable active job should own transcription after restart");
+
+        assert!(duplicate.contains(&started.id));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_duplicate_recovers_orphan_without_phantom_running_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            &meeting_id,
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should reject this duplicate attempt");
+        let snapshot = {
+            let state = restarted_command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("snapshot after duplicate")
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_ne!(json["transcriptionJob"]["state"], "Running");
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_snapshot_recovers_missing_worker() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_snapshot = desktop_snapshot_for_app_root_with_state(
+            &root,
+            &DesktopCommandSnapshotState::default(),
+        )
+        .expect("restart snapshot");
+        let restarted_json = serde_json::to_value(&restarted_snapshot).expect("serialize restart");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered job");
+
+        assert_eq!(restarted_json["transcriptionJob"]["id"], started.id);
+        assert_eq!(restarted_json["transcriptionJob"]["state"], "Failed");
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert!(
+            recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,
+            "recovery finish time should be the snapshot recovery time, not the job start time"
+        );
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("transcription worker was not running after app restart")
         );
 
         fs::remove_dir_all(root).expect("cleanup");

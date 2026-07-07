@@ -529,6 +529,186 @@ impl Store {
         Ok(())
     }
 
+    pub fn request_processing_job_cancel(&self, job_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE processing_jobs
+            SET cancel_requested = 1
+            WHERE id = ?1
+              AND status = 'Running'
+            ",
+            params![job_id],
+        )?;
+        if self.conn.changes() == 0 {
+            let status = self
+                .conn
+                .query_row(
+                    "SELECT status FROM processing_jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(status) = status else {
+                return Err(format!("processing job not found: {job_id}").into());
+            };
+            let status = parse_job_status(&status)?;
+            if status == JobStatus::Running {
+                return Ok(());
+            }
+            return Err(format!("processing job is not running: {job_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn complete_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Succeeded, finished_at_ms, None)
+    }
+
+    pub fn cancel_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Canceled, finished_at_ms, None)
+    }
+
+    pub fn fail_processing_job(
+        &self,
+        job_id: &str,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Failed, finished_at_ms, Some(last_error))
+    }
+
+    pub fn recover_processing_job(
+        &self,
+        job_id: &str,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<()> {
+        self.finish_processing_job(
+            job_id,
+            JobStatus::Recovery,
+            finished_at_ms,
+            Some(last_error),
+        )
+    }
+
+    fn finish_processing_job(
+        &self,
+        job_id: &str,
+        status: JobStatus,
+        finished_at_ms: u64,
+        last_error: Option<&str>,
+    ) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE processing_jobs
+            SET status = ?2,
+                finished_at_ms = ?3,
+                last_error = ?4,
+                cancel_requested = 0
+            WHERE id = ?1
+              AND status = 'Running'
+            ",
+            params![job_id, enum_name(status), finished_at_ms, last_error],
+        )?;
+        if self.conn.changes() == 0 {
+            let current_status = self
+                .conn
+                .query_row(
+                    "SELECT status FROM processing_jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(current_status) = current_status else {
+                return Err(format!("processing job not found: {job_id}").into());
+            };
+            let current_status = parse_job_status(&current_status)?;
+            if current_status == JobStatus::Running {
+                return Err(format!("processing job was not updated: {job_id}").into());
+            }
+            return Err(format!("processing job is not running: {job_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn active_transcription_job_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<ProcessingJob>> {
+        self.processing_job_for_query(
+            "
+            SELECT
+                id,
+                meeting_id,
+                kind,
+                status,
+                attempts,
+                last_error,
+                started_at_ms,
+                finished_at_ms,
+                cancel_requested,
+                idempotency_key
+            FROM processing_jobs
+            WHERE meeting_id = ?1
+              AND kind = 'Transcribe'
+              AND status = 'Running'
+            ORDER BY started_at_ms DESC, id DESC
+            LIMIT 1
+            ",
+            params![meeting_id],
+        )
+    }
+
+    pub fn recover_active_transcription_jobs(
+        &self,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result =
+            self.recover_active_transcription_jobs_in_transaction(finished_at_ms, last_error);
+        match result {
+            Ok(jobs) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(jobs)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn recover_active_transcription_jobs_in_transaction(
+        &self,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id
+            FROM processing_jobs
+            WHERE kind = 'Transcribe'
+              AND status = 'Running'
+            ORDER BY started_at_ms DESC, id DESC
+            ",
+        )?;
+        let job_ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut jobs = Vec::with_capacity(job_ids.len());
+        for job_id in job_ids {
+            self.recover_processing_job(&job_id, finished_at_ms, last_error)?;
+            jobs.push(self.processing_job(&job_id)?);
+        }
+        Ok(jobs)
+    }
+
     pub fn app_settings(&self) -> StoreResult<AppSettings> {
         let export_directory = self
             .setting_value(SETTING_EXPORT_DIRECTORY)?
@@ -1070,6 +1250,35 @@ impl Store {
     }
 
     pub fn processing_job(&self, job_id: &str) -> StoreResult<ProcessingJob> {
+        self.processing_job_for_query(
+            "
+            SELECT
+                id,
+                meeting_id,
+                kind,
+                status,
+                attempts,
+                last_error,
+                started_at_ms,
+                finished_at_ms,
+                cancel_requested,
+                idempotency_key
+            FROM processing_jobs
+            WHERE id = ?1
+            ",
+            params![job_id],
+        )?
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.into())
+    }
+
+    fn processing_job_for_query<P>(
+        &self,
+        sql: &str,
+        params: P,
+    ) -> StoreResult<Option<ProcessingJob>>
+    where
+        P: rusqlite::Params,
+    {
         let (
             id,
             meeting_id,
@@ -1092,24 +1301,9 @@ impl Store {
             Option<u64>,
             bool,
             Option<String>,
-        ) = self.conn.query_row(
-            "
-            SELECT
-                id,
-                meeting_id,
-                kind,
-                status,
-                attempts,
-                last_error,
-                started_at_ms,
-                finished_at_ms,
-                cancel_requested,
-                idempotency_key
-            FROM processing_jobs
-            WHERE id = ?1
-            ",
-            params![job_id],
-            |row| {
+        ) = match self
+            .conn
+            .query_row(sql, params, |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -1122,9 +1316,13 @@ impl Store {
                     row.get(8)?,
                     row.get(9)?,
                 ))
-            },
-        )?;
-        Ok(ProcessingJob {
+            })
+            .optional()?
+        {
+            Some(job) => job,
+            None => return Ok(None),
+        };
+        Ok(Some(ProcessingJob {
             id,
             meeting_id,
             kind: parse_job_kind(&kind)?,
@@ -1135,7 +1333,7 @@ impl Store {
             finished_at_ms,
             cancel_requested,
             idempotency_key,
-        })
+        }))
     }
 
     pub fn record_exported_file(&self, meeting_id: &str, path: &Path) -> StoreResult<()> {

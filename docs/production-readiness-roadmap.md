@@ -161,6 +161,9 @@ user.
 
 Deliverables:
 
+- Current Phase 3B status: transcription job start, cancel, finish, and restart
+  recovery now persist through `processing_jobs`; summary jobs and full retry UX
+  remain later work.
 - Move transcription and summary job ownership from in-memory Tauri state into
   durable `processing_jobs` records.
 - Reconcile running/cancel-requested jobs on startup and mark them recovered,
