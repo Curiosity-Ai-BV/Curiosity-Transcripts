@@ -2,6 +2,12 @@
 
 Research date: 2026-05-21
 
+Status note, 2026-07-07: this plan describes the target product direction. The
+current shipped desktop export surface is JSON only; Markdown and SRT are
+lower-level helpers until they are productized in the desktop UI and Tauri
+commands. See `docs/production-readiness-roadmap.md` for the current release
+source of truth.
+
 ## Product Wedge
 
 The defensible wedge is not "another local AI notetaker." Meetily, Anarlog, OpenWhispr, Vibe, and Minutes already cover much of that surface.

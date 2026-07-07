@@ -466,7 +466,9 @@
           <p class="lede">
             Curiosity Transcripts records microphone and system audio on macOS,
             transcribes meetings with local Whisper, keeps searchable history in
-            private storage, and exports plain Markdown, JSON, and SRT files.
+            private storage, and provides JSON export from the desktop app
+            today. Markdown and SRT are lower-level helpers, not desktop export
+            buttons yet.
           </p>
           <div class="hero-actions">
             <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
@@ -529,7 +531,7 @@
                   </div>
                   <div class="mini-panel">
                     <strong>Action</strong>
-                    <span class="line">Verify unsigned DMG before publishing.</span>
+                    <span class="line">Verify the signed and notarized DMG before publishing.</span>
                   </div>
                 </div>
               </div>
@@ -564,10 +566,12 @@
             </p>
           </article>
           <article class="feature">
-            <h3>Search and export</h3>
+            <h3>Search and JSON export</h3>
             <p>
               Find meetings with SQLite FTS5, inspect transcript history, export
-              Markdown, JSON, and SRT, then delete private artifacts when needed.
+              JSON from the desktop app, then delete private artifacts when
+              needed. Markdown and SRT are lower-level helpers until productized
+              in the UI.
             </p>
           </article>
           <article class="feature">
@@ -587,9 +591,9 @@
             <p class="eyebrow">Automated deployment artifact</p>
             <h2 id="download-title">Latest macOS DMG</h2>
             <p>
-              Each GitHub Pages deployment publishes the current unsigned macOS
-              DMG to the stable download path below. Signed and notarized
-              distribution remains a separate release step.
+              Each GitHub Pages deployment publishes a Developer ID signed and notarized arm64 macOS DMG to the stable download path below. The
+              workflow verifies the stapled notarization ticket and Gatekeeper
+              assessment before deployment.
             </p>
           </div>
           <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>

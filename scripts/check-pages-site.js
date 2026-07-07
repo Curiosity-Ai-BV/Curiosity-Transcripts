@@ -10,10 +10,20 @@ const requiredText = [
   "microphone and system audio",
   "local Whisper",
   "Ollama",
-  "Markdown, JSON, and SRT",
+  "JSON export",
+  "Markdown and SRT are lower-level helpers",
+  "Developer ID signed and notarized arm64 macOS DMG",
   "https://curiosityai.nl",
   "downloads/Curiosity-Transcripts-latest.dmg",
   "Curiosity-Transcripts-latest.dmg",
+];
+
+const forbiddenText = [
+  "Markdown, JSON, and SRT",
+  "plain Markdown, JSON, and SRT",
+  "current unsigned macOS",
+  "Signed and notarized distribution remains a separate release step",
+  "Verify unsigned DMG before publishing",
 ];
 
 let ok = true;
@@ -28,6 +38,13 @@ const html = fs.readFileSync(sitePath, "utf8");
 for (const text of requiredText) {
   if (!html.includes(text)) {
     console.error(`::error file=site/index.html::Missing required homepage content: ${text}`);
+    ok = false;
+  }
+}
+
+for (const text of forbiddenText) {
+  if (html.includes(text)) {
+    console.error(`::error file=site/index.html::Stale homepage content should be removed: ${text}`);
     ok = false;
   }
 }

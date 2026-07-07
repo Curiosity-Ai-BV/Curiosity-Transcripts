@@ -129,6 +129,8 @@ spctl -a -vvv -t open --context context:primary-signature Curiosity-Transcripts-
 ## Manual Installer Smoke
 
 Use a clean macOS user account or a machine without the development checkout.
+The release-candidate source of truth is `docs/release-candidate-checklist.md`;
+the shorter list below is only the installer-specific subset.
 
 1. Open the generated DMG.
 2. Drag `Curiosity Transcripts.app` to `/Applications`.

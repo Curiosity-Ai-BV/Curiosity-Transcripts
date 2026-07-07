@@ -91,8 +91,8 @@ Implemented MVP flows:
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
   processing jobs, transcript versions, edits, exports, search indexes, and
   analysis results.
-- Deterministic fixture transcription and transcript export helpers for
-  Markdown, JSON, and SRT.
+- Deterministic fixture transcription plus lower-level transcript export helpers
+  for Markdown, JSON, and SRT.
 - Organizer APIs for meeting detail, list, rename, search, JSON export, and
   delete flows.
 - Structured summary generation with citations, decisions, action items,
@@ -111,11 +111,24 @@ Remaining gaps:
 - Developer ID signed and notarized macOS DMG workflows exist; Apple signing
   credentials and expanded contributor onboarding/process docs remain.
 
+## Supported Export Formats
+
+The shipped desktop app currently exposes JSON export only through the UI and
+the Tauri `export_meeting_json` command. JSON is the supported integration
+format for the current desktop release path.
+
+Markdown and SRT are lower-level transcription helpers in `crates/transcription`.
+They are not productized as desktop export buttons or Tauri commands yet. Phase
+4 of the production-readiness roadmap covers productizing those formats if they
+remain part of the public promise.
+
 ## Roadmap
 
 The roadmap follows the trust-first direction in
 `docs/local-transcript-app-plan.md`: keep the manual local transcript loop
 dependable before adding automation, hosted providers, or broad integrations.
+For the production-readiness sequence, see
+`docs/production-readiness-roadmap.md`.
 
 Near-term product hardening:
 
@@ -313,6 +326,15 @@ Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
 Release DMGs are Developer ID signed and notarized before upload. Local
 `--no-sign` builds remain available for testing the packaging path without
 Apple credentials.
+
+The first public release architecture is arm64-only macOS. The release workflow
+asserts an `arm64` runner before publishing the `macos-aarch64` asset, and the
+stable Pages DMG follows the same signed/notarized Apple Silicon release path.
+Do not advertise x64 or universal macOS builds unless the workflows, release
+assets, checklist, and public copy change together.
+
+Before treating a build as a release candidate, run the deterministic gates and
+the manual smoke checklist in `docs/release-candidate-checklist.md`.
 
 ## License And Attribution
 

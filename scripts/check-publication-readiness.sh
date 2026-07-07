@@ -26,6 +26,7 @@ for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md;
   check_file "$file"
 done
 check_file "site/index.html"
+check_file "docs/release-candidate-checklist.md"
 check_file ".github/workflows/pages.yml"
 check_file ".github/workflows/release.yml"
 
@@ -43,6 +44,24 @@ require_text README.md 'SECURITY\.md' 'security policy pointer'
 require_text README.md 'GitHub Pages' 'public homepage deployment documentation'
 require_text README.md 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download documentation'
 require_text README.md 'Versioning Rules' 'versioning and GitHub Release documentation'
+require_text README.md 'desktop app currently exposes JSON export only' 'current desktop JSON-only export claim'
+require_text README.md 'Markdown and SRT.*lower-level.*helpers' 'Markdown/SRT helper versus shipped desktop export distinction'
+require_text README.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link'
+require_text README.md 'arm64-only' 'first public release architecture documentation'
+require_text docs/production-readiness-roadmap.md 'First public release architecture: arm64-only macOS DMG' 'first public release architecture decision'
+require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
+require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS permissions release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Model setup' 'model setup release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Offline-after-setup' 'offline-after-setup release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Recording' 'recording release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Transcription' 'transcription release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Summary' 'summary release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Export' 'export release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Delete' 'delete release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Uninstall and private-data handling' 'uninstall/private-data release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'JSON export' 'current release-candidate export format'
+require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
 
 require_text Cargo.toml '^license = "Apache-2\.0"$' 'workspace Apache-2.0 license metadata'
 
