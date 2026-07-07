@@ -135,6 +135,12 @@ Deliverables:
 - Keep hosted analysis behind explicit key selection and transcript disclosure
   confirmation.
 
+Current Phase 2B status: desktop npm drift is gated by
+`npm audit --audit-level=high` in CI, and Dependabot is configured for
+`/apps/desktop` npm, root Cargo, desktop Tauri Cargo, and GitHub Actions
+updates. CodeQL, cargo audit or cargo deny, SBOM, and license output remain
+later Phase 2C hardening unless implemented in a separate slice.
+
 Success criteria:
 
 - A release candidate has no obvious desktop renderer hardening gap.

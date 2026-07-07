@@ -27,6 +27,7 @@ for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md;
 done
 check_file "site/index.html"
 check_file "docs/release-candidate-checklist.md"
+check_file ".github/dependabot.yml"
 check_file ".github/workflows/pages.yml"
 check_file ".github/workflows/release.yml"
 
@@ -88,10 +89,17 @@ require_text .github/workflows/ci.yml 'libayatana-appindicator3-dev' 'Tauri Linu
 require_text .github/workflows/ci.yml 'librsvg2-dev' 'Tauri Linux SVG dependency'
 require_text .github/workflows/ci.yml 'npm run test' 'desktop test CI gate'
 require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
+require_text .github/workflows/ci.yml 'npm audit --audit-level=high' 'desktop npm audit CI gate'
 require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publication readiness CI gate'
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
 require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Release workflow validation CI gate'
+require_text .github/dependabot.yml 'package-ecosystem: "npm"' 'Dependabot npm update automation'
+require_text .github/dependabot.yml 'directory: "/apps/desktop"' 'Dependabot desktop npm directory'
+require_text .github/dependabot.yml 'package-ecosystem: "cargo"' 'Dependabot cargo update automation'
+require_text .github/dependabot.yml 'directory: "/"' 'Dependabot root cargo directory'
+require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Dependabot desktop Tauri cargo directory'
+require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'

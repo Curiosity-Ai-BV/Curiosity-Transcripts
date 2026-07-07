@@ -11,6 +11,11 @@ Automated release readiness must include `node scripts/check-tauri-security.js`
 through `bash scripts/check-publication-readiness.sh`; the gate fails null or
 loosened Tauri renderer CSP values before manual smoke starts.
 
+Desktop npm dependencies must pass `npm audit --audit-level=high` after
+`npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions
+update automation present. CodeQL, cargo audit or cargo deny, SBOM, and license
+output are still future hardening gates unless a later slice adds them.
+
 ## Manual Smoke Items
 
 - Clean-user install: on a clean macOS user account without the development

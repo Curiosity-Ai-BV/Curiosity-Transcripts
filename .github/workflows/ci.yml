@@ -106,6 +106,10 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Audit desktop npm dependencies
+        working-directory: apps/desktop
+        run: npm audit --audit-level=high
+
       - name: Test desktop frontend
         working-directory: apps/desktop
         run: npm run test
