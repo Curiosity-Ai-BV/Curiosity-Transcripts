@@ -93,11 +93,11 @@ Implemented MVP flows:
   analysis results.
 - Deterministic fixture transcription plus lower-level transcript export helpers
   for Markdown, JSON, and SRT.
-- Organizer APIs for meeting detail, list, rename, search, JSON export, and
+- Organizer APIs for meeting detail, list, rename, search, transcript export, and
   delete flows.
 - Structured summary generation with citations, decisions, action items,
   questions, local Ollama wiring, and privacy-gated provider paths.
-- Desktop command wiring for transcript search, JSON export, delete, and
+- Desktop command wiring for transcript search, JSON/Markdown/SRT export, delete, and
   summary generation after a transcript is ready.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
@@ -113,14 +113,14 @@ Remaining gaps:
 
 ## Supported Export Formats
 
-The shipped desktop app currently exposes JSON export only through the UI and
-the Tauri `export_meeting_json` command. JSON is the supported integration
-format for the current desktop release path.
+The shipped desktop app exposes JSON, Markdown, and SRT export from the meeting
+detail view. The generic Tauri `export_meeting` command accepts `json`,
+`markdown`, or `srt`; the existing `export_meeting_json` command remains as a
+compatibility path.
 
-Markdown and SRT are lower-level transcription helpers in `crates/transcription`.
-They are not productized as desktop export buttons or Tauri commands yet. Phase
-4 of the production-readiness roadmap covers productizing those formats if they
-remain part of the public promise.
+JSON remains the deterministic integration format for automation and downstream
+tools. Markdown and SRT are user-facing transcript exports backed by the
+transcription helpers in `crates/transcription`.
 
 ## Roadmap
 

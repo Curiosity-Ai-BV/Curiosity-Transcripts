@@ -144,6 +144,27 @@ describe("desktop snapshot DTO contract", () => {
       },
     ],
     [
+      "desktop_snapshot.exportCommand.format",
+      {
+        exportCommand: {
+          state: "exported",
+          meetingId: "circuit-review",
+          path: "/tmp/circuit-review.md",
+        },
+      },
+    ],
+    [
+      "desktop_snapshot.exportCommand.format",
+      {
+        exportCommand: {
+          state: "exported",
+          meetingId: "circuit-review",
+          format: "pdf",
+          path: "/tmp/circuit-review.pdf",
+        },
+      },
+    ],
+    [
       "desktop_snapshot.transcription.state",
       {
         transcription: {
@@ -273,6 +294,7 @@ describe("typed desktop command facade", () => {
     });
     await facade.cancelTranscription({ jobId: "transcription-circuit-review-1700000001000" });
     await facade.renameMeeting({ meetingId: "circuit-review", title: "Renamed Planning" });
+    await facade.exportMeeting({ meetingId: "circuit-review", format: "markdown" });
     await facade.exportMeetingJson({ meetingId: "circuit-review" });
     await facade.deleteMeeting({ meetingId: "circuit-review" });
     await facade.generateSummary({ meetingId: "circuit-review" });
@@ -305,6 +327,7 @@ describe("typed desktop command facade", () => {
         args: { jobId: "transcription-circuit-review-1700000001000" },
       },
       { command: "rename_meeting", args: { meetingId: "circuit-review", title: "Renamed Planning" } },
+      { command: "export_meeting", args: { meetingId: "circuit-review", format: "markdown" } },
       { command: "export_meeting_json", args: { meetingId: "circuit-review" } },
       { command: "delete_meeting", args: { meetingId: "circuit-review" } },
       { command: "generate_summary", args: { meetingId: "circuit-review" } },

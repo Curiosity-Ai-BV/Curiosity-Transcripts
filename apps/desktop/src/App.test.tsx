@@ -205,6 +205,11 @@ describe("desktop command-state mapping", () => {
       tone: "ready",
       detail: "/tmp/circuit-review.json",
     });
+    expect(mapExportState({ state: "exported", format: "markdown", path: "/tmp/circuit-review.md" })).toEqual({
+      label: "Markdown exported",
+      tone: "ready",
+      detail: "/tmp/circuit-review.md",
+    });
     expect(
       mapDeleteState({
         state: "deleted",
@@ -794,6 +799,7 @@ describe("desktop workspace shell", () => {
               exportState: {
                 state: "exported",
                 meetingId: "circuit-review",
+                format: "json",
                 path: "/tmp/circuit-review.json",
               },
             }
@@ -802,12 +808,13 @@ describe("desktop workspace shell", () => {
       exportCommand: {
         state: "exported",
         meetingId: "circuit-review",
+        format: "json",
         path: "/tmp/circuit-review.json",
       },
     });
     const commandFacade = fakeCommandFacade({
-      exportMeetingJson: async (args) => {
-        calls.push({ method: "exportMeetingJson", args });
+      exportMeeting: async (args) => {
+        calls.push({ method: "exportMeeting", args });
         return returned;
       },
     });
@@ -818,12 +825,64 @@ describe("desktop workspace shell", () => {
 
     expect(calls).toEqual([
       {
-        method: "exportMeetingJson",
-        args: { meetingId: "circuit-review" },
+        method: "exportMeeting",
+        args: { meetingId: "circuit-review", format: "json" },
       },
     ]);
     expect(screen.getAllByText("JSON exported").length).toBeGreaterThan(0);
     expect(screen.getAllByText("/tmp/circuit-review.json").length).toBeGreaterThan(0);
+  });
+
+  it("exports Markdown and SRT through the generic desktop command", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot();
+    const commandFacade = fakeCommandFacade({
+      exportMeeting: async (args) => {
+        calls.push({ method: "exportMeeting", args });
+        return connectedSnapshot({
+          meetings: initial.meetings.map((meeting) =>
+            meeting.id === "circuit-review"
+              ? {
+                  ...meeting,
+                  exportState: {
+                    state: "exported",
+                    meetingId: "circuit-review",
+                    format: args.format,
+                    path: `/tmp/circuit-review.${args.format === "markdown" ? "md" : "srt"}`,
+                  },
+                }
+              : meeting,
+          ),
+          exportCommand: {
+            state: "exported",
+            meetingId: "circuit-review",
+            format: args.format,
+            path: `/tmp/circuit-review.${args.format === "markdown" ? "md" : "srt"}`,
+          },
+        });
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.selectOptions(screen.getByLabelText("Export format"), "markdown");
+    await user.click(screen.getByRole("button", { name: "Export Markdown" }));
+    await user.selectOptions(screen.getByLabelText("Export format"), "srt");
+    await user.click(screen.getByRole("button", { name: "Export SRT" }));
+
+    expect(calls).toEqual([
+      {
+        method: "exportMeeting",
+        args: { meetingId: "circuit-review", format: "markdown" },
+      },
+      {
+        method: "exportMeeting",
+        args: { meetingId: "circuit-review", format: "srt" },
+      },
+    ]);
+    expect(screen.getAllByText("SRT exported").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("/tmp/circuit-review.srt").length).toBeGreaterThan(0);
   });
 
   it("deletes private data through the desktop command while showing remaining exports", async () => {
@@ -1584,6 +1643,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
     cancelTranscription: async () => snapshot,
     renameMeeting: async () => snapshot,
     exportMeetingJson: async () => snapshot,
+    exportMeeting: async () => snapshot,
     deleteMeeting: async () => snapshot,
     generateSummary: async () => snapshot,
     cancelSummary: async () => snapshot,

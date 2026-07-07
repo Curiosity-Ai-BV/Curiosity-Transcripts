@@ -18,4 +18,5 @@ curiosity-analysis = { path = "../analysis" }
 curiosity-audio = { path = "../audio" }
 curiosity-domain = { path = "../domain" }
 curiosity-store = { path = "../store" }
+curiosity-transcription = { path = "../transcription" }
 serde = { version = "1", features = ["derive"] }

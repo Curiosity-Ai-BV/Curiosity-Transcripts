@@ -15,6 +15,7 @@ export type AppPermissionState =
   | "SystemAudioUnavailable";
 export type RawAudioRetentionPolicy = "Retain" | "DeleteAfterTranscription" | "NeverSave";
 export type Tone = "ready" | "active" | "warn" | "blocked" | "muted";
+export type ExportFormat = "json" | "markdown" | "srt";
 
 export interface CommandRecordingDto {
   meeting_id: string;
@@ -79,6 +80,7 @@ export interface OllamaConnectionTestResult {
 export interface ExportCommandState {
   state: "idle" | "exporting" | "exported" | "failed";
   meetingId?: string | null;
+  format?: ExportFormat | null;
   path?: string | null;
   message?: string | null;
 }
@@ -210,6 +212,7 @@ export interface DesktopCommandFacade {
   }): Promise<DesktopSnapshot>;
   cancelTranscription(args: { jobId: string }): Promise<DesktopSnapshot>;
   renameMeeting(args: { meetingId: string; title: string }): Promise<DesktopSnapshot>;
+  exportMeeting(args: { meetingId: string; format: ExportFormat }): Promise<DesktopSnapshot>;
   exportMeetingJson(args: { meetingId: string }): Promise<DesktopSnapshot>;
   deleteMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
   generateSummary(args: { meetingId: string }): Promise<DesktopSnapshot>;
@@ -545,9 +548,10 @@ export function searchMeetings(meetings: MeetingView[], query: string): MeetingV
 }
 
 export function mapExportState(state: ExportCommandState): StatusView {
+  const formatLabel = exportFormatLabel(state.format);
   if (state.state === "exported") {
     return {
-      label: "JSON exported",
+      label: `${formatLabel} exported`,
       tone: "ready",
       detail: state.path || "Export path recorded.",
     };
@@ -556,7 +560,7 @@ export function mapExportState(state: ExportCommandState): StatusView {
     return {
       label: "Exporting",
       tone: "active",
-      detail: "Writing a user-requested JSON export.",
+      detail: `Writing a user-requested ${formatLabel} export.`,
     };
   }
   if (state.state === "failed") {
@@ -571,6 +575,16 @@ export function mapExportState(state: ExportCommandState): StatusView {
     tone: "muted",
     detail: "No export has been requested for this meeting.",
   };
+}
+
+export function exportFormatLabel(format: ExportFormat | null | undefined): string {
+  if (format === "markdown") {
+    return "Markdown";
+  }
+  if (format === "srt") {
+    return "SRT";
+  }
+  return "JSON";
 }
 
 export function mapDeleteState(state: DeleteCommandState): StatusView {
@@ -912,6 +926,7 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "desktop_snapshot",
   "correct_transcript_segment",
   "delete_meeting",
+  "export_meeting",
   "export_meeting_json",
   "generate_summary",
   "cancel_summary",
@@ -1005,9 +1020,16 @@ function requireEnum<const T extends string>(
 
 function validateExportCommandState(value: unknown, pathLabel: string): void {
   const state = requireContractRecord(value, pathLabel);
-  requireEnum(state.state, ["idle", "exporting", "exported", "failed"], `${pathLabel}.state`);
+  const exportState = requireEnum(state.state, ["idle", "exporting", "exported", "failed"], `${pathLabel}.state`);
   if (Object.prototype.hasOwnProperty.call(state, "meetingId")) {
     requireNullableString(state.meetingId, `${pathLabel}.meetingId`);
+  }
+  if (exportState !== "idle") {
+    requireEnum(state.format, ["json", "markdown", "srt"], `${pathLabel}.format`);
+  } else if (Object.prototype.hasOwnProperty.call(state, "format")) {
+    if (state.format !== null) {
+      requireEnum(state.format, ["json", "markdown", "srt"], `${pathLabel}.format`);
+    }
   }
   if (Object.prototype.hasOwnProperty.call(state, "path")) {
     requireNullableString(state.path, `${pathLabel}.path`);
@@ -1181,6 +1203,7 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("correct_transcript_segment", { meetingId, segmentId, correctedText, editedAtMs }),
     cancelTranscription: ({ jobId }) => snapshotCommand("cancel_transcription", { jobId }),
     renameMeeting: ({ meetingId, title }) => snapshotCommand("rename_meeting", { meetingId, title }),
+    exportMeeting: ({ meetingId, format }) => snapshotCommand("export_meeting", { meetingId, format }),
     exportMeetingJson: ({ meetingId }) => snapshotCommand("export_meeting_json", { meetingId }),
     deleteMeeting: ({ meetingId }) => snapshotCommand("delete_meeting", { meetingId }),
     generateSummary: ({ meetingId }) => snapshotCommand("generate_summary", { meetingId }),

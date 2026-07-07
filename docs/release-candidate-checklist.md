@@ -32,8 +32,9 @@ output are still future hardening gates unless a later slice adds them.
   `ollama pull <model>` command as manual setup guidance. Actual Ollama model
   pulls remain manual for now.
 - Offline-after-setup: after Whisper and Ollama setup, disable network access
-  and confirm the local record, transcribe, search, JSON export, and delete path
-  still works. Local Ollama may require the local server to remain running.
+  and confirm the local record, transcribe, search, JSON/Markdown/SRT export,
+  and delete path still works. Local Ollama may require the local server to
+  remain running.
 - Recording: start and stop a short recording with microphone plus
   ScreenCaptureKit system audio where permissions allow; verify private WAV
   artifacts and truthful mic-only fallback when system audio is unavailable.
@@ -45,13 +46,13 @@ output are still future hardening gates unless a later slice adds them.
   summary, decisions, questions, action items, and citations are visible.
 - Privacy data state: for a selected meeting, verify the detail row shows the
   app-private audio path, raw-audio retention, local or hosted processing state,
-  JSON export status, and delete or remaining-export status. Retention controls,
+  export status, and delete or remaining-export status. Retention controls,
   encryption-at-rest, and keychain secrets remain future checks until implemented.
-- Export: use the desktop JSON export action and verify the exported file path
-  is reported. Markdown/SRT helper APIs are not release-candidate pass criteria
-  until those formats are productized in the desktop UI and Tauri commands.
+- Export: use the desktop export action for JSON, Markdown, and SRT, and verify
+  each exported file path and format-specific status is reported. Treat JSON as
+  the deterministic integration format.
 - Delete: delete the meeting and verify app-private transcript, analysis, and
   audio artifacts are removed or explicitly reported as skipped.
 - Uninstall and private-data handling: uninstall the app, inspect the documented
-  app-private data location, and verify user-owned exported JSON files remain
+  app-private data location, and verify user-owned exported files remain
   outside app deletion control.

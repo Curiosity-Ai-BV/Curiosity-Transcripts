@@ -132,7 +132,34 @@ pub struct MeetingSearchResultDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExportedMeetingDto {
     pub meeting_id: String,
+    pub format: ExportFormat,
     pub path: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Json,
+    Markdown,
+    Srt,
+}
+
+impl ExportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+            Self::Srt => "srt",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::Srt => "srt",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -288,11 +315,72 @@ pub fn export_meeting_json_command(
     meeting_id: &str,
     export_root: impl AsRef<std::path::Path>,
 ) -> CommandResult<ExportedMeetingDto> {
+    export_meeting_command(store, meeting_id, ExportFormat::Json, export_root)
+}
+
+pub fn export_meeting_command(
+    store: &Store,
+    meeting_id: &str,
+    format: ExportFormat,
+    export_root: impl AsRef<std::path::Path>,
+) -> CommandResult<ExportedMeetingDto> {
+    if !is_safe_meeting_id(meeting_id) {
+        return Err(CommandError::Store(StoreError::UnsafePath(format!(
+            "meeting id is not a safe export filename: {meeting_id}"
+        ))));
+    }
+
+    if format == ExportFormat::Json {
+        return export_meeting_json(store, meeting_id, export_root);
+    }
+
+    let transcript_segments = store.transcript_segments(meeting_id)?;
+    if transcript_segments.is_empty() {
+        return Err(CommandError::Store(StoreError::InvariantViolation(
+            format!(
+                "Generate a transcript before exporting {}.",
+                format.as_str()
+            ),
+        )));
+    }
+
+    let export_root = export_root.as_ref();
+    fs::create_dir_all(export_root).map_err(StoreError::from)?;
+    let path = export_root.join(safe_export_filename(meeting_id, format)?);
+    let contents = match format {
+        ExportFormat::Json => unreachable!("json export returned before transcript formatting"),
+        ExportFormat::Markdown => curiosity_transcription::export_markdown(&transcript_segments),
+        ExportFormat::Srt => curiosity_transcription::export_srt(&transcript_segments),
+    };
+    fs::write(&path, contents).map_err(StoreError::from)?;
+    store.record_exported_file(meeting_id, &path)?;
+    Ok(ExportedMeetingDto {
+        meeting_id: meeting_id.to_string(),
+        format,
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn export_meeting_json(
+    store: &Store,
+    meeting_id: &str,
+    export_root: impl AsRef<std::path::Path>,
+) -> CommandResult<ExportedMeetingDto> {
     let path = store.export_meeting_json(meeting_id, export_root.as_ref())?;
     Ok(ExportedMeetingDto {
         meeting_id: meeting_id.to_string(),
+        format: ExportFormat::Json,
         path: path.to_string_lossy().to_string(),
     })
+}
+
+fn safe_export_filename(meeting_id: &str, format: ExportFormat) -> Result<String, StoreError> {
+    if !is_safe_meeting_id(meeting_id) {
+        return Err(StoreError::UnsafePath(format!(
+            "meeting id is not a safe export filename: {meeting_id}"
+        )));
+    }
+    Ok(format!("{meeting_id}.{}", format.extension()))
 }
 
 pub fn delete_meeting_command(store: &Store, meeting_id: &str) -> CommandResult<DeletedMeetingDto> {

@@ -9,12 +9,12 @@ use curiosity_analysis::{
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
-    correct_transcript_segment_command, delete_meeting_command, export_meeting_json_command,
-    generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
-    rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
-    AppPermissionState, CommandRecordingDto, CommandRecordingState, DeletedMeetingDto,
-    ExportedMeetingDto, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
-    StorageLocationDto,
+    correct_transcript_segment_command, delete_meeting_command, export_meeting_command,
+    export_meeting_json_command, generate_summary_command_with_cancellation, list_meetings_dto,
+    meeting_detail_dto, rename_meeting_command, search_meetings_dto, AnalysisCommandDto,
+    AnalysisCommandState, AppPermissionState, CommandRecordingDto, CommandRecordingState,
+    DeletedMeetingDto, ExportFormat, ExportedMeetingDto, MeetingAnalysisDto,
+    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
@@ -50,6 +50,7 @@ fn main() {
         search_meetings,
         rename_meeting,
         correct_transcript_segment,
+        export_meeting,
         export_meeting_json,
         delete_meeting,
         generate_summary,
@@ -74,6 +75,7 @@ fn main() {
         search_meetings,
         rename_meeting,
         correct_transcript_segment,
+        export_meeting,
         export_meeting_json,
         delete_meeting,
         generate_summary,
@@ -220,6 +222,26 @@ fn correct_transcript_segment(
         &corrected_text,
         edited_at_ms,
     )
+}
+
+#[tauri::command]
+fn export_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    format: ExportFormat,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let export_state = export_meeting_command_state_for_app_root(&app_root, &meeting_id, format)?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_export = Some(export_state);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
 #[tauri::command]
@@ -885,6 +907,18 @@ fn correct_transcript_segment_for_app_root(
 }
 
 #[cfg(test)]
+fn export_meeting_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+    format: ExportFormat,
+) -> Result<DesktopSnapshot, String> {
+    let export_state = export_meeting_command_state_for_app_root(app_root, meeting_id, format)?;
+    command_state.last_export = Some(export_state);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+#[cfg(test)]
 fn export_meeting_json_for_app_root(
     app_root: &Path,
     command_state: &mut DesktopCommandState,
@@ -899,12 +933,25 @@ fn export_meeting_json_command_state_for_app_root(
     app_root: &Path,
     meeting_id: &str,
 ) -> Result<ExportCommandState, String> {
+    export_meeting_command_state_for_app_root(app_root, meeting_id, ExportFormat::Json)
+}
+
+fn export_meeting_command_state_for_app_root(
+    app_root: &Path,
+    meeting_id: &str,
+    format: ExportFormat,
+) -> Result<ExportCommandState, String> {
     let store = open_store(app_root)?;
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let export_root = export_root_for_settings(app_root, &settings);
-    let export_state = match export_meeting_json_command(&store, meeting_id, &export_root) {
+    let export_result = if format == ExportFormat::Json {
+        export_meeting_json_command(&store, meeting_id, &export_root)
+    } else {
+        export_meeting_command(&store, meeting_id, format, &export_root)
+    };
+    let export_state = match export_result {
         Ok(exported) => ExportCommandState::exported(exported),
-        Err(error) => ExportCommandState::failed(meeting_id, error.to_string()),
+        Err(error) => ExportCommandState::failed(meeting_id, format, error.to_string()),
     };
     Ok(export_state)
 }
@@ -3569,6 +3616,8 @@ struct ExportCommandState {
     #[serde(skip_serializing_if = "Option::is_none")]
     meeting_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<ExportFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
@@ -3579,6 +3628,7 @@ impl Default for ExportCommandState {
         Self {
             state: "idle".to_string(),
             meeting_id: None,
+            format: None,
             path: None,
             message: None,
         }
@@ -3590,15 +3640,17 @@ impl ExportCommandState {
         Self {
             state: "exported".to_string(),
             meeting_id: Some(exported.meeting_id),
+            format: Some(exported.format),
             path: Some(exported.path),
             message: None,
         }
     }
 
-    fn failed(meeting_id: &str, message: String) -> Self {
+    fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {
         Self {
             state: "failed".to_string(),
             meeting_id: Some(meeting_id.to_string()),
+            format: Some(format),
             path: None,
             message: Some(message),
         }
@@ -4552,9 +4604,70 @@ mod tests {
         let export = Store::read_meeting_export_json(exported_path).expect("read export");
 
         assert_eq!(json["exportCommand"]["state"], "exported");
+        assert_eq!(json["exportCommand"]["format"], "json");
         assert_eq!(json["meetings"][0]["exportState"]["path"], exported_path);
+        assert_eq!(json["meetings"][0]["exportState"]["format"], "json");
         assert_eq!(export.meeting_id, "meeting-1");
         assert_eq!(export.segments[0].text, "export this transcript");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn export_meeting_command_writes_markdown_and_srt_and_exposes_format_state() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Export Planning",
+            "export this transcript",
+        );
+
+        let markdown_snapshot = export_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            ExportFormat::Markdown,
+        )
+        .expect("export markdown");
+        let markdown_json =
+            serde_json::to_value(&markdown_snapshot).expect("serialize markdown snapshot");
+        let markdown_path = markdown_json["exportCommand"]["path"]
+            .as_str()
+            .expect("markdown export path");
+
+        assert_eq!(markdown_json["exportCommand"]["state"], "exported");
+        assert_eq!(markdown_json["exportCommand"]["format"], "markdown");
+        assert_eq!(
+            markdown_json["meetings"][0]["exportState"]["path"],
+            markdown_path
+        );
+        assert_eq!(
+            markdown_json["meetings"][0]["exportState"]["format"],
+            "markdown"
+        );
+        assert_eq!(
+            fs::read_to_string(markdown_path).expect("read markdown"),
+            "- [00:00] export this transcript"
+        );
+
+        let srt_snapshot =
+            export_meeting_for_app_root(&root, &mut command_state, "meeting-1", ExportFormat::Srt)
+                .expect("export srt");
+        let srt_json = serde_json::to_value(&srt_snapshot).expect("serialize srt snapshot");
+        let srt_path = srt_json["exportCommand"]["path"]
+            .as_str()
+            .expect("srt export path");
+
+        assert_eq!(srt_json["exportCommand"]["state"], "exported");
+        assert_eq!(srt_json["exportCommand"]["format"], "srt");
+        assert_eq!(srt_json["meetings"][0]["exportState"]["path"], srt_path);
+        assert_eq!(srt_json["meetings"][0]["exportState"]["format"], "srt");
+        assert_eq!(
+            fs::read_to_string(srt_path).expect("read srt"),
+            "1\n00:00:00,000 --> 00:00:01,200\nexport this transcript\n"
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

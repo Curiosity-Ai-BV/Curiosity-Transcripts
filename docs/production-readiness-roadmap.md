@@ -47,11 +47,12 @@ hardware, and source-of-truth cleanup.
 
 Slice 0 public source-of-truth decisions:
 
-- Shipped desktop export surface: JSON export only through the UI and
-  `export_meeting_json` Tauri command.
-- Lower-level helper surface: Markdown and SRT export helpers exist in
-  `crates/transcription`, but they are not productized desktop export formats
-  yet.
+- Shipped desktop export surface: JSON, Markdown, and SRT export through the UI
+  and generic `export_meeting` Tauri command; `export_meeting_json` remains as
+  the JSON compatibility path.
+- Integration export surface: JSON remains the deterministic integration
+  format. Markdown and SRT are user-facing transcript formats backed by
+  `crates/transcription`.
 - Pages download flow: the stable Pages DMG is built as a Developer ID signed
   and notarized artifact, then stapling and Gatekeeper checks run before
   deployment.
@@ -65,10 +66,9 @@ Goal: make the public promise match the product that actually ships.
 
 Deliverables:
 
-- Fix the documentation/product mismatch around export formats. The app UI and
-  Tauri command surface currently expose JSON export, while README/public-site
-  copy references Markdown/JSON/SRT and the transcription crate has lower-level
-  Markdown/SRT helpers.
+- Keep documentation and product behavior aligned around export formats. The
+  desktop app exposes JSON/Markdown/SRT, with JSON retained as the deterministic
+  integration format.
 - Align public site wording with the current signed/notarized Pages DMG flow.
 - Add a short release-candidate checklist covering clean-user install, macOS
   permissions, model setup, offline-after-setup behavior, recording,
@@ -201,8 +201,12 @@ Deliverables:
 
 Current Phase 4A status: transcript segment correction is wired through the
 existing store edit-history seam, desktop command surface, TS contract, and a
-minimal one-segment inline editor. Import and multi-format export remain later
-Phase 4 work.
+minimal one-segment inline editor. Import remains later Phase 4 work.
+
+Current Phase 4B status: Markdown and SRT are productized beside JSON through
+the app command layer, generic Tauri `export_meeting` command, format-aware
+desktop UI/state, focused Rust/Tauri/TS/React tests, and docs. JSON remains the
+deterministic integration format.
 
 Success criteria:
 

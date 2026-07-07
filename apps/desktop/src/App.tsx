@@ -18,6 +18,8 @@ import packageInfo from "../package.json";
 import {
   DesktopCommandFacade,
   DesktopSnapshot,
+  ExportFormat,
+  exportFormatLabel,
   getMockDesktopSnapshot,
   mapAnalysisDisclosure,
   mapCommandJobState,
@@ -99,6 +101,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("json");
   const [theme, setTheme] = useState<ThemeMode>("dark");
 
   useEffect(() => {
@@ -365,7 +368,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       return;
     }
     void runSnapshotCommand("export", (commands) =>
-      commands.exportMeetingJson({ meetingId: selectedMeeting.id }),
+      commands.exportMeeting({ meetingId: selectedMeeting.id, format: selectedExportFormat }),
     );
   }
 
@@ -612,8 +615,9 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     : commandBusy
       ? busyCommandTitle
       : selectedMeeting
-        ? "Export the selected meeting as JSON."
+        ? `Export the selected meeting as ${exportFormatLabel(selectedExportFormat)}.`
         : "Select a meeting before exporting.";
+  const selectedExportFormatLabel = exportFormatLabel(selectedExportFormat);
   const deleteButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -961,6 +965,18 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                 </section>
 
                 <div className="detail-actions">
+                  <label className="export-format-field">
+                    <span>Export format</span>
+                    <select
+                      value={selectedExportFormat}
+                      disabled={exportDisabled}
+                      onChange={(event) => setSelectedExportFormat(event.target.value as ExportFormat)}
+                    >
+                      <option value="json">JSON</option>
+                      <option value="markdown">Markdown</option>
+                      <option value="srt">SRT</option>
+                    </select>
+                  </label>
                   <button
                     type="button"
                     className="button"
@@ -969,7 +985,9 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                     onClick={exportSelectedMeeting}
                   >
                     <DownloadSimple size={16} weight="regular" />
-                    {pendingCommand === "export" ? "Exporting JSON" : "Export JSON"}
+                    {pendingCommand === "export"
+                      ? `Exporting ${selectedExportFormatLabel}`
+                      : `Export ${selectedExportFormatLabel}`}
                   </button>
                   <button
                     type="button"

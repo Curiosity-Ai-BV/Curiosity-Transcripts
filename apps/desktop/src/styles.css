@@ -107,6 +107,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -364,6 +365,7 @@ h3 {
 .search-block label,
 .recording-title-field span,
 .rename-title-field span,
+.export-format-field span,
 .settings-field span,
 .segment-editor-field span {
   color: var(--text-soft);
@@ -387,6 +389,7 @@ h3 {
 .search-control input,
 .recording-title-field input,
 .rename-title-field input,
+.export-format-field select,
 .settings-field input,
 .segment-editor-field textarea {
   width: 100%;
@@ -417,6 +420,7 @@ h3 {
 .search-control:focus-within,
 .recording-title-field input:focus,
 .rename-title-field input:focus,
+.export-format-field select:focus,
 .settings-field input:focus,
 .segment-editor-field textarea:focus,
 .button:focus-visible,
@@ -428,6 +432,7 @@ h3 {
 
 .recording-title-field input:disabled,
 .rename-title-field input:disabled,
+.export-format-field select:disabled,
 .settings-field input:disabled,
 .segment-editor-field textarea:disabled {
   color: var(--muted);
@@ -723,6 +728,16 @@ h3 {
 
 .detail-actions {
   margin-top: 18px;
+}
+
+.export-format-field {
+  display: grid;
+  min-width: 132px;
+  gap: 6px;
+}
+
+.export-format-field select {
+  min-height: 44px;
 }
 
 .button {
