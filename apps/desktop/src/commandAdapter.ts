@@ -605,6 +605,43 @@ export function mapDeleteState(state: DeleteCommandState): StatusView {
   };
 }
 
+export function mapRawAudioRetention(policy: RawAudioRetentionPolicy): StatusView {
+  if (policy === "DeleteAfterTranscription") {
+    return {
+      label: "Delete after transcription",
+      tone: "ready",
+      detail: retentionDetail(policy),
+    };
+  }
+  if (policy === "NeverSave") {
+    return {
+      label: "Raw audio not saved",
+      tone: "ready",
+      detail: retentionDetail(policy),
+    };
+  }
+  return {
+    label: "Raw audio retained",
+    tone: "warn",
+    detail: retentionDetail(policy),
+  };
+}
+
+export function mapLocalProcessingState(localOnly: boolean): StatusView {
+  if (localOnly) {
+    return {
+      label: "Stayed local",
+      tone: "ready",
+      detail: "No hosted processing recorded for this meeting.",
+    };
+  }
+  return {
+    label: "Hosted processing used",
+    tone: "warn",
+    detail: "Transcript/summary data may have left this device.",
+  };
+}
+
 export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): StatusView {
   if (!state) {
     return {

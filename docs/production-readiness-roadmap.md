@@ -141,6 +141,12 @@ Current Phase 2B status: desktop npm drift is gated by
 updates. CodeQL, cargo audit or cargo deny, SBOM, and license output remain
 later Phase 2C hardening unless implemented in a separate slice.
 
+Current Phase 2C visibility status: the desktop detail view exposes the existing
+per-meeting privacy data state: private audio storage path, raw-audio retention,
+local or hosted processing state, JSON export status, and delete or remaining
+export status. Retention controls, encryption/key management, and keychain-backed
+secrets remain later Phase 2 work unless implemented in separate slices.
+
 Success criteria:
 
 - A release candidate has no obvious desktop renderer hardening gap.

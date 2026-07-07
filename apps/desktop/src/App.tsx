@@ -23,8 +23,10 @@ import {
   mapCommandJobState,
   mapDeleteState,
   mapExportState,
+  mapLocalProcessingState,
   mapModelStatus,
   mapPermissionState,
+  mapRawAudioRetention,
   mapRecordingState,
   mapTranscriptionState,
   searchMeetings,
@@ -244,6 +246,12 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const deleteState = selectedMeeting
     ? mapDeleteState(selectedMeeting.deleteState)
     : mapDeleteState({ state: "idle" });
+  const rawAudioRetention = selectedMeeting
+    ? mapRawAudioRetention(selectedMeeting.privacy.rawAudioRetention)
+    : null;
+  const localProcessingState = selectedMeeting
+    ? mapLocalProcessingState(selectedMeeting.privacy.localOnly)
+    : null;
   const exportCommandState = mapExportState(currentSnapshot.exportCommand);
   const deleteCommandState = mapDeleteState(currentSnapshot.deleteCommand);
   const failedDeleteMeetingId =
@@ -783,8 +791,14 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                   </div>
                 </div>
 
-                <div className="privacy-row">
+                <div className="privacy-row" aria-label="Meeting privacy data state">
                   <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={selectedMeeting.privacy.storageLabel} value={selectedMeeting.privacy.storagePath} tone="ready" />
+                  {rawAudioRetention ? (
+                    <StatusLine icon={<Waveform size={18} weight="regular" />} label={rawAudioRetention.label} value={rawAudioRetention.detail} tone={rawAudioRetention.tone} />
+                  ) : null}
+                  {localProcessingState ? (
+                    <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={localProcessingState.label} value={localProcessingState.detail} tone={localProcessingState.tone} />
+                  ) : null}
                   <StatusLine icon={<FileText size={18} weight="regular" />} label={exportState.label} value={exportState.detail} tone={exportState.tone} />
                   <StatusLine icon={<Trash size={18} weight="regular" />} label={deleteState.label} value={deleteState.detail} tone={deleteState.tone} />
                 </div>

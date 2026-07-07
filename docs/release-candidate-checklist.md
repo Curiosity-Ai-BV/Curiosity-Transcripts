@@ -41,6 +41,10 @@ output are still future hardening gates unless a later slice adds them.
   Whisper model and verify channel-tagged transcript segments appear.
 - Summary: generate a local Ollama summary after transcription and verify
   summary, decisions, questions, action items, and citations are visible.
+- Privacy data state: for a selected meeting, verify the detail row shows the
+  app-private audio path, raw-audio retention, local or hosted processing state,
+  JSON export status, and delete or remaining-export status. Retention controls,
+  encryption-at-rest, and keychain secrets remain future checks until implemented.
 - Export: use the desktop JSON export action and verify the exported file path
   is reported. Markdown/SRT helper APIs are not release-candidate pass criteria
   until those formats are productized in the desktop UI and Tauri commands.

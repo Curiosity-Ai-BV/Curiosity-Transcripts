@@ -421,6 +421,42 @@ describe("desktop workspace shell", () => {
     expect(screen.queryByText(/private artifact removed/i)).not.toBeInTheDocument();
   });
 
+  it("shows selected-meeting raw-audio retention and local processing privacy state", () => {
+    render(<App />);
+
+    const privacyState = screen.getByLabelText("Meeting privacy data state");
+    expect(within(privacyState).getByText("Raw audio retained")).toBeInTheDocument();
+    expect(within(privacyState).getByText("Raw audio retained in private app storage.")).toBeInTheDocument();
+    expect(within(privacyState).getByText("Stayed local")).toBeInTheDocument();
+    expect(within(privacyState).getByText("No hosted processing recorded for this meeting.")).toBeInTheDocument();
+  });
+
+  it("shows when selected-meeting transcript or summary processing may have left the device", () => {
+    const snapshot = getMockDesktopSnapshot();
+    render(
+      <App
+        snapshot={{
+          ...snapshot,
+          meetings: snapshot.meetings.map((meeting) =>
+            meeting.id === "circuit-review"
+              ? {
+                  ...meeting,
+                  privacy: {
+                    ...meeting.privacy,
+                    localOnly: false,
+                  },
+                }
+              : meeting,
+          ),
+        }}
+      />,
+    );
+
+    const privacyState = screen.getByLabelText("Meeting privacy data state");
+    expect(within(privacyState).getByText("Hosted processing used")).toBeInTheDocument();
+    expect(within(privacyState).getByText("Transcript/summary data may have left this device.")).toBeInTheDocument();
+  });
+
   it("does not imply connected recording support when desktop commands are read-only", () => {
     render(
       <App
@@ -450,7 +486,11 @@ describe("desktop workspace shell", () => {
 
     expect(screen.getAllByText("Microphone unavailable").length).toBeGreaterThan(0);
     expect(screen.queryByText("Paused")).not.toBeInTheDocument();
-    expect(screen.queryByText("Raw audio retained in private app storage.")).not.toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Recording controls and status")).queryByText(
+        "Raw audio retained in private app storage.",
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Recording commands are not wired into the desktop shell yet.")).toBeInTheDocument();
   });
 
