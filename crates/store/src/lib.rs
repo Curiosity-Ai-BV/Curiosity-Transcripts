@@ -12,8 +12,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun,
-    ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingAnalysis, MeetingStatus,
+    ModelRun, ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
     TranscriptSegment, TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -26,7 +26,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
 const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
 const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
@@ -210,8 +210,8 @@ impl Store {
 
     pub fn migrate(&self) -> StoreResult<()> {
         let _existing_version = self.schema_version()?;
-        // v0/v1 migrations below are idempotent. Branch on this value when
-        // adding non-idempotent v2+ migrations.
+        // v0-v2 migrations below are idempotent. Branch on this value when
+        // adding non-idempotent v3+ migrations.
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS meetings (
@@ -256,7 +256,11 @@ impl Store {
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL,
-                last_error TEXT
+                last_error TEXT,
+                started_at_ms INTEGER,
+                finished_at_ms INTEGER,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT
             );
 
             CREATE TABLE IF NOT EXISTS exported_files (
@@ -345,6 +349,14 @@ impl Store {
             "tombstoned",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        self.ensure_column("processing_jobs", "started_at_ms", "INTEGER")?;
+        self.ensure_column("processing_jobs", "finished_at_ms", "INTEGER")?;
+        self.ensure_column(
+            "processing_jobs",
+            "cancel_requested",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column("processing_jobs", "idempotency_key", "TEXT")?;
         self.conn
             .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         Ok(())
@@ -497,8 +509,9 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO processing_jobs (
-                id, meeting_id, kind, status, attempts, last_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                id, meeting_id, kind, status, attempts, last_error,
+                started_at_ms, finished_at_ms, cancel_requested, idempotency_key
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ",
             params![
                 job.id,
@@ -506,7 +519,11 @@ impl Store {
                 enum_name(job.kind),
                 enum_name(job.status),
                 job.attempts,
-                job.last_error
+                job.last_error,
+                job.started_at_ms,
+                job.finished_at_ms,
+                job.cancel_requested,
+                job.idempotency_key
             ],
         )?;
         Ok(())
@@ -1050,6 +1067,75 @@ impl Store {
             |row| row.get(0),
         )?;
         parse_job_status(&status)
+    }
+
+    pub fn processing_job(&self, job_id: &str) -> StoreResult<ProcessingJob> {
+        let (
+            id,
+            meeting_id,
+            kind,
+            status,
+            attempts,
+            last_error,
+            started_at_ms,
+            finished_at_ms,
+            cancel_requested,
+            idempotency_key,
+        ): (
+            String,
+            String,
+            String,
+            String,
+            u32,
+            Option<String>,
+            Option<u64>,
+            Option<u64>,
+            bool,
+            Option<String>,
+        ) = self.conn.query_row(
+            "
+            SELECT
+                id,
+                meeting_id,
+                kind,
+                status,
+                attempts,
+                last_error,
+                started_at_ms,
+                finished_at_ms,
+                cancel_requested,
+                idempotency_key
+            FROM processing_jobs
+            WHERE id = ?1
+            ",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )?;
+        Ok(ProcessingJob {
+            id,
+            meeting_id,
+            kind: parse_job_kind(&kind)?,
+            status: parse_job_status(&status)?,
+            attempts,
+            last_error,
+            started_at_ms,
+            finished_at_ms,
+            cancel_requested,
+            idempotency_key,
+        })
     }
 
     pub fn record_exported_file(&self, meeting_id: &str, path: &Path) -> StoreResult<()> {
@@ -2825,6 +2911,16 @@ fn parse_repair_status_value(status: &str) -> Result<RepairStatus, String> {
         "Recoverable" => Ok(RepairStatus::Recoverable),
         "Recovered" => Ok(RepairStatus::Recovered),
         other => Err(format!("unknown repair status: {other}")),
+    }
+}
+
+fn parse_job_kind(kind: &str) -> StoreResult<JobKind> {
+    match kind {
+        "Transcribe" => Ok(JobKind::Transcribe),
+        "Summarize" => Ok(JobKind::Summarize),
+        "Export" => Ok(JobKind::Export),
+        "Index" => Ok(JobKind::Index),
+        other => Err(format!("unknown job kind: {other}").into()),
     }
 }
 

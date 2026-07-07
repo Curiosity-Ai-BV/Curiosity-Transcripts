@@ -321,6 +321,10 @@ pub struct ProcessingJob {
     pub status: JobStatus,
     pub attempts: u32,
     pub last_error: Option<String>,
+    pub started_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+    pub cancel_requested: bool,
+    pub idempotency_key: Option<String>,
 }
 
 impl ProcessingJob {
@@ -337,6 +341,10 @@ impl ProcessingJob {
             status,
             attempts: 0,
             last_error: None,
+            started_at_ms: None,
+            finished_at_ms: None,
+            cancel_requested: false,
+            idempotency_key: None,
         }
     }
 }

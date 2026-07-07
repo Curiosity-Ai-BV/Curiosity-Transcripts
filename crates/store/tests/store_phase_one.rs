@@ -86,7 +86,7 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 2);
+    assert_eq!(store.schema_version().expect("schema version"), 3);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(audio_artifacts)")
