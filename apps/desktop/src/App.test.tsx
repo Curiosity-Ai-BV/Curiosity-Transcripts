@@ -890,6 +890,8 @@ describe("desktop workspace shell", () => {
           state: "Valid",
           message: "Whisper model path is readable.",
           setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
         };
       },
       saveWhisperModelPath: async (args) => {
@@ -902,7 +904,12 @@ describe("desktop workspace shell", () => {
 
     await user.type(screen.getByLabelText("Whisper model path"), "/models/ggml-base.en.bin");
     await user.click(screen.getByRole("button", { name: "Test path" }));
-    expect(await screen.findByText("Whisper model path is readable.")).toBeInTheDocument();
+    const feedback = await screen.findByRole("status");
+    expect(within(feedback).getByText("Whisper model path is readable.")).toBeInTheDocument();
+    expect(within(feedback).getByText("Size: 16 bytes")).toBeInTheDocument();
+    expect(
+      within(feedback).getByText("SHA-256: 8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54"),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save Whisper" }));
 
     expect(calls).toEqual([
@@ -1407,6 +1414,8 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
       state: "Valid",
       message: "Whisper model path is readable.",
       setupGuidance: "",
+      fileSizeBytes: 16,
+      sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
     }),
     testOllamaConnection: async () => ({
       state: "Available",

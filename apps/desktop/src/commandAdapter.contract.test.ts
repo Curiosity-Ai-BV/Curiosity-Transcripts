@@ -215,6 +215,8 @@ describe("typed desktop command facade", () => {
           state: "Valid",
           message: "Whisper model path is readable.",
           setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
         } as never;
       }
       if (command === "test_ollama_connection") {
@@ -245,7 +247,7 @@ describe("typed desktop command facade", () => {
     await facade.cancelSummary({ jobId: "summary-circuit-review-1700000001000" });
     await facade.saveWhisperModelPath({ whisperModelPath: "/models/base.en.bin" });
     await facade.saveAnalysisSettings({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" });
-    await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
+    const whisperPathTest = await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
     expect(calls).toEqual([
@@ -277,6 +279,10 @@ describe("typed desktop command facade", () => {
         args: { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
       },
     ]);
+    expect(whisperPathTest).toMatchObject({
+      fileSizeBytes: 16,
+      sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+    });
   });
 
   it("validates snapshot-returning facade commands before exposing them to App", async () => {
@@ -291,5 +297,22 @@ describe("typed desktop command facade", () => {
     const facade = createDesktopCommandFacade(async () => driftedBackendSnapshot as never);
 
     await expect(facade.stopRecording()).rejects.toThrow("desktop_snapshot.recording.permission_state");
+  });
+
+  it("fails loudly when a valid Whisper path test omits readable file metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_whisper_model_path") {
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.testWhisperModelPath({ path: "/models/base.en.bin" })).rejects.toThrow(
+      "test_whisper_model_path.fileSizeBytes",
+    );
   });
 });

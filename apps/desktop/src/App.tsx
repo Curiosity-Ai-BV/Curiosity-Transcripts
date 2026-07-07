@@ -68,6 +68,10 @@ interface SettingsFormState {
 interface SettingsFeedback {
   tone: Tone;
   message: string;
+  metadata?: {
+    fileSizeBytes: number;
+    sha256: string;
+  };
 }
 
 export default function App({ snapshot, commandFacade }: AppProps) {
@@ -427,6 +431,13 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       setSettingsFeedback({
         tone: result.state === "Valid" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,
+        metadata:
+          result.state === "Valid"
+            ? {
+                fileSizeBytes: result.fileSizeBytes,
+                sha256: result.sha256,
+              }
+            : undefined,
       });
     } catch (error) {
       setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
@@ -980,9 +991,15 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                 </button>
               </div>
               {settingsFeedback ? (
-                <p className={`settings-feedback ${settingsFeedback.tone}`} role="status">
-                  {settingsFeedback.message}
-                </p>
+                <div className={`settings-feedback ${settingsFeedback.tone}`} role="status">
+                  <span>{settingsFeedback.message}</span>
+                  {settingsFeedback.metadata ? (
+                    <span className="settings-feedback-metadata">
+                      <span>Size: {settingsFeedback.metadata.fileSizeBytes} bytes</span>
+                      <span>SHA-256: {settingsFeedback.metadata.sha256}</span>
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </aside>

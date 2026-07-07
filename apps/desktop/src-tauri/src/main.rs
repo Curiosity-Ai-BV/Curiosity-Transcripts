@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -34,6 +35,7 @@ use curiosity_transcription::{
     WhisperTranscriptionRequest,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 use url::Url;
 
@@ -2660,19 +2662,38 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
             "Choose a readable local Whisper model file, not a directory.",
         );
     }
-    match std::fs::File::open(&path) {
-        Ok(_) => WhisperModelPathTestView {
+    match sha256_for_readable_file(&path) {
+        Ok(sha256) => WhisperModelPathTestView {
             state: "Valid".to_string(),
-            message: "Whisper model path is readable.".to_string(),
+            message: "Whisper model path is readable; compatibility is not verified by this test."
+                .to_string(),
             setup_guidance:
-                "Save this path, then transcribe with the whisper-rs desktop feature enabled."
+                "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility."
                     .to_string(),
+            file_size_bytes: Some(metadata.len()),
+            sha256: Some(sha256),
         },
         Err(error) => WhisperModelPathTestView::invalid(
             format!("Whisper model path is not readable: {error}"),
             "Check file permissions and choose a readable local Whisper model file.",
         ),
     }
+}
+
+fn sha256_for_readable_file(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Clone)]
@@ -3136,6 +3157,10 @@ struct WhisperModelPathTestView {
     state: String,
     message: String,
     setup_guidance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 impl WhisperModelPathTestView {
@@ -3144,6 +3169,8 @@ impl WhisperModelPathTestView {
             state: "Invalid".to_string(),
             message: message.into(),
             setup_guidance: setup_guidance.into(),
+            file_size_bytes: None,
+            sha256: None,
         }
     }
 }
@@ -3844,12 +3871,23 @@ mod tests {
         let root = unique_test_root();
         fs::create_dir_all(&root).expect("test root");
         let model_path = root.join("fixture-whisper.bin");
-        fs::write(&model_path, b"not a real model").expect("model file");
+        let model_bytes = b"not a real model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
 
         let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
+        let json = serde_json::to_value(&result).expect("serialize result");
 
         assert_eq!(result.state, "Valid");
         assert!(result.message.contains("readable"));
+        assert_eq!(
+            json["fileSizeBytes"].as_u64(),
+            Some(model_bytes.len() as u64)
+        );
+        assert_eq!(json["sha256"].as_str(), Some(expected_sha256.as_str()));
+        let readiness_copy = format!("{} {}", result.message, result.setup_guidance).to_lowercase();
+        assert!(readiness_copy.contains("compatibility"));
+        assert!(!readiness_copy.contains("is compatible"));
 
         let _ = fs::remove_dir_all(root);
     }

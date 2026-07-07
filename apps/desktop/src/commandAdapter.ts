@@ -50,11 +50,22 @@ export interface AppSettings {
   exportDirectory: string | null;
 }
 
-export interface WhisperModelPathTestResult {
-  state: "Valid" | "Invalid";
+interface WhisperModelPathTestBase {
   message: string;
   setupGuidance: string;
 }
+
+export type WhisperModelPathTestResult =
+  | (WhisperModelPathTestBase & {
+      state: "Valid";
+      fileSizeBytes: number;
+      sha256: string;
+    })
+  | (WhisperModelPathTestBase & {
+      state: "Invalid";
+      fileSizeBytes?: undefined;
+      sha256?: undefined;
+    });
 
 export interface OllamaConnectionTestResult {
   state: "Available" | "Unavailable";
@@ -1034,6 +1045,24 @@ function validateAnalysisCommandView(value: unknown, pathLabel: string): void {
   validateCommandFailureView(command.failure, `${pathLabel}.failure`);
 }
 
+function assertWhisperModelPathTestContract(value: unknown): asserts value is WhisperModelPathTestResult {
+  const result = requireContractRecord(value, "test_whisper_model_path");
+  const state = requireEnum(result.state, ["Valid", "Invalid"], "test_whisper_model_path.state");
+  requireString(result.message, "test_whisper_model_path.message");
+  requireString(result.setupGuidance, "test_whisper_model_path.setupGuidance");
+
+  if (state === "Valid") {
+    const fileSizeBytes = requireNumber(result.fileSizeBytes, "test_whisper_model_path.fileSizeBytes");
+    if (!Number.isInteger(fileSizeBytes) || fileSizeBytes < 0) {
+      throw new Error("desktop_snapshot contract drift: expected test_whisper_model_path.fileSizeBytes to be a non-negative integer");
+    }
+    const sha256 = requireString(result.sha256, "test_whisper_model_path.sha256");
+    if (!/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new Error("desktop_snapshot contract drift: expected test_whisper_model_path.sha256 to be a SHA-256 hex string");
+    }
+  }
+}
+
 function retentionDetail(policy: RawAudioRetentionPolicy): string {
   if (policy === "DeleteAfterTranscription") {
     return "Raw audio will be deleted after transcription.";
@@ -1053,6 +1082,9 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
     const result = await invoke<unknown>(command, args);
     if (DESKTOP_SNAPSHOT_COMMANDS.has(command)) {
       assertDesktopSnapshotContract(result);
+    }
+    if (command === "test_whisper_model_path") {
+      assertWhisperModelPathTestContract(result);
     }
     return result as T;
   };
@@ -1082,8 +1114,11 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("save_whisper_model_path", { whisperModelPath }),
     saveAnalysisSettings: ({ ollamaBaseUrl, ollamaModel }) =>
       snapshotCommand("save_analysis_settings", { ollamaBaseUrl, ollamaModel }),
-    testWhisperModelPath: ({ path }) =>
-      fetchCommand<WhisperModelPathTestResult>("test_whisper_model_path", { path }),
+    testWhisperModelPath: async ({ path }) => {
+      const result = await fetchCommand<unknown>("test_whisper_model_path", { path });
+      assertWhisperModelPathTestContract(result);
+      return result;
+    },
     testOllamaConnection: ({ baseUrl, model }) =>
       fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", { baseUrl, model }),
   };

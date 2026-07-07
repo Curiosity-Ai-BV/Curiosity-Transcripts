@@ -15,9 +15,11 @@ model paths, and any skipped item in the release notes.
 - macOS permissions: verify Microphone and Screen Recording prompts name
   `Curiosity Transcripts`, and denied permissions produce visible recovery
   states instead of silent success.
-- Model setup: configure a readable local Whisper model path in Settings,
-  confirm local Ollama base URL/model state, and verify missing models show
-  actionable setup guidance.
+- Model setup: configure a local Whisper model path in Settings and record the
+  path test's file size plus SHA-256 readability evidence. Treat the real
+  Whisper smoke or a sample transcription as the compatibility check. Confirm
+  local Ollama base URL/model state, and verify missing models show actionable
+  setup guidance.
 - Offline-after-setup: after Whisper and Ollama setup, disable network access
   and confirm the local record, transcribe, search, JSON export, and delete path
   still works. Local Ollama may require the local server to remain running.
