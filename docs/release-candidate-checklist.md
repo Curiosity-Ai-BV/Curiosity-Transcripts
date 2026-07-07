@@ -39,6 +39,8 @@ output are still future hardening gates unless a later slice adds them.
   artifacts and truthful mic-only fallback when system audio is unavailable.
 - Transcription: transcribe the recorded meeting with the configured local
   Whisper model and verify channel-tagged transcript segments appear.
+- Correction: edit one transcript segment, save it, relaunch, and verify the
+  corrected text plus original-text indication are still visible.
 - Summary: generate a local Ollama summary after transcription and verify
   summary, decisions, questions, action items, and citations are visible.
 - Privacy data state: for a selected meeting, verify the detail row shows the

@@ -262,6 +262,27 @@ pub fn rename_meeting_command(
     ))
 }
 
+pub fn correct_transcript_segment_command(
+    store: &Store,
+    meeting_id: &str,
+    segment_id: &str,
+    corrected_text: &str,
+    edited_at_ms: u64,
+) -> CommandResult<()> {
+    let segment_belongs_to_meeting = store
+        .transcript_segments(meeting_id)?
+        .iter()
+        .any(|segment| segment.id == segment_id);
+    if !segment_belongs_to_meeting {
+        return Err(CommandError::Store(StoreError::NotFound(format!(
+            "transcript segment not found in meeting: {meeting_id}/{segment_id}"
+        ))));
+    }
+
+    store.correct_transcript_segment(segment_id, corrected_text, edited_at_ms)?;
+    Ok(())
+}
+
 pub fn export_meeting_json_command(
     store: &Store,
     meeting_id: &str,

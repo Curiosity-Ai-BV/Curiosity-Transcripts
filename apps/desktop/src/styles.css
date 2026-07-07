@@ -106,7 +106,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -363,7 +364,8 @@ h3 {
 .search-block label,
 .recording-title-field span,
 .rename-title-field span,
-.settings-field span {
+.settings-field span,
+.segment-editor-field span {
   color: var(--text-soft);
   font-size: 12px;
   font-weight: 800;
@@ -385,7 +387,8 @@ h3 {
 .search-control input,
 .recording-title-field input,
 .rename-title-field input,
-.settings-field input {
+.settings-field input,
+.segment-editor-field textarea {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -395,6 +398,12 @@ h3 {
   background: var(--control);
   color: var(--text);
   padding: 10px 12px;
+}
+
+.segment-editor-field textarea {
+  min-height: 118px;
+  resize: vertical;
+  line-height: 1.5;
 }
 
 .search-control input {
@@ -409,6 +418,7 @@ h3 {
 .recording-title-field input:focus,
 .rename-title-field input:focus,
 .settings-field input:focus,
+.segment-editor-field textarea:focus,
 .button:focus-visible,
 .meeting-row:focus-visible,
 .theme-toggle:focus-visible {
@@ -418,7 +428,8 @@ h3 {
 
 .recording-title-field input:disabled,
 .rename-title-field input:disabled,
-.settings-field input:disabled {
+.settings-field input:disabled,
+.segment-editor-field textarea:disabled {
   color: var(--muted);
   background: var(--control-disabled);
   opacity: 0.72;
@@ -659,18 +670,25 @@ h3 {
 
 .segment {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 86px;
+  grid-template-columns: 56px minmax(0, 1fr) 86px auto;
   gap: 14px;
+  align-items: start;
   border-bottom: 1px solid var(--segment-line);
   padding: 16px 0;
 }
 
 .segment time,
-.segment span {
+.segment-channel {
   color: var(--muted);
   font-family: var(--font-data);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.segment-body {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
 }
 
 .segment p {
@@ -678,6 +696,29 @@ h3 {
   color: var(--text-soft);
   font-size: 16px;
   line-height: 1.6;
+}
+
+.segment-original {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.segment-editor,
+.segment-editor-field {
+  display: grid;
+  gap: 10px;
+}
+
+.segment-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.segment-edit-button {
+  min-height: 36px;
+  padding: 8px 10px;
 }
 
 .detail-actions {
@@ -916,7 +957,8 @@ h3 {
     grid-template-columns: 48px minmax(0, 1fr);
   }
 
-  .segment span {
+  .segment-channel,
+  .segment-edit-button {
     grid-column: 2;
   }
 }

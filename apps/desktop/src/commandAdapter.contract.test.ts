@@ -77,6 +77,29 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.commandSurface.ready");
   });
 
+  it("requires transcript segments to carry original transcript text explicitly", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      meetings: backendSnapshot.meetings.map((meeting) => ({
+        ...meeting,
+        segments: meeting.segments.map((segment) => ({
+          ...segment,
+          originalText: null,
+        })),
+      })),
+    };
+    delete (driftedBackendSnapshot.meetings[0].segments[0] as Record<string, unknown>).originalText;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.meetings[0].segments[0].originalText");
+  });
+
   it.each([
     ["desktop_snapshot.loading", { loading: "false" }],
     ["desktop_snapshot.model.kind", { model: { ...getMockDesktopSnapshot().model, kind: "warm" } }],
@@ -242,6 +265,12 @@ describe("typed desktop command facade", () => {
     await facade.startRecording({ title: "MVP sync" });
     await facade.stopRecording();
     await facade.transcribeMeeting({ meetingId: "circuit-review" });
+    await facade.correctTranscriptSegment({
+      meetingId: "circuit-review",
+      segmentId: "segment-1",
+      correctedText: "Corrected transcript text.",
+      editedAtMs: 1_700_000_003_000,
+    });
     await facade.cancelTranscription({ jobId: "transcription-circuit-review-1700000001000" });
     await facade.renameMeeting({ meetingId: "circuit-review", title: "Renamed Planning" });
     await facade.exportMeetingJson({ meetingId: "circuit-review" });
@@ -262,6 +291,15 @@ describe("typed desktop command facade", () => {
       },
       { command: "stop_microphone_recording", args: undefined },
       { command: "transcribe_meeting", args: { meetingId: "circuit-review" } },
+      {
+        command: "correct_transcript_segment",
+        args: {
+          meetingId: "circuit-review",
+          segmentId: "segment-1",
+          correctedText: "Corrected transcript text.",
+          editedAtMs: 1_700_000_003_000,
+        },
+      },
       {
         command: "cancel_transcription",
         args: { jobId: "transcription-circuit-review-1700000001000" },

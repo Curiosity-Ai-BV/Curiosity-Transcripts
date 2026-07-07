@@ -137,6 +137,7 @@ export interface TranscriptSegment {
   startMs: number;
   endMs: number;
   text: string;
+  originalText: string | null;
   sourceChannel: string;
   modelRunId: string;
   transcriptVersionId: string;
@@ -201,6 +202,12 @@ export interface DesktopCommandFacade {
   startRecording(args?: { title?: string }): Promise<DesktopSnapshot>;
   stopRecording(): Promise<DesktopSnapshot>;
   transcribeMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  correctTranscriptSegment(args: {
+    meetingId: string;
+    segmentId: string;
+    correctedText: string;
+    editedAtMs: number;
+  }): Promise<DesktopSnapshot>;
   cancelTranscription(args: { jobId: string }): Promise<DesktopSnapshot>;
   renameMeeting(args: { meetingId: string; title: string }): Promise<DesktopSnapshot>;
   exportMeetingJson(args: { meetingId: string }): Promise<DesktopSnapshot>;
@@ -281,6 +288,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
         requireNumber(segmentRecord.startMs, `${segmentPath}.startMs`);
         requireNumber(segmentRecord.endMs, `${segmentPath}.endMs`);
         requireString(segmentRecord.text, `${segmentPath}.text`);
+        requireNullableString(segmentRecord.originalText, `${segmentPath}.originalText`);
         requireString(segmentRecord.sourceChannel, `${segmentPath}.sourceChannel`);
         requireString(segmentRecord.modelRunId, `${segmentPath}.modelRunId`);
         requireString(segmentRecord.transcriptVersionId, `${segmentPath}.transcriptVersionId`);
@@ -831,6 +839,7 @@ function segment(
     startMs,
     endMs,
     text,
+    originalText: null,
     sourceChannel,
     modelRunId: "run-1",
     transcriptVersionId: "version-1",
@@ -893,6 +902,7 @@ const REQUIRED_SEGMENT_PATHS: readonly ContractPath[] = [
   ["startMs"],
   ["endMs"],
   ["text"],
+  ["originalText"],
   ["sourceChannel"],
   ["modelRunId"],
   ["transcriptVersionId"],
@@ -900,6 +910,7 @@ const REQUIRED_SEGMENT_PATHS: readonly ContractPath[] = [
 
 const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "desktop_snapshot",
+  "correct_transcript_segment",
   "delete_meeting",
   "export_meeting_json",
   "generate_summary",
@@ -1166,6 +1177,8 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
     stopRecording: () => snapshotCommand("stop_microphone_recording"),
     transcribeMeeting: ({ meetingId }) => snapshotCommand("transcribe_meeting", { meetingId }),
+    correctTranscriptSegment: ({ meetingId, segmentId, correctedText, editedAtMs }) =>
+      snapshotCommand("correct_transcript_segment", { meetingId, segmentId, correctedText, editedAtMs }),
     cancelTranscription: ({ jobId }) => snapshotCommand("cancel_transcription", { jobId }),
     renameMeeting: ({ meetingId, title }) => snapshotCommand("rename_meeting", { meetingId, title }),
     exportMeetingJson: ({ meetingId }) => snapshotCommand("export_meeting_json", { meetingId }),

@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import packageInfo from "../package.json";
 import App from "./App";
@@ -20,7 +20,10 @@ import {
   searchMeetings,
 } from "./commandAdapter";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("desktop command-state mapping", () => {
   it("loads the desktop snapshot through the provided command fetcher", async () => {
@@ -1170,6 +1173,103 @@ describe("desktop workspace shell", () => {
     expect(screen.getAllByText(/ollama \/ qwen3.6:27b/i).length).toBeGreaterThan(0);
   });
 
+  it("saves a user correction for the selected transcript segment", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_003_000);
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot();
+    const correctedText = "We decided to keep raw audio retention visible and searchable.";
+    const returned = connectedSnapshot({
+      meetings: initial.meetings.map((meeting) =>
+        meeting.id === "circuit-review"
+          ? {
+              ...meeting,
+              transcriptText: `${correctedText} Exports should show when files remain outside app control.`,
+              segments: meeting.segments.map((segment) =>
+                segment.id === "segment-1"
+                  ? {
+                      ...segment,
+                      text: correctedText,
+                      originalText: "We decided to keep raw audio retention visible.",
+                    }
+                  : segment,
+              ),
+            }
+          : meeting,
+      ),
+    });
+    const commandFacade = fakeCommandFacade({
+      correctTranscriptSegment: async (args) => {
+        calls.push({ method: "correctTranscriptSegment", args });
+        return returned;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    const firstSegment = screen
+      .getByText("We decided to keep raw audio retention visible.")
+      .closest("article");
+    expect(firstSegment).not.toBeNull();
+    await user.click(within(firstSegment!).getByRole("button", { name: "Edit segment" }));
+    const editor = screen.getByLabelText("Transcript segment text");
+    await user.clear(editor);
+    await user.type(editor, correctedText);
+    await user.click(screen.getByRole("button", { name: "Save correction" }));
+
+    expect(calls).toEqual([
+      {
+        method: "correctTranscriptSegment",
+        args: {
+          meetingId: "circuit-review",
+          segmentId: "segment-1",
+          correctedText,
+          editedAtMs: 1_700_000_003_000,
+        },
+      },
+    ]);
+    expect(screen.getByText(correctedText)).toBeInTheDocument();
+    expect(screen.getByText("Original: We decided to keep raw audio retention visible.")).toBeInTheDocument();
+  });
+
+  it("keeps transcript editing scoped to one segment and cancels without saving", async () => {
+    const user = userEvent.setup();
+    const calls: unknown[] = [];
+    const commandFacade = fakeCommandFacade({
+      correctTranscriptSegment: async (args) => {
+        calls.push(args);
+        return connectedSnapshot();
+      },
+    });
+
+    render(<App snapshot={connectedSnapshot()} commandFacade={commandFacade} />);
+
+    const firstSegment = screen
+      .getByText("We decided to keep raw audio retention visible.")
+      .closest("article");
+    const secondSegment = screen
+      .getByText("Exports should show when files remain outside app control.")
+      .closest("article");
+    expect(firstSegment).not.toBeNull();
+    expect(secondSegment).not.toBeNull();
+
+    await user.click(within(firstSegment!).getByRole("button", { name: "Edit segment" }));
+    await user.click(within(secondSegment!).getByRole("button", { name: "Edit segment" }));
+
+    expect(screen.getAllByLabelText("Transcript segment text")).toHaveLength(1);
+    expect(screen.getByLabelText("Transcript segment text")).toHaveValue(
+      "Exports should show when files remain outside app control.",
+    );
+
+    await user.clear(screen.getByLabelText("Transcript segment text"));
+    await user.type(screen.getByLabelText("Transcript segment text"), "Discarded correction");
+    await user.click(screen.getByRole("button", { name: "Cancel correction" }));
+
+    expect(calls).toEqual([]);
+    expect(screen.queryByLabelText("Transcript segment text")).not.toBeInTheDocument();
+    expect(screen.getByText("Exports should show when files remain outside app control.")).toBeInTheDocument();
+  });
+
   it("renders visible job ownership state from the desktop snapshot", () => {
     const snapshot = connectedSnapshot({
       transcriptionJob: {
@@ -1480,6 +1580,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
     startRecording: async () => snapshot,
     stopRecording: async () => snapshot,
     transcribeMeeting: async () => snapshot,
+    correctTranscriptSegment: async () => snapshot,
     cancelTranscription: async () => snapshot,
     renameMeeting: async () => snapshot,
     exportMeetingJson: async () => snapshot,

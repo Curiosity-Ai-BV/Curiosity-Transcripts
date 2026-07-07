@@ -2,8 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_app::{
-    delete_meeting_command, export_meeting_json_command, list_meetings_dto, meeting_detail_dto,
-    rename_meeting_command, search_meetings_dto, CommandError,
+    correct_transcript_segment_command, delete_meeting_command, export_meeting_json_command,
+    list_meetings_dto, meeting_detail_dto, rename_meeting_command, search_meetings_dto,
+    CommandError,
 };
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
@@ -80,6 +81,69 @@ fn command_helpers_preserve_typed_store_errors_for_shell_callers() {
         }
         other => panic!("expected typed store not-found error, got {other:?}"),
     }
+}
+
+#[test]
+fn phase_four_commands_correct_transcript_segment_persists_user_correction_timestamp() {
+    let root = test_root("correct-segment");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "helo launch plan");
+
+    correct_transcript_segment_command(
+        &store,
+        "meeting-1",
+        "meeting-1-segment-1",
+        "hello launch plan",
+        2_500,
+    )
+    .expect("correct segment through command");
+
+    let detail = meeting_detail_dto(&store, "meeting-1").expect("open corrected meeting");
+    let segment = &detail.transcript_segments[0];
+    assert_eq!(segment.text, "hello launch plan");
+    assert_eq!(segment.original_text.as_deref(), Some("helo launch plan"));
+
+    let edits = store
+        .transcript_segment_edits("meeting-1-segment-1")
+        .expect("read edit history");
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].edited_at_ms, 2_500);
+    assert_eq!(edits[0].previous_text, "helo launch plan");
+    assert_eq!(edits[0].corrected_text, "hello launch plan");
+}
+
+#[test]
+fn phase_four_commands_correct_transcript_segment_rejects_segment_outside_meeting() {
+    let root = test_root("stale-segment");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "first meeting text");
+    seed_meeting_with_transcript(&store, "meeting-2", "Review", "second meeting text");
+
+    let error = correct_transcript_segment_command(
+        &store,
+        "meeting-1",
+        "meeting-2-segment-1",
+        "stale correction",
+        2_500,
+    )
+    .expect_err("segment from another meeting must be rejected");
+
+    match error {
+        CommandError::Store(curiosity_store::StoreError::NotFound(message)) => {
+            assert_eq!(
+                message,
+                "transcript segment not found in meeting: meeting-1/meeting-2-segment-1"
+            );
+        }
+        other => panic!("expected stale segment not-found error, got {other:?}"),
+    }
+
+    let second_detail = meeting_detail_dto(&store, "meeting-2").expect("open other meeting");
+    assert_eq!(second_detail.transcript_segments[0].text, "second meeting text");
+    assert!(store
+        .transcript_segment_edits("meeting-2-segment-1")
+        .expect("read other edit history")
+        .is_empty());
 }
 
 fn migrated_store(root: &Path) -> Store {

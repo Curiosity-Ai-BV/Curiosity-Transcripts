@@ -51,6 +51,7 @@ type PendingCommand =
   | "export"
   | "delete"
   | "summary"
+  | "correct-segment"
   | "cancel-transcription"
   | "cancel-summary"
   | "test-whisper"
@@ -92,6 +93,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
   const [renameTitle, setRenameTitle] = useState(selectedTitleFromSnapshot(initialSnapshot));
   const [recordingTitle, setRecordingTitle] = useState("");
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [segmentDraft, setSegmentDraft] = useState("");
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromSnapshot(initialSnapshot));
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
@@ -104,6 +107,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       setSettingsForm(settingsFormFromSnapshot(snapshot));
       setConnectedSearchResultIds(null);
       setRenameTitle(selectedTitleFromSnapshot(snapshot));
+      setEditingSegmentId(null);
+      setSegmentDraft("");
       setSettingsFeedback(null);
       setCommandError(null);
       setPendingCommand(null);
@@ -143,6 +148,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     } else {
       setRenameTitle("");
     }
+    setEditingSegmentId(null);
+    setSegmentDraft("");
   }, [selectedMeeting?.id, selectedMeeting?.title]);
 
   useEffect(() => {
@@ -237,6 +244,12 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const correctionDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !editingSegmentId ||
+    commandBusy ||
+    !segmentDraft.trim();
   const settingsInputDisabled = commandBusy;
   const settingsActionDisabled = commandBusy;
 
@@ -372,6 +385,43 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     void runSnapshotCommand("summary", (commands) =>
       commands.generateSummary({ meetingId: selectedMeeting.id }),
     );
+  }
+
+  function editTranscriptSegment(segmentId: string, text: string) {
+    if (commandBusy) {
+      return;
+    }
+    setCommandError(null);
+    setEditingSegmentId(segmentId);
+    setSegmentDraft(text);
+  }
+
+  function cancelTranscriptCorrection() {
+    setEditingSegmentId(null);
+    setSegmentDraft("");
+  }
+
+  function saveTranscriptCorrection() {
+    if (!selectedMeeting || !editingSegmentId) {
+      return;
+    }
+    const correctedText = segmentDraft.trim();
+    if (!correctedText) {
+      return;
+    }
+    const segmentId = editingSegmentId;
+    const editedAtMs = Date.now();
+    void runSnapshotCommand("correct-segment", async (commands) => {
+      const nextSnapshot = await commands.correctTranscriptSegment({
+        meetingId: selectedMeeting.id,
+        segmentId,
+        correctedText,
+        editedAtMs,
+      });
+      setEditingSegmentId(null);
+      setSegmentDraft("");
+      return nextSnapshot;
+    });
   }
 
   function cancelTranscriptionJob() {
@@ -833,13 +883,80 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                 <section className="transcript-section">
                   <h3>Transcript</h3>
                   <div className="segments">
-                    {selectedMeeting.segments.map((segment) => (
-                      <article key={segment.id} className="segment">
-                        <time>{formatTime(segment.startMs)}</time>
-                        <p>{segment.text}</p>
-                        <span>{segment.sourceChannel}</span>
-                      </article>
-                    ))}
+                    {selectedMeeting.segments.map((segment) => {
+                      const isEditingSegment = editingSegmentId === segment.id;
+                      const showOriginalText = Boolean(
+                        segment.originalText && segment.originalText !== segment.text,
+                      );
+
+                      return (
+                        <article key={segment.id} className="segment">
+                          <time>{formatTime(segment.startMs)}</time>
+                          <div className="segment-body">
+                            {isEditingSegment ? (
+                              <div className="segment-editor">
+                                <label className="segment-editor-field">
+                                  <span>Transcript segment text</span>
+                                  <textarea
+                                    value={segmentDraft}
+                                    onChange={(event) => setSegmentDraft(event.target.value)}
+                                    disabled={pendingCommand === "correct-segment"}
+                                  />
+                                </label>
+                                <div className="segment-editor-actions">
+                                  <button
+                                    type="button"
+                                    className="button primary"
+                                    disabled={correctionDisabled}
+                                    title={
+                                      commandSurfaceReady
+                                        ? "Save the user correction for this transcript segment."
+                                        : commandUnavailableTitle
+                                    }
+                                    onClick={saveTranscriptCorrection}
+                                  >
+                                    <CheckCircle size={16} weight="regular" />
+                                    {pendingCommand === "correct-segment" ? "Saving correction" : "Save correction"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button quiet"
+                                    disabled={pendingCommand === "correct-segment"}
+                                    onClick={cancelTranscriptCorrection}
+                                  >
+                                    Cancel correction
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <p>{segment.text}</p>
+                                {showOriginalText ? (
+                                  <small className="segment-original">Original: {segment.originalText}</small>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
+                          <span className="segment-channel">{segment.sourceChannel}</span>
+                          {isEditingSegment ? null : (
+                            <button
+                              type="button"
+                              className="button quiet segment-edit-button"
+                              disabled={!commandSurfaceReady || commandBusy}
+                              title={
+                                commandSurfaceReady
+                                  ? "Edit this transcript segment."
+                                  : commandUnavailableTitle
+                              }
+                              onClick={() => editTranscriptSegment(segment.id, segment.text)}
+                            >
+                              <PencilSimple size={16} weight="regular" />
+                              Edit segment
+                            </button>
+                          )}
+                        </article>
+                      );
+                    })}
                   </div>
                 </section>
 

@@ -9,7 +9,7 @@ use curiosity_analysis::{
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
-    delete_meeting_command, export_meeting_json_command,
+    correct_transcript_segment_command, delete_meeting_command, export_meeting_json_command,
     generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
     rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
     AppPermissionState, CommandRecordingDto, CommandRecordingState, DeletedMeetingDto,
@@ -48,6 +48,7 @@ fn main() {
         desktop_snapshot,
         search_meetings,
         rename_meeting,
+        correct_transcript_segment,
         export_meeting_json,
         delete_meeting,
         generate_summary,
@@ -71,6 +72,7 @@ fn main() {
         desktop_snapshot,
         search_meetings,
         rename_meeting,
+        correct_transcript_segment,
         export_meeting_json,
         delete_meeting,
         generate_summary,
@@ -190,6 +192,33 @@ fn rename_meeting(
         command_state.snapshot_state()
     };
     rename_meeting_for_app_root(&app_root, &snapshot_state, &meeting_id, &title)
+}
+
+#[tauri::command]
+fn correct_transcript_segment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    segment_id: String,
+    corrected_text: String,
+    edited_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    correct_transcript_segment_for_app_root(
+        &app_root,
+        &snapshot_state,
+        &meeting_id,
+        &segment_id,
+        &corrected_text,
+        edited_at_ms,
+    )
 }
 
 #[tauri::command]
@@ -666,6 +695,7 @@ fn desktop_snapshot_for_app_root_with_state(
                 start_ms: segment.start_ms,
                 end_ms: segment.end_ms,
                 text: segment.text,
+                original_text: segment.original_text,
                 source_channel: segment.source_channel,
                 model_run_id: segment.model_run_id,
                 transcript_version_id: segment.transcript_version_id,
@@ -811,6 +841,27 @@ fn rename_meeting_for_app_root(
 ) -> Result<DesktopSnapshot, String> {
     let store = open_store(app_root)?;
     rename_meeting_command(&store, meeting_id, title).map_err(|error| error.to_string())?;
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, command_state)
+}
+
+fn correct_transcript_segment_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    segment_id: &str,
+    corrected_text: &str,
+    edited_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let store = open_store(app_root)?;
+    correct_transcript_segment_command(
+        &store,
+        meeting_id,
+        segment_id,
+        corrected_text,
+        edited_at_ms,
+    )
+    .map_err(|error| error.to_string())?;
     drop(store);
     desktop_snapshot_for_app_root_with_state(app_root, command_state)
 }
@@ -3328,6 +3379,7 @@ struct TranscriptSegmentView {
     start_ms: u64,
     end_ms: u64,
     text: String,
+    original_text: Option<String>,
     source_channel: String,
     model_run_id: String,
     transcript_version_id: String,
@@ -4274,6 +4326,39 @@ mod tests {
 
         assert_eq!(json["selectedMeetingId"], "meeting-1");
         assert_eq!(json["meetings"][0]["title"], "Renamed Planning");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn correct_transcript_segment_command_refreshes_snapshot_text_and_original_text() {
+        let root = unique_test_root();
+        let command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Correction Planning",
+            "helo launch plan",
+        );
+
+        let snapshot = correct_transcript_segment_for_app_root(
+            &root,
+            &command_state.snapshot_state(),
+            "meeting-1",
+            "meeting-1-segment-1",
+            "hello launch plan",
+            2_500,
+        )
+        .expect("correct transcript segment");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["selectedMeetingId"], "meeting-1");
+        assert_eq!(json["meetings"][0]["transcriptText"], "hello launch plan");
+        assert_eq!(json["meetings"][0]["segments"][0]["text"], "hello launch plan");
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["originalText"],
+            "helo launch plan"
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

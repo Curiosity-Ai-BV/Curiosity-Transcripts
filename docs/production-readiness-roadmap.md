@@ -196,6 +196,11 @@ Deliverables:
 - Add focused tests that prove corrections refresh search/export output and do
   not mutate original evidence silently.
 
+Current Phase 4A status: transcript segment correction is wired through the
+existing store edit-history seam, desktop command surface, TS contract, and a
+minimal one-segment inline editor. Import and multi-format export remain later
+Phase 4 work.
+
 Success criteria:
 
 - A user can import existing audio, correct obvious transcript mistakes, export
