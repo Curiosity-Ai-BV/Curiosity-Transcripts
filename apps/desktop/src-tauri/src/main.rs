@@ -689,6 +689,14 @@ fn transcribe_meeting(
     let settings = app_settings_for_app_root(&app_root)?;
     let model_path = resolved_whisper_model_path(&settings);
     let model_name = model_name_for_path(&model_path);
+    if let Some(snapshot) = transcription_readiness_failure_snapshot_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        &settings,
+    )? {
+        return Ok(snapshot);
+    }
     let started_at_ms = current_timestamp_ms();
     let (job, snapshot) = match start_transcription_job_for_app_root(
         &app_root,
@@ -3185,6 +3193,59 @@ fn cancel_transcription_job_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
+fn transcription_readiness_failure_snapshot_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    settings: &AppSettings,
+) -> Result<Option<DesktopSnapshot>, String> {
+    let Some(failure) = whisper_transcription_readiness_failure(meeting_id, settings) else {
+        return Ok(None);
+    };
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.last_transcription = Some(failure);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state).map(Some)
+}
+
+fn whisper_transcription_readiness_failure(
+    meeting_id: &str,
+    settings: &AppSettings,
+) -> Option<TranscriptionCommandView> {
+    let configured_path = resolved_whisper_model_path(settings);
+    let trimmed_path = configured_path.trim();
+    if trimmed_path.is_empty() {
+        return Some(transcription_failed(
+            meeting_id,
+            "missing_model",
+            "No Whisper model path is configured.",
+            "Choose a local Whisper model file, save it, run Test path, then retry transcription.",
+        ));
+    }
+    if !PathBuf::from(trimmed_path).is_file() {
+        return Some(transcription_failed(
+            meeting_id,
+            "missing_model",
+            "Saved Whisper model path does not point to a readable model file.",
+            "Choose a readable local Whisper model file, save it, run Test path, then retry transcription.",
+        ));
+    }
+    if !whisper_path_test_evidence_proves_current_readiness(
+        trimmed_path,
+        &settings.whisper_path_test_evidence,
+    ) {
+        return Some(transcription_failed(
+            meeting_id,
+            "model_path_untested",
+            "Whisper model path needs matching Test path evidence before transcription.",
+            "Run Test path for the saved Whisper model file, then retry transcription. Readability does not prove model compatibility.",
+        ));
+    }
+    None
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "job completion keeps state ownership, job identity, and backend inputs explicit"
@@ -3746,10 +3807,16 @@ fn artifact_relative_path_for_stream(
 
 fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
     let configured_path = resolved_whisper_model_path(settings);
-    let kind = if !configured_path.is_empty() && PathBuf::from(&configured_path).is_file() {
+    let path = PathBuf::from(configured_path.trim());
+    let kind = if configured_path.trim().is_empty() || !path.is_file() {
+        "missing"
+    } else if whisper_path_test_evidence_proves_current_readiness(
+        &configured_path,
+        &settings.whisper_path_test_evidence,
+    ) {
         "ready"
     } else {
-        "missing"
+        "untested"
     };
     ModelStatus {
         kind: kind.to_string(),
@@ -4433,7 +4500,36 @@ fn matching_whisper_path_test_evidence(
         .whisper_path_test_evidence
         .as_ref()
         .filter(|evidence| evidence.tested_path == configured_path)
+        .filter(|evidence| {
+            evidence.state != "Valid"
+                || whisper_path_test_evidence_matches_current_file(configured_path, evidence)
+        })
         .cloned()
+}
+
+fn whisper_path_test_evidence_proves_current_readiness(
+    configured_path: &str,
+    evidence: &Option<WhisperPathTestEvidence>,
+) -> bool {
+    let configured_path = configured_path.trim();
+    evidence
+        .as_ref()
+        .filter(|evidence| evidence.tested_path == configured_path)
+        .filter(|evidence| evidence.state == "Valid")
+        .map(|evidence| whisper_path_test_evidence_matches_current_file(configured_path, evidence))
+        .unwrap_or(false)
+}
+
+fn whisper_path_test_evidence_matches_current_file(
+    configured_path: &str,
+    evidence: &WhisperPathTestEvidence,
+) -> bool {
+    let Some(expected_size) = evidence.file_size_bytes else {
+        return false;
+    };
+    std::fs::metadata(configured_path.trim())
+        .map(|metadata| metadata.is_file() && metadata.len() == expected_size)
+        .unwrap_or(false)
 }
 
 fn matching_ollama_connection_test_evidence(
@@ -5868,6 +5964,7 @@ mod tests {
 
         assert_eq!(whisper_result.state, "Valid");
         assert_eq!(ollama_result.state, "Available");
+        assert_eq!(json["model"]["kind"], "ready");
         assert_eq!(
             json["setupGuidance"]["ollama"]["availability"],
             "AvailableAtLastTest"
@@ -5939,6 +6036,7 @@ mod tests {
             stale_json["setupGuidance"]["whisper"]["lastPathTest"],
             serde_json::Value::Null
         );
+        assert_eq!(stale_json["model"]["kind"], "missing");
         assert_eq!(
             stale_json["setupGuidance"]["ollama"]["lastConnectionTest"],
             serde_json::Value::Null
@@ -6548,7 +6646,7 @@ mod tests {
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
-        assert_eq!(json["model"]["kind"], "ready");
+        assert_eq!(json["model"]["kind"], "untested");
         assert_eq!(
             json["model"]["configuredPath"],
             model_path.to_string_lossy().as_ref()
@@ -6660,6 +6758,7 @@ mod tests {
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
+        assert_eq!(json["model"]["kind"], "untested");
         assert_eq!(json["setupGuidance"]["whisper"]["state"], "ReadablePath");
         assert_eq!(
             json["setupGuidance"]["whisper"]["configuredPath"],
@@ -6683,6 +6782,38 @@ mod tests {
             json["setupGuidance"]["whisper"]["lastPathTest"],
             serde_json::Value::Null
         );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_marks_changed_whisper_file_as_untested_without_rehashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"first version").expect("model file");
+        let model_path = model_path.to_string_lossy().to_string();
+
+        test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+            .expect("test whisper path");
+        save_whisper_model_path_for_app_root(&root, model_path.clone()).expect("save whisper");
+        fs::write(&model_path, b"changed file with a different size").expect("changed model file");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert!(!json["setupGuidance"]["whisper"]
+            .to_string()
+            .contains("first version"));
 
         restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
@@ -8355,6 +8486,55 @@ mod tests {
             .expect("failure message")
             .contains("CURIOSITY_WHISPER_MODEL"));
         assert_eq!(json["meetings"][0]["transcriptState"], "Unavailable");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcribe_saved_model_without_path_test_returns_visible_failure_without_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Untested Whisper", 1_000))
+            .expect("insert meeting");
+        drop(store);
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        let snapshot = transcription_readiness_failure_snapshot_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            &settings,
+        )
+        .expect("readiness snapshot")
+        .expect("untested model should fail readiness");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store after failure");
+
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert_eq!(
+            json["transcription"]["failure"]["code"],
+            "model_path_untested"
+        );
+        assert!(json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Run Test path"));
+        assert_eq!(json["transcriptionJob"], serde_json::Value::Null);
+        assert!(store
+            .active_transcription_job_for_meeting("meeting-1")
+            .expect("active job")
+            .is_none());
+        assert!(store
+            .transcript_segments("meeting-1")
+            .expect("transcript segments")
+            .is_empty());
 
         fs::remove_dir_all(root).expect("cleanup");
     }

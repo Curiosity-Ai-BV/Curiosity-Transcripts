@@ -230,6 +230,11 @@ describe("desktop command-state mapping", () => {
       tone: "blocked",
       detail: "Choose a local model path before transcription.",
     });
+    expect(mapModelStatus({ kind: "untested", configuredPath: "/models/base.en.bin" })).toEqual({
+      label: "Whisper path untested",
+      tone: "blocked",
+      detail: "Run Test path for the saved model file before transcription.",
+    });
   });
 
   it("filters search results by meeting title and transcript text", () => {
@@ -1666,6 +1671,36 @@ describe("desktop workspace shell", () => {
     expect(screen.getByText("Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.")).toBeInTheDocument();
   });
 
+  it("blocks transcription until the saved Whisper path has matching Test path evidence", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async (args) => {
+        calls.push({ method: "transcribeMeeting", args });
+        return initial;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    const transcribe = screen.getByRole("button", { name: "Transcribe" });
+    expect(transcribe).toBeDisabled();
+    expect(transcribe).toHaveAttribute(
+      "title",
+      "Run Test path for the saved Whisper model file before transcription.",
+    );
+    expect(screen.getByText("Whisper path untested")).toBeInTheDocument();
+    await user.click(transcribe);
+
+    expect(calls).toEqual([]);
+  });
+
   it("renames the selected meeting through the desktop command", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
@@ -2597,6 +2632,44 @@ describe("desktop workspace shell", () => {
     await user.click(screen.getByRole("button", { name: "Retry transcription" }));
 
     expect(calls).toEqual([{ method: "transcribeMeeting", args: { meetingId: "circuit-review" } }]);
+  });
+
+  it("blocks retrying a transcription job until the saved Whisper path has matching Test path evidence", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const snapshot = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async (args) => {
+        calls.push({ method: "transcribeMeeting", args });
+        return snapshot;
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    const retry = screen.getByRole("button", { name: "Retry transcription" });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute(
+      "title",
+      "Run Test path for the saved Whisper model file before transcription.",
+    );
+    await user.click(retry);
+
+    expect(calls).toEqual([]);
   });
 
   it("retries the selected meeting's retryable summary job without a cancel control", async () => {

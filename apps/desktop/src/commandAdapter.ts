@@ -44,7 +44,7 @@ export interface CommandSurfaceState {
 }
 
 export interface ModelStatus {
-  kind: "ready" | "missing" | "transcribing";
+  kind: "ready" | "missing" | "untested" | "transcribing";
   configuredPath: string;
 }
 
@@ -435,10 +435,15 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   requireString(recording.recovery_action, "desktop_snapshot.recording.recovery_action");
 
   const model = requireContractRecord(root.model, "desktop_snapshot.model");
-  requireEnum(model.kind, ["ready", "missing", "transcribing"], "desktop_snapshot.model.kind");
-  requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
+  const modelKind = requireEnum(
+    model.kind,
+    ["ready", "missing", "untested", "transcribing"],
+    "desktop_snapshot.model.kind",
+  );
+  const configuredModelPath = requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
 
   validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance");
+  validateWhisperModelReadinessEvidence(modelKind, configuredModelPath, root.setupGuidance);
   validateCalendarContext(root.calendarContext, "desktop_snapshot.calendarContext");
 
   const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
@@ -652,6 +657,13 @@ export function mapModelStatus(model: ModelStatus): StatusView {
       label: "Whisper model missing",
       tone: "blocked",
       detail: "Choose a local model path before transcription.",
+    };
+  }
+  if (model.kind === "untested") {
+    return {
+      label: "Whisper path untested",
+      tone: "blocked",
+      detail: "Run Test path for the saved model file before transcription.",
     };
   }
   if (model.kind === "transcribing") {
@@ -1330,6 +1342,57 @@ function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): voi
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
   }
   requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
+}
+
+function validateWhisperModelReadinessEvidence(
+  modelKind: ModelStatus["kind"],
+  configuredModelPath: string,
+  setupGuidanceValue: unknown,
+): void {
+  const setupGuidance = requireContractRecord(setupGuidanceValue, "desktop_snapshot.setupGuidance");
+  const whisper = requireContractRecord(setupGuidance.whisper, "desktop_snapshot.setupGuidance.whisper");
+  const evidencePath = "desktop_snapshot.setupGuidance.whisper.lastPathTest";
+  const evidenceValue = whisper.lastPathTest;
+
+  if (modelKind !== "ready" && modelKind !== "untested") {
+    return;
+  }
+
+  if (modelKind === "ready" && evidenceValue === null) {
+    throw new Error(`desktop_snapshot contract drift: expected ${evidencePath} for ready Whisper model`);
+  }
+
+  if (evidenceValue === null) {
+    return;
+  }
+
+  const evidence = requireContractRecord(evidenceValue, evidencePath);
+  const testedPath = requireString(evidence.testedPath, `${evidencePath}.testedPath`);
+  const evidenceState = requireEnum(evidence.state, ["Valid", "Invalid"], `${evidencePath}.state`);
+  const fileSizeBytes = requireNullableNumber(evidence.fileSizeBytes, `${evidencePath}.fileSizeBytes`);
+
+  if (modelKind === "ready") {
+    if (evidenceState !== "Valid") {
+      throw new Error(`desktop_snapshot contract drift: expected ${evidencePath}.state to be Valid for ready Whisper model`);
+    }
+    if (testedPath !== configuredModelPath) {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${evidencePath}.testedPath to match desktop_snapshot.model.configuredPath`,
+      );
+    }
+    if (fileSizeBytes === null) {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${evidencePath}.fileSizeBytes for ready Whisper model`,
+      );
+    }
+    return;
+  }
+
+  if (evidenceState === "Valid" && testedPath === configuredModelPath && fileSizeBytes !== null) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected desktop_snapshot.model.kind to be ready when ${evidencePath} matches the configured Whisper path`,
+    );
+  }
 }
 
 function validateOllamaConnectionTestEvidence(value: unknown, pathLabel: string): void {

@@ -482,6 +482,130 @@ describe("desktop snapshot DTO contract", () => {
     );
   });
 
+  it("accepts untested Whisper model readiness in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.model.kind).toBe("untested");
+  });
+
+  it.each([
+    ["missing evidence", null, "desktop_snapshot.setupGuidance.whisper.lastPathTest"],
+    [
+      "invalid evidence",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Invalid",
+        fileSizeBytes: null,
+        sha256: null,
+        failureDetail: "not a file",
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.state",
+    ],
+    [
+      "wrong path evidence",
+      {
+        testedPath: "/models/other.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: 16,
+        sha256: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.testedPath",
+    ],
+    [
+      "missing file metadata",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: null,
+        sha256: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.fileSizeBytes",
+    ],
+  ] as const)("rejects ready Whisper snapshots with %s", async (_name, lastPathTest, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "ready",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            message: "Whisper model path is readable; compatibility is not verified.",
+            setupGuidance: "Use Test path before transcription.",
+            compatibilityNote: "Readability does not prove model compatibility.",
+            lastPathTest,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
+  });
+
+  it("rejects untested Whisper snapshots that already carry matching valid path-test evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            message: "Whisper model path is readable; compatibility is not verified.",
+            setupGuidance: "Use Test path before transcription.",
+            compatibilityNote: "Readability does not prove model compatibility.",
+            lastPathTest: {
+              testedPath: "/models/base.en.bin",
+              testedAtMs: 1_700_000_001_000,
+              state: "Valid",
+              fileSizeBytes: 16,
+              sha256: null,
+              failureDetail: null,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.model.kind");
+  });
+
   it("requires command readiness to be explicit instead of inferred from detail text", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {

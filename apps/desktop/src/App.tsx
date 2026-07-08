@@ -307,9 +307,10 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
   const calendarTone = calendarContextTone(calendarContext);
   const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
   const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama);
+  const whisperModelReady = currentSnapshot.model.kind === "ready";
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
-  const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy || !whisperModelReady;
   const renameDisabled =
     !commandSurfaceReady ||
     !selectedMeeting ||
@@ -381,6 +382,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     !commandSurfaceReady ||
     !selectedMeeting ||
     !canRetryTranscriptionJob ||
+    !whisperModelReady ||
     commandBusy;
   const retrySummaryDisabled =
     !commandSurfaceReady ||
@@ -805,9 +807,20 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     ? commandUnavailableTitle
     : commandBusy
       ? busyCommandTitle
-      : selectedMeeting
-        ? "Transcribe the selected meeting with the configured local Whisper model."
-        : "Select a meeting before transcription.";
+      : !selectedMeeting
+        ? "Select a meeting before transcription."
+        : currentSnapshot.model.kind === "missing"
+          ? "Choose a local Whisper model file before transcription."
+          : currentSnapshot.model.kind === "untested"
+            ? "Run Test path for the saved Whisper model file before transcription."
+            : "Transcribe the selected meeting with the configured local Whisper model.";
+  const retryTranscriptionButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : !whisperModelReady
+        ? transcribeButtonTitle
+        : "Retry transcription for the selected meeting.";
   const renameButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -1294,11 +1307,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                       type="button"
                       className="button"
                       disabled={retryTranscriptionDisabled}
-                      title={
-                        commandSurfaceReady
-                          ? "Retry transcription for the selected meeting."
-                          : commandUnavailableTitle
-                      }
+                      title={retryTranscriptionButtonTitle}
                       onClick={transcribeSelectedMeeting}
                     >
                       {pendingCommand === "transcribe" ? "Retrying transcription" : "Retry transcription"}

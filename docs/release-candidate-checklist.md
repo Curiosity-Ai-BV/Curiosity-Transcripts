@@ -56,8 +56,9 @@ splitting, or complete privacy/deletion/recovery coverage.
   `Curiosity Transcripts`, and denied permissions produce visible recovery
   states instead of silent success.
 - Model setup: verify the Settings readiness panel shows missing/readable
-  Whisper guidance and Ollama availability as unknown until matching
-  `Test Ollama` evidence exists.
+  Whisper guidance, treats an existing Whisper file as untested until matching
+  `Test path` evidence exists, and shows Ollama availability as unknown until
+  matching `Test Ollama` evidence exists.
   Configure a local Whisper model path in Settings and record the path test's
   file size plus SHA-256 readability evidence. Treat the real Whisper smoke or a
   sample transcription as the compatibility check. Confirm local Ollama base

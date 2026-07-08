@@ -90,13 +90,16 @@ Goal: remove developer-only setup from the core user path.
 
 Deliverables:
 
-- Current Phase 1A/1B status: the existing Settings pane now shows manual
+- Current Phase 1A/1B/1C status: the existing Settings pane now shows manual
   first-run readiness guidance derived from saved settings. Whisper guidance
   distinguishes missing, unreadable, and readable-but-unverified paths without
   hashing during snapshot load. The Whisper model path can be filled through a
   native scoped file picker while remaining editable for transparency and
   debugging. Explicit `Test path` results persist the last matching file-size
-  and SHA-256 readability evidence without claiming model compatibility. Ollama
+  and SHA-256 readability evidence without claiming model compatibility.
+  Existing Whisper files are treated as untested and transcription is blocked
+  until matching valid Test path evidence exists and the current file size still
+  matches, without hashing during snapshot load. Ollama
   guidance shows the configured local URL/model, keeps availability unknown
   until matching `Test Ollama` evidence exists, and reports matching last-test
   evidence as available, missing-model, or unavailable-at-last-test state with
