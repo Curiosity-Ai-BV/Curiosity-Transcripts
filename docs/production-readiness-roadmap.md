@@ -242,9 +242,16 @@ Current Phase 2D at-rest/keychain status: `docs/at-rest-data-strategy.md`
 documents the v1 decision to rely on app-private storage plus OS/user-account
 file protections instead of app-level encryption-at-rest. It also defines the
 future OS keychain boundary for provider keys, OAuth tokens, calendar tokens,
-hosted provider secrets, and encryption keys. Actual encryption-at-rest,
-keychain-backed secret storage, migration/recovery support, and no-save capture
-remain later work unless implemented in separate slices.
+hosted provider secrets, and encryption keys. `scripts/check-plain-secret-storage.js`
+is now part of publication readiness and guards settings/app service
+DTO/desktop DTO/contract shape against future plain secret fields, serde rename
+aliases, or app setting keys such as API keys, OAuth/access/refresh/calendar
+tokens, encryption keys, hosted provider secrets, generic secrets, credentials,
+and passwords. The checker is scoped to code and contract artifacts that expose
+persisted settings, service-facing app DTOs, or desktop command/view payloads;
+it does not scan docs or example environment files. Actual
+encryption-at-rest, keychain-backed secret storage, migration/recovery support,
+and no-save capture remain later work unless implemented in separate slices.
 
 Current Phase 2E delete cleanup status: startup/reopen now finalizes pending
 delete intents for deleted or deleted-at meetings. Cleanup removes app-private

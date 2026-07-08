@@ -52,6 +52,19 @@ plain JSON files, or logs.
 If a future feature needs any of those secrets, adding the feature must include
 the secure-storage boundary described below.
 
+## Current Guardrail Status
+
+`scripts/check-plain-secret-storage.js` now guards the current v1 plain-storage
+boundary in publication readiness. It scans only persisted settings,
+service-facing app DTOs, and desktop command/view code-contract artifacts, not
+docs or example environment files, and rejects forbidden field/key names, serde
+rename aliases, or persisted app setting keys such as `apiKey`, `oauth_token`,
+`accessToken`, `refreshToken`, `calendarToken`, `encryptionKey`,
+`hostedProviderSecret`, `secret`, `credential`, and `password`.
+
+This checker is a drift guard for settings/DTO/contract shape. It does not add
+keychain-backed secret storage or app-level encryption-at-rest.
+
 ## Future Keychain Boundary
 
 Provider API keys, OAuth tokens, calendar tokens, encryption keys, hosted

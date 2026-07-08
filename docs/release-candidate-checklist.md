@@ -12,6 +12,11 @@ and `node scripts/check-tauri-command-surface.js` through
 `bash scripts/check-publication-readiness.sh`; the gate fails null or loosened
 Tauri renderer CSP values and prevents the debug/test-only `seed_dev_fixture`
 command from entering the release invoke handler before manual smoke starts.
+It must also run `node scripts/check-plain-secret-storage.js` to guard persisted
+settings, app service DTOs, and desktop command/view DTO/contract shape against
+plain API key, OAuth/access/refresh/calendar token, encryption key, hosted
+provider secret, generic secret, credential, password, or serde rename alias
+fields before manual smoke starts.
 
 Desktop npm dependencies must pass `npm audit --audit-level=high` after
 `npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions

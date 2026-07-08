@@ -52,6 +52,7 @@ check_file "docs/release-candidate-checklist.md"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
 check_file "scripts/check-tauri-command-surface.js"
+check_file "scripts/check-plain-secret-storage.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file ".github/dependabot.yml"
@@ -92,6 +93,8 @@ require_text docs/production-readiness-roadmap.md 'check-tauri-command-surface\.
 require_text docs/production-readiness-roadmap.md 'seed_dev_fixture' 'debug fixture command surface boundary'
 require_text docs/production-readiness-roadmap.md 'Current Phase 2D at-rest/keychain status' 'Phase 2D at-rest/keychain status'
 require_text docs/production-readiness-roadmap.md 'docs/at-rest-data-strategy\.md' 'Phase 2D at-rest strategy reference'
+require_text docs/production-readiness-roadmap.md 'check-plain-secret-storage\.js' 'Phase 2D plain secret storage checker status'
+require_text docs/production-readiness-roadmap.md 'service-facing app DTOs' 'Phase 2D app service DTO plain secret guard scope'
 require_text docs/production-readiness-roadmap.md 'keychain-backed secret storage, migration/recovery support' 'Phase 2D implementation remains later work'
 require_text docs/production-readiness-roadmap.md 'Current Phase 2E delete cleanup status' 'Phase 2E delete cleanup status'
 require_text docs/production-readiness-roadmap.md 'delete intents for deleted or deleted-at meetings' 'Phase 2E pending delete intent finalization scope'
@@ -126,6 +129,8 @@ require_text docs/production-readiness-roadmap.md 'branch-protection or alert tr
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'check-tauri-command-surface\.js' 'Tauri command surface release-candidate gate'
+require_text docs/release-candidate-checklist.md 'node scripts/check-plain-secret-storage\.js' 'plain secret storage release-candidate gate'
+require_text docs/release-candidate-checklist.md 'app service DTOs' 'plain secret storage app service DTO release-candidate scope'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS permissions release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Model setup' 'model setup release-candidate smoke item'
@@ -170,6 +175,8 @@ require_text docs/at-rest-data-strategy.md 'private meeting audio artifacts' 'pr
 require_text docs/at-rest-data-strategy.md 'provider API keys, OAuth tokens, calendar' 'not-stored secret classes'
 require_text docs/at-rest-data-strategy.md 'keychain or equivalent secure storage' 'future OS keychain boundary'
 require_text docs/at-rest-data-strategy.md 'must not be stored in SQLite, app settings, plain JSON files' 'future secrets must not use plain storage'
+require_text docs/at-rest-data-strategy.md 'check-plain-secret-storage\.js' 'plain secret storage guardrail status'
+require_text docs/at-rest-data-strategy.md 'service-facing app DTOs' 'plain secret storage app service DTO guardrail scope'
 require_text docs/at-rest-data-strategy.md 'migration, recovery, delete, backup/restore' 'future encryption migration and recovery boundary'
 
 require_text Cargo.toml '^license = "Apache-2\.0"$' 'workspace Apache-2.0 license metadata'
@@ -675,6 +682,8 @@ require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Depe
 require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-command-surface\.js; then' 'Tauri command surface publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
+require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
 require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
@@ -755,6 +764,11 @@ if ! node scripts/check-tauri-security.js; then
 fi
 
 if ! node scripts/check-tauri-command-surface.js; then
+  failures=1
+fi
+
+if ! node scripts/check-plain-secret-storage.js; then
+  printf '::error file=scripts/check-plain-secret-storage.js::Plain secret storage guard failed\n' >&2
   failures=1
 fi
 
