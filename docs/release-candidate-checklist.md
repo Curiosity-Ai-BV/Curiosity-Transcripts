@@ -28,8 +28,10 @@ pending, skipped, or failed.
 Automated release readiness must include `node scripts/check-tauri-security.js`
 and `node scripts/check-tauri-command-surface.js` through
 `bash scripts/check-publication-readiness.sh`; the gate fails null or loosened
-Tauri renderer CSP values and prevents the debug/test-only `seed_dev_fixture`
-command from entering the release invoke handler before manual smoke starts. The
+Tauri renderer CSP values, rejects Tauri capability drift beyond
+`default.json` for the main window with only `core:default` and
+`dialog:allow-open`, and prevents the debug/test-only `seed_dev_fixture` command
+from entering the release invoke handler before manual smoke starts. The
 command-surface gate must also keep frontend facade command literals registered
 in the release invoke handler and keep snapshot-returning facade commands in the
 `DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist. Critical release,

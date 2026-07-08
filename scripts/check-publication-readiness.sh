@@ -54,6 +54,7 @@ check_file "scripts/check-ci-critical-gates.js"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
+check_file "scripts/check-tauri-security.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "scripts/check-plain-secret-storage.js"
 check_file "scripts/check-release-smoke-evidence.js"
@@ -92,9 +93,11 @@ require_text README.md 'arm64-only' 'first public release architecture documenta
 require_text README.md 'release governance sign-off' 'README release governance sign-off pointer'
 require_normalized_text README.md 'external checks, not repo-local gates' 'README external governance check boundary'
 require_text docs/production-readiness-roadmap.md 'check-tauri-security\.js' 'Tauri renderer CSP release gate documentation'
-require_text docs/production-readiness-roadmap.md 'Current Phase 2A CSP status' 'Phase 2A CSP implementation status'
+require_text docs/production-readiness-roadmap.md 'Current Phase 2A Tauri security status' 'Phase 2A Tauri security implementation status'
 require_text docs/production-readiness-roadmap.md 'connect-src ipc: http://ipc\.localhost' 'Phase 2A local Tauri IPC CSP boundary'
 require_text docs/production-readiness-roadmap.md 'unsafe-inline, unsafe-eval' 'Phase 2A unsafe CSP source rejection boundary'
+require_normalized_text docs/production-readiness-roadmap.md 'default.json` with identifier `main-window-default`' 'Phase 2A Tauri capability file and identifier boundary'
+require_normalized_text docs/production-readiness-roadmap.md '`core:default` plus `dialog:allow-open`' 'Phase 2A Tauri capability permission allowlist'
 require_text docs/production-readiness-roadmap.md 'Current Tauri command surface status' 'Tauri command surface status'
 require_text docs/production-readiness-roadmap.md 'check-tauri-command-surface\.js' 'Tauri command surface publication gate documentation'
 require_text docs/production-readiness-roadmap.md 'seed_dev_fixture' 'debug fixture command surface boundary'
@@ -155,6 +158,7 @@ require_text docs/production-readiness-roadmap.md 'branch-protection or alert tr
 require_text docs/production-readiness-roadmap.md 'cargo install cargo-llvm-cov --version 0\.8\.7 --locked' 'pinned cargo-llvm-cov roadmap documentation'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
+require_normalized_text docs/release-candidate-checklist.md 'only `core:default` and `dialog:allow-open`' 'Tauri capability allowlist release-candidate gate'
 require_text docs/release-candidate-checklist.md 'check-tauri-command-surface\.js' 'Tauri command surface release-candidate gate'
 require_text docs/release-candidate-checklist.md 'frontend facade command literals registered' 'frontend command facade release-candidate guard'
 require_text docs/release-candidate-checklist.md 'DESKTOP_SNAPSHOT_COMMANDS' 'snapshot command validation release-candidate allowlist'
@@ -909,6 +913,10 @@ require_text .github/dependabot.yml 'directory: "/"' 'Dependabot root cargo dire
 require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Dependabot desktop Tauri cargo directory'
 require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
+require_text scripts/check-tauri-security.js 'extra capability files broaden the desktop permission surface' 'Tauri capability extra-file self-test'
+require_text scripts/check-tauri-security.js 'filesystem wildcard permissions are not approved' 'Tauri filesystem wildcard capability self-test'
+require_text scripts/check-tauri-security.js 'shell wildcard permissions are not approved' 'Tauri shell wildcard capability self-test'
+require_text scripts/check-tauri-security.js 'HTTP wildcard permissions are not approved' 'Tauri HTTP wildcard capability self-test'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-command-surface\.js; then' 'Tauri command surface publication readiness gate'
 require_text scripts/check-tauri-command-surface.js 'Production command adapter invokes \$\{command\}, but the release Tauri handler does not register it' 'frontend command facade release registration checker'
 require_text scripts/check-tauri-command-surface.js 'Snapshot-returning facade command \$\{command\} must be listed in DESKTOP_SNAPSHOT_COMMANDS' 'snapshot-returning command validation allowlist checker'

@@ -197,15 +197,19 @@ Deliverables:
 - Keep hosted analysis behind explicit key selection and transcript disclosure
   confirmation.
 
-Current Phase 2A CSP status: `apps/desktop/src-tauri/tauri.conf.json` ships a
-restrictive renderer CSP instead of a null policy. The policy allows local Tauri
-assets with `'self'`, limits command transport to
+Current Phase 2A Tauri security status: `apps/desktop/src-tauri/tauri.conf.json`
+ships a restrictive renderer CSP instead of a null policy. The policy allows
+local Tauri assets with `'self'`, limits command transport to
 `connect-src ipc: http://ipc.localhost`, and blocks object, base URI, form,
 frame, worker, and media embedding surfaces with `'none'`.
 `scripts/check-tauri-security.js` is part of publication readiness and rejects
 null, empty, unsafe-inline, unsafe-eval, wildcard, remote-origin, broad-scheme,
 missing-IPC, unexpected-directive, and `devCsp` regressions before manual release
-smoke starts.
+smoke starts. The same gate also pins the desktop capability surface to
+`apps/desktop/src-tauri/capabilities/default.json` with identifier
+`main-window-default`, window `main`, and only `core:default` plus
+`dialog:allow-open`, rejecting extra capability files, wildcard windows or
+permissions, and fs/shell/http permission drift.
 
 Current Tauri command surface status: release builds register a separate
 `#[cfg(not(any(test, debug_assertions)))]` invoke handler that omits the
