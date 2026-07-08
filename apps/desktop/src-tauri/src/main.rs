@@ -4297,21 +4297,35 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
 fn ollama_setup_guidance_from_settings(settings: &AppSettings) -> OllamaSetupGuidanceView {
     let base_url = settings.ollama_base_url.trim().to_string();
     let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+    let last_connection_test = matching_ollama_connection_test_evidence(settings);
     let validation_error = validate_local_ollama_model(&model)
         .and_then(|_| local_ollama_endpoint(&base_url, "/api/tags").map(|_| ()))
         .err();
 
-    let (state, message, setup_guidance) = if let Some(error) = validation_error {
-        (
-            "InvalidLocalConfiguration",
-            error.to_string(),
-            "Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama. Availability is unknown until Test Ollama runs.",
-        )
+    let (state, availability, message, setup_guidance) = if let Some(error) = validation_error {
+        if let Some(evidence) = last_connection_test
+            .as_ref()
+            .filter(|evidence| evidence.state == "Unavailable")
+        {
+            ollama_invalid_setup_guidance_from_last_test(error.to_string(), evidence)
+        } else {
+            (
+                "InvalidLocalConfiguration",
+                "UnknownUntilTest",
+                error.to_string(),
+                "Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama. Availability is unknown until Test Ollama runs."
+                    .to_string(),
+            )
+        }
+    } else if let Some(evidence) = last_connection_test.as_ref() {
+        ollama_setup_guidance_from_last_test(&model, evidence)
     } else {
         (
             "ConfiguredNotChecked",
+            "UnknownUntilTest",
             "Ollama is configured for a local loopback URL and model.".to_string(),
-            "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+            "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs."
+                .to_string(),
         )
     };
 
@@ -4319,11 +4333,95 @@ fn ollama_setup_guidance_from_settings(settings: &AppSettings) -> OllamaSetupGui
         state: state.to_string(),
         base_url,
         model,
-        availability: "UnknownUntilTest".to_string(),
+        availability: availability.to_string(),
         message,
-        setup_guidance: setup_guidance.to_string(),
-        last_connection_test: matching_ollama_connection_test_evidence(settings),
+        setup_guidance,
+        last_connection_test,
     }
+}
+
+fn ollama_invalid_setup_guidance_from_last_test(
+    validation_error: String,
+    evidence: &OllamaConnectionTestEvidence,
+) -> (&'static str, &'static str, String, String) {
+    let failure_detail = evidence
+        .failure_detail
+        .as_deref()
+        .filter(|detail| !detail.trim().is_empty());
+    let setup_guidance = if failure_detail == Some(validation_error.as_str()) {
+        format!(
+            "{validation_error} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    } else if let Some(failure_detail) = failure_detail {
+        format!(
+            "{validation_error} Last explicit Test Ollama reported: {failure_detail} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    } else {
+        format!(
+            "{validation_error} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    };
+
+    (
+        "InvalidLocalConfiguration",
+        "UnavailableAtLastTest",
+        "Saved Ollama configuration is invalid; last explicit Test Ollama could not confirm local summary availability."
+            .to_string(),
+        setup_guidance,
+    )
+}
+
+fn ollama_setup_guidance_from_last_test(
+    model: &str,
+    evidence: &OllamaConnectionTestEvidence,
+) -> (&'static str, &'static str, String, String) {
+    if evidence.state == "Available" {
+        let selected_model = evidence
+            .selected_local_model_tag
+            .as_deref()
+            .filter(|tag| !tag.trim().is_empty())
+            .unwrap_or(model);
+        return (
+            "ConfiguredNotChecked",
+            "AvailableAtLastTest",
+            format!(
+                "Last explicit Test Ollama reached {selected_model}; summaries were available at that test."
+            ),
+            "Availability is not checked in the background. Run Test Ollama again after changing Ollama, models, or the base URL."
+                .to_string(),
+        );
+    }
+
+    if let Some(pull_command) = evidence
+        .pull_command
+        .as_deref()
+        .filter(|command| !command.trim().is_empty())
+    {
+        return (
+            "ConfiguredNotChecked",
+            "MissingModelAtLastTest",
+            format!(
+                "Last explicit Test Ollama reached Ollama, but {model} was missing. Summaries are unavailable until the selected local model is installed."
+            ),
+            format!(
+                "Run `{pull_command}`, then run Test Ollama again. Availability is not checked in the background."
+            ),
+        );
+    }
+
+    let failure_detail = evidence
+        .failure_detail
+        .as_deref()
+        .filter(|detail| !detail.trim().is_empty())
+        .unwrap_or("The last explicit Test Ollama could not validate local Ollama.");
+    (
+        "ConfiguredNotChecked",
+        "UnavailableAtLastTest",
+        "Last explicit Test Ollama could not confirm local summary availability.".to_string(),
+        format!(
+            "{failure_detail} Start Ollama with `ollama serve`, verify the local base URL, then run Test Ollama again. Availability is not checked in the background."
+        ),
+    )
 }
 
 fn matching_whisper_path_test_evidence(
@@ -5771,6 +5869,18 @@ mod tests {
         assert_eq!(whisper_result.state, "Valid");
         assert_eq!(ollama_result.state, "Available");
         assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "AvailableAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["message"],
+            "Last explicit Test Ollama reached qwen3.6:27b; summaries were available at that test."
+        );
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Availability is not checked in the background"));
+        assert_eq!(
             json["setupGuidance"]["whisper"]["lastPathTest"]["testedPath"],
             model_path
         );
@@ -5833,6 +5943,150 @@ mod tests {
             stale_json["setupGuidance"]["ollama"]["lastConnectionTest"],
             serde_json::Value::Null
         );
+        assert_eq!(
+            stale_json["setupGuidance"]["ollama"]["availability"],
+            "UnknownUntilTest"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_marks_ollama_model_missing_from_matching_last_test_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"gemma4:31b"}]}"#,
+            ),
+            1_700_000_003_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(ollama_result.state, "Unavailable");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "MissingModelAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["pullCommand"],
+            "ollama pull qwen3.6:27b"
+        );
+        assert!(json["setupGuidance"]["ollama"]["message"]
+            .as_str()
+            .expect("ollama message")
+            .contains("qwen3.6:27b was missing"));
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Run `ollama pull qwen3.6:27b`, then run Test Ollama again"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_marks_summaries_unavailable_from_matching_failed_ollama_test_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_http_error(
+                500,
+                r#"{"error":"tags unavailable"}"#,
+            ),
+            1_700_000_004_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(ollama_result.state, "Unavailable");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "UnavailableAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["pullCommand"],
+            serde_json::Value::Null
+        );
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("HTTP 500"));
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Availability is not checked in the background"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_keeps_invalid_ollama_config_but_reports_matching_failed_test_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "deepseek-v3.2:cloud".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"qwen3.6:27b"}]}"#,
+            ),
+            1_700_000_005_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "deepseek-v3.2:cloud".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(ollama_result.state, "Unavailable");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["state"],
+            "InvalidLocalConfiguration"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "UnavailableAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["state"],
+            "Unavailable"
+        );
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("hosted or cloud model tags cannot use the local Ollama privacy path"));
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Availability is not checked in the background"));
 
         let _ = fs::remove_dir_all(root);
     }

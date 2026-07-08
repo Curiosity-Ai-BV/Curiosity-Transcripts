@@ -246,7 +246,7 @@
       },
       "setupGuidance": {
         "ollama": {
-          "availability": "UnknownUntilTest",
+          "availability": "AvailableAtLastTest",
           "baseUrl": "http://127.0.0.1:11434",
           "lastConnectionTest": {
             "baseUrl": "http://127.0.0.1:11434",
@@ -261,9 +261,9 @@
             "state": "Available",
             "testedAtMs": 1700000002000
           },
-          "message": "Ollama is configured for a local loopback URL and model.",
+          "message": "Last explicit Test Ollama reached qwen3.6:27b; summaries were available at that test.",
           "model": "qwen3.6:27b",
-          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "setupGuidance": "Availability is not checked in the background. Run Test Ollama again after changing Ollama, models, or the base URL.",
           "state": "ConfiguredNotChecked"
         },
         "whisper": {

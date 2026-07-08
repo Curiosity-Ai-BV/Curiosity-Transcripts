@@ -510,9 +510,10 @@ describe("desktop workspace shell", () => {
           state: "ConfiguredNotChecked",
           baseUrl: "http://127.0.0.1:11434",
           model: "qwen3.6:27b",
-          availability: "UnknownUntilTest",
-          message: "Ollama is configured for a local loopback URL and model.",
-          setupGuidance: "Start Ollama manually, install the selected local model if needed, then run Test Ollama.",
+          availability: "AvailableAtLastTest",
+          message: "Last explicit Test Ollama reached qwen3.6:27b; summaries were available at that test.",
+          setupGuidance:
+            "Availability is not checked in the background. Run Test Ollama again after changing Ollama, models, or the base URL.",
           lastConnectionTest: {
             baseUrl: "http://127.0.0.1:11434",
             requestedModel: "qwen3.6:27b",
@@ -530,6 +531,7 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
 
     const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Ollama available at last test")).toBeInTheDocument();
     expect(
       within(readiness).getByText("Last explicit Test path: Valid at 2023-11-14T22:13:21.000Z"),
     ).toBeInTheDocument();
@@ -544,6 +546,114 @@ describe("desktop workspace shell", () => {
     expect(within(readiness).getByText("Last explicit observation, not current availability.")).toBeInTheDocument();
     expect(readiness.textContent).not.toContain("compatibility is verified");
     expect(readiness.textContent?.toLowerCase()).not.toContain("is compatible");
+  });
+
+  it("shows missing Ollama model evidence with the deterministic pull command", () => {
+    const snapshot = {
+      ...connectedSnapshot({
+        model: {
+          kind: "ready",
+          configuredPath: "/models/ggml-base.en.bin",
+        },
+        settings: {
+          whisperModelPath: "/models/ggml-base.en.bin",
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          ollamaModel: "qwen3.6:27b",
+          exportDirectory: null,
+          rawAudioRetentionPolicy: "Retain",
+        },
+      }),
+      setupGuidance: {
+        whisper: {
+          state: "ReadablePath",
+          configuredPath: "/models/ggml-base.en.bin",
+          message: "Whisper model path is readable; compatibility is not verified.",
+          setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          compatibilityNote: "Readability does not prove model compatibility.",
+          lastPathTest: null,
+        },
+        ollama: {
+          state: "ConfiguredNotChecked",
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+          availability: "MissingModelAtLastTest",
+          message:
+            "Last explicit Test Ollama reached Ollama, but qwen3.6:27b was missing. Summaries are unavailable until the selected local model is installed.",
+          setupGuidance:
+            "Run `ollama pull qwen3.6:27b`, then run Test Ollama again. Availability is not checked in the background.",
+          lastConnectionTest: {
+            baseUrl: "http://127.0.0.1:11434",
+            requestedModel: "qwen3.6:27b",
+            testedAtMs: 1_700_000_003_000,
+            state: "Unavailable",
+            selectedLocalModelTag: "qwen3.6:27b",
+            installedLocalModels: ["gemma4:31b"],
+            pullCommand: "ollama pull qwen3.6:27b",
+            failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+          },
+        },
+      },
+    } as never;
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Ollama model missing")).toBeInTheDocument();
+    expect(within(readiness).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
+    expect(within(readiness).getByText("Observed models: gemma4:31b")).toBeInTheDocument();
+    expect(readiness.textContent).toContain("Summaries are unavailable");
+    expect(readiness.textContent).toContain("Last explicit observation, not current availability.");
+  });
+
+  it("shows unavailable Ollama test evidence without suggesting a model pull", () => {
+    const snapshot = {
+      ...connectedSnapshot({
+        settings: {
+          whisperModelPath: "/models/ggml-base.en.bin",
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          ollamaModel: "qwen3.6:27b",
+          exportDirectory: null,
+          rawAudioRetentionPolicy: "Retain",
+        },
+      }),
+      setupGuidance: {
+        whisper: {
+          state: "ReadablePath",
+          configuredPath: "/models/ggml-base.en.bin",
+          message: "Whisper model path is readable; compatibility is not verified.",
+          setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          compatibilityNote: "Readability does not prove model compatibility.",
+          lastPathTest: null,
+        },
+        ollama: {
+          state: "ConfiguredNotChecked",
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+          availability: "UnavailableAtLastTest",
+          message: "Last explicit Test Ollama could not confirm local summary availability.",
+          setupGuidance:
+            "Ollama is unavailable: connection refused. Start Ollama with `ollama serve`, verify the local base URL, then run Test Ollama again. Availability is not checked in the background.",
+          lastConnectionTest: {
+            baseUrl: "http://127.0.0.1:11434",
+            requestedModel: "qwen3.6:27b",
+            testedAtMs: 1_700_000_004_000,
+            state: "Unavailable",
+            selectedLocalModelTag: "qwen3.6:27b",
+            installedLocalModels: null,
+            pullCommand: null,
+            failureDetail: "Ollama is unavailable: connection refused.",
+          },
+        },
+      },
+    } as never;
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Summaries unavailable")).toBeInTheDocument();
+    expect(within(readiness).getByText("Ollama is unavailable: connection refused.")).toBeInTheDocument();
+    expect(readiness.textContent).not.toContain("Pull command:");
+    expect(readiness.textContent).toContain("Last explicit observation, not current availability.");
   });
 
   it("shows read-only calendar context without disabling manual recording", () => {

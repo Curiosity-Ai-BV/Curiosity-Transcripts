@@ -109,8 +109,9 @@ Implemented MVP flows:
 - Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
   missing/readable Whisper paths are typed, readable paths remain compatibility
   unverified, explicit `Test path` evidence is persisted when run, and Ollama
-  availability stays unknown until the user runs `Test Ollama`, whose last
-  explicit observation is persisted without becoming a background health check.
+  availability stays unknown until matching `Test Ollama` evidence exists. The
+  last explicit Ollama observation is shown as available, missing-model, or
+  unavailable-at-last-test evidence without becoming a background health check.
 - Read-only Apple Calendar context status in the desktop snapshot and settings
   pane, plus an explicit macOS Apple Calendar permission request action. The
   macOS 14+ path requests full Calendar event access, while the macOS 13 support
@@ -483,10 +484,11 @@ ollama pull qwen3.6:27b
 source of truth. The local Ollama path accepts localhost/loopback URLs only; use
 the hosted provider path, disclosure gate, and explicit secrets for any
 networked provider. Snapshot readiness guidance does not probe Ollama; availability
-is unknown until the user runs the Settings pane's `Test Ollama` action. The
-last explicit test observation is persisted for the matching saved local
-URL/model, including installed-model evidence or the suggested pull command, but
-it is not treated as current availability.
+is unknown until the user runs the Settings pane's `Test Ollama` action for the
+matching saved local URL/model. Matching last-test evidence is reported as
+available, missing-model, or unavailable-at-last-test guidance, including
+installed-model evidence or the suggested pull command, but it is not treated as
+current availability.
 
 End-to-end expectation:
 

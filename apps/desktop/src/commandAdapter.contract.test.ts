@@ -98,19 +98,15 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.setupGuidance");
   });
 
-  it("guards setup guidance state and unknown Ollama availability in snapshots", async () => {
+  it("guards unsupported Ollama availability in snapshots", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
       ...backendSnapshot,
       setupGuidance: {
         ...backendSnapshot.setupGuidance,
-        whisper: {
-          ...backendSnapshot.setupGuidance.whisper,
-          state: "Compatible",
-        },
         ollama: {
           ...backendSnapshot.setupGuidance.ollama,
-          availability: "Available",
+          availability: "Reachable",
         },
       },
     };
@@ -121,7 +117,190 @@ describe("desktop snapshot DTO contract", () => {
         fetchCommand,
         previewFallback: false,
       }),
-    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.state");
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.ollama.availability");
+  });
+
+  it.each([
+    [
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+    ],
+    [
+      "MissingModelAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: "ollama pull qwen3.6:27b",
+        failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+      },
+    ],
+    [
+      "UnavailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_004_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: null,
+        pullCommand: null,
+        failureDetail: "Ollama is unavailable.",
+      },
+    ],
+  ] as const)("accepts %s Ollama setup availability with matching evidence in snapshots", async (availability, lastConnectionTest) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          ollama: {
+            ...backendSnapshot.setupGuidance.ollama,
+            availability,
+            lastConnectionTest,
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.setupGuidance.ollama.availability).toBe(availability);
+  });
+
+  it.each([
+    [
+      "UnknownUntilTest keeps evidence",
+      "UnknownUntilTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest",
+    ],
+    [
+      "AvailableAtLastTest has no evidence",
+      "AvailableAtLastTest",
+      null,
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest",
+    ],
+    [
+      "AvailableAtLastTest has unavailable evidence",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: "Ollama is unavailable.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.state",
+    ],
+    [
+      "last-test evidence has a different base URL",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11435",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.baseUrl",
+    ],
+    [
+      "last-test evidence has a different requested model",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "gemma4:31b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "gemma4:31b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.requestedModel",
+    ],
+    [
+      "MissingModelAtLastTest has no pull command",
+      "MissingModelAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.pullCommand",
+    ],
+    [
+      "UnavailableAtLastTest has a pull command",
+      "UnavailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_004_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: "ollama pull qwen3.6:27b",
+        failureDetail: "Ollama is unavailable.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.pullCommand",
+    ],
+  ] as const)("rejects inconsistent Ollama setup evidence when %s", async (_name, availability, lastConnectionTest, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          ollama: {
+            ...backendSnapshot.setupGuidance.ollama,
+            availability,
+            lastConnectionTest,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
   });
 
   it("guards setup guidance evidence field types in snapshots", async () => {

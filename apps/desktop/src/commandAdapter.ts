@@ -50,7 +50,11 @@ export interface ModelStatus {
 
 export type WhisperSetupState = "MissingPath" | "UnreadablePath" | "ReadablePath";
 export type OllamaSetupState = "ConfiguredNotChecked" | "InvalidLocalConfiguration";
-export type OllamaAvailabilityState = "UnknownUntilTest";
+export type OllamaAvailabilityState =
+  | "UnknownUntilTest"
+  | "AvailableAtLastTest"
+  | "MissingModelAtLastTest"
+  | "UnavailableAtLastTest";
 
 export interface WhisperSetupGuidance {
   state: WhisperSetupState;
@@ -1290,12 +1294,23 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void 
     ["ConfiguredNotChecked", "InvalidLocalConfiguration"],
     `${pathLabel}.ollama.state`,
   );
-  requireString(ollama.baseUrl, `${pathLabel}.ollama.baseUrl`);
-  requireString(ollama.model, `${pathLabel}.ollama.model`);
-  requireEnum(ollama.availability, ["UnknownUntilTest"], `${pathLabel}.ollama.availability`);
+  const baseUrl = requireString(ollama.baseUrl, `${pathLabel}.ollama.baseUrl`);
+  const model = requireString(ollama.model, `${pathLabel}.ollama.model`);
+  const availability = requireEnum(
+    ollama.availability,
+    ["UnknownUntilTest", "AvailableAtLastTest", "MissingModelAtLastTest", "UnavailableAtLastTest"],
+    `${pathLabel}.ollama.availability`,
+  );
   requireString(ollama.message, `${pathLabel}.ollama.message`);
   requireString(ollama.setupGuidance, `${pathLabel}.ollama.setupGuidance`);
   validateOllamaConnectionTestEvidence(ollama.lastConnectionTest, `${pathLabel}.ollama.lastConnectionTest`);
+  validateOllamaSetupAvailabilityEvidence(
+    availability,
+    ollama.lastConnectionTest,
+    `${pathLabel}.ollama.lastConnectionTest`,
+    baseUrl,
+    model,
+  );
 }
 
 function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): void {
@@ -1330,6 +1345,52 @@ function validateOllamaConnectionTestEvidence(value: unknown, pathLabel: string)
   requireNullableStringArray(evidence.installedLocalModels, `${pathLabel}.installedLocalModels`);
   requireNullableString(evidence.pullCommand, `${pathLabel}.pullCommand`);
   requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
+}
+
+function validateOllamaSetupAvailabilityEvidence(
+  availability: OllamaAvailabilityState,
+  value: unknown,
+  pathLabel: string,
+  expectedBaseUrl: string,
+  expectedModel: string,
+): void {
+  if (availability === "UnknownUntilTest") {
+    if (value !== null) {
+      throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be null for ${availability}`);
+    }
+    return;
+  }
+  if (value === null) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} for ${availability}`);
+  }
+  const evidence = requireContractRecord(value, pathLabel);
+  if (evidence.baseUrl !== expectedBaseUrl) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.baseUrl to match setup guidance`);
+  }
+  if (evidence.requestedModel !== expectedModel) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.requestedModel to match setup guidance`);
+  }
+  if (availability === "AvailableAtLastTest") {
+    if (evidence.state !== "Available") {
+      throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.state to be Available for ${availability}`);
+    }
+    return;
+  }
+  if (evidence.state !== "Unavailable") {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.state to be Unavailable for ${availability}`);
+  }
+  const pullCommand = evidence.pullCommand;
+  if (availability === "MissingModelAtLastTest") {
+    if (typeof pullCommand !== "string" || pullCommand.trim() === "") {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${pathLabel}.pullCommand to be a non-empty pull command for ${availability}`,
+      );
+    }
+    return;
+  }
+  if (typeof pullCommand === "string" && pullCommand.trim() !== "") {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.pullCommand to be empty for ${availability}`);
+  }
 }
 
 function validateCalendarContext(value: unknown, pathLabel: string): void {

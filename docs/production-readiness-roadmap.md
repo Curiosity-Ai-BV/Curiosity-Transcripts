@@ -90,7 +90,7 @@ Goal: remove developer-only setup from the core user path.
 
 Deliverables:
 
-- Current Phase 1A status: the existing Settings pane now shows manual
+- Current Phase 1A/1B status: the existing Settings pane now shows manual
   first-run readiness guidance derived from saved settings. Whisper guidance
   distinguishes missing, unreadable, and readable-but-unverified paths without
   hashing during snapshot load. The Whisper model path can be filled through a
@@ -98,17 +98,20 @@ Deliverables:
   debugging. Explicit `Test path` results persist the last matching file-size
   and SHA-256 readability evidence without claiming model compatibility. Ollama
   guidance shows the configured local URL/model, keeps availability unknown
-  until the user runs `Test Ollama`, and persists the last matching explicit
-  observation, installed-model list, or pull command without running background
-  health checks. Model download/management and automatic Ollama pulls remain
-  later work.
+  until matching `Test Ollama` evidence exists, and reports matching last-test
+  evidence as available, missing-model, or unavailable-at-last-test state with
+  installed-model details or the deterministic pull command. No background
+  health checks run. Model download/management and automatic Ollama pulls
+  remain later work.
 - Add a first-run model setup flow for Whisper:
   model discovery, download or file selection, compatibility checks, hash/size
   recording, model health state, and recovery guidance for missing or invalid
   models.
 - Add first-run Ollama setup states:
   local server detection, selected model availability, guided pull/install
-  instructions or an explicit "summaries unavailable" state.
+  instructions, and an explicit "summaries unavailable" state are implemented
+  from the last matching manual `Test Ollama` result. Automatic pulls and
+  richer model management remain later work.
 - Keep the app usable in local transcript mode when Ollama is absent.
 - Validate that after model setup the record/transcribe/search/export/delete
   path works with network disabled.

@@ -306,7 +306,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
   const calendarContext = currentSnapshot.calendarContext;
   const calendarTone = calendarContextTone(calendarContext);
   const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
-  const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama.state);
+  const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama);
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
@@ -1401,7 +1401,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
               </div>
               <div className={`readiness-item ${ollamaReadinessTone}`}>
                 <div className="readiness-heading">
-                  <StatusPill tone={ollamaReadinessTone} label="Ollama availability unknown" />
+                  <StatusPill tone={ollamaReadinessTone} label={ollamaSetupLabel(setupGuidance.ollama)} />
                 </div>
                 <p>{setupGuidance.ollama.message}</p>
                 <span className="readiness-path">
@@ -1671,9 +1671,32 @@ function whisperSetupTone(state: DesktopSnapshot["setupGuidance"]["whisper"]["st
   return "blocked";
 }
 
-function ollamaSetupTone(state: DesktopSnapshot["setupGuidance"]["ollama"]["state"]): Tone {
-  if (state === "InvalidLocalConfiguration") {
+function ollamaSetupLabel(guidance: DesktopSnapshot["setupGuidance"]["ollama"]) {
+  if (guidance.state === "InvalidLocalConfiguration") {
+    return "Ollama setup invalid";
+  }
+  if (guidance.availability === "AvailableAtLastTest") {
+    return "Ollama available at last test";
+  }
+  if (guidance.availability === "MissingModelAtLastTest") {
+    return "Ollama model missing";
+  }
+  if (guidance.availability === "UnavailableAtLastTest") {
+    return "Summaries unavailable";
+  }
+  return "Ollama availability unknown";
+}
+
+function ollamaSetupTone(guidance: DesktopSnapshot["setupGuidance"]["ollama"]): Tone {
+  if (
+    guidance.state === "InvalidLocalConfiguration" ||
+    guidance.availability === "MissingModelAtLastTest" ||
+    guidance.availability === "UnavailableAtLastTest"
+  ) {
     return "blocked";
+  }
+  if (guidance.availability === "AvailableAtLastTest") {
+    return "ready";
   }
   return "warn";
 }
