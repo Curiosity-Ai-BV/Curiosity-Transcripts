@@ -23,5 +23,5 @@ done
 if [[ "$SKIP_DMG_SIGN" -eq 1 ]]; then
   CURIOSITY_SKIP_DMG_SIGN=1 "$ROOT_DIR/scripts/package-macos-dmg.sh"
 else
-  "$ROOT_DIR/scripts/package-macos-dmg.sh"
+  env -u CURIOSITY_SKIP_DMG_SIGN "$ROOT_DIR/scripts/package-macos-dmg.sh"
 fi

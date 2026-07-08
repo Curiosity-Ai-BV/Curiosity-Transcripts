@@ -53,6 +53,47 @@ function exactRunStepLine(text, command) {
   return -1;
 }
 
+function hasAdHocDmgBuildRunCommand(text) {
+  const lines = text.split(/\r?\n/);
+  const isBypassCommand = (line) => {
+    const trimmed = line.trim();
+    return (
+      trimmed !== "" &&
+      !trimmed.startsWith("#") &&
+      !trimmed.startsWith("echo ") &&
+      trimmed.includes("build-macos-dmg.sh") &&
+      (trimmed.includes("--no-sign") || trimmed.includes("CURIOSITY_SKIP_DMG_SIGN"))
+    );
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const runMatch = lines[index].match(/^(\s*)run:\s*(.*)$/);
+    if (!runMatch) {
+      continue;
+    }
+
+    const runIndent = runMatch[1].length;
+    const inlineCommand = runMatch[2].trim();
+    if (inlineCommand !== "|" && inlineCommand !== ">") {
+      if (isBypassCommand(inlineCommand)) {
+        return true;
+      }
+      continue;
+    }
+
+    for (let next = index + 1; next < lines.length; next += 1) {
+      if (lines[next].trim() !== "" && lines[next].match(/^\s*/)[0].length <= runIndent) {
+        break;
+      }
+      if (isBypassCommand(lines[next])) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function stripYamlComments(text) {
   return text
     .split(/\r?\n/)
@@ -248,11 +289,22 @@ requireFailingIfStepBeforeCheckout(
 );
 
 const publicationReadinessStepLine = exactRunStepLine(workflowText, "bash scripts/check-publication-readiness.sh");
+const signingCredentialsStepLine = exactRunStepLine(workflowText, "./scripts/configure-apple-signing-ci.sh");
 const buildDmgStepLine = exactRunStepLine(workflowText, "./scripts/build-macos-dmg.sh");
 if (publicationReadinessStepLine === -1 || buildDmgStepLine === -1 || publicationReadinessStepLine > buildDmgStepLine) {
   console.error(
     "::error file=.github/workflows/pages.yml::Publication readiness must run before building the public Pages DMG",
   );
+  ok = false;
+}
+if (signingCredentialsStepLine === -1 || buildDmgStepLine === -1 || signingCredentialsStepLine > buildDmgStepLine) {
+  console.error(
+    "::error file=.github/workflows/pages.yml::Apple signing credentials must be configured before building the public Pages DMG",
+  );
+  ok = false;
+}
+if (hasAdHocDmgBuildRunCommand(workflowText)) {
+  console.error("::error file=.github/workflows/pages.yml::Public Pages workflow must not use ad-hoc DMG signing bypasses");
   ok = false;
 }
 

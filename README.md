@@ -314,6 +314,8 @@ ScreenCaptureKit system-audio feature enabled, then package it into a DMG:
 
 Direct DMG builds run `bash scripts/check-publication-readiness.sh` before
 desktop dependency install, tests, Tauri build, and packaging.
+The default command is for signed/notarized release builds and fails if
+Developer ID signing or notarization credentials are missing.
 
 When Developer ID signing credentials are not available, local ad-hoc signed
 verification can use:

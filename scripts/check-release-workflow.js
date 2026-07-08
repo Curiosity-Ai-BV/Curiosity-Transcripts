@@ -74,6 +74,8 @@ const requiredReadmeText = [
   "apps/desktop/src-tauri/tauri.conf.json",
   "GitHub Release",
   "Curiosity-Transcripts-<version>-macos-aarch64.dmg",
+  "The default command is for signed/notarized release builds",
+  "./scripts/build-macos-dmg.sh --no-sign",
 ];
 
 const requiredBuildScriptText = [
@@ -81,11 +83,18 @@ const requiredBuildScriptText = [
   "npm ci",
   "npm run test",
   "tauri build --features system-audio-screencapturekit --bundles app --ci",
+  "env -u CURIOSITY_SKIP_DMG_SIGN",
   "scripts/package-macos-dmg.sh",
 ];
 
 const requiredPackageScriptText = [
   "APPLE_API_KEY_ID",
+  "require_release_signing_credentials",
+  "APPLE_SIGNING_IDENTITY is required for signed release DMG builds",
+  "Notarization credentials are required for signed release DMG builds",
+  "Use ./scripts/build-macos-dmg.sh --no-sign only for local ad-hoc verification",
+  '[[ "${CURIOSITY_SKIP_DMG_SIGN:-}" == "1" ]]',
+  '[[ "${CURIOSITY_SKIP_DMG_SIGN:-}" != "1" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]',
   'codesign --force --deep --sign - "$APP_PATH"',
   'codesign_args=(--force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY")',
   'codesign --verify --deep --strict --verbose=2 "$APP_PATH"',
@@ -104,6 +113,9 @@ const requiredDmgDocsText = [
   "APPLE_API_KEY_ID",
   "bash scripts/check-publication-readiness.sh",
   "Developer ID signed and notarized",
+  "The default release build fails when Developer ID signing or notarization",
+  "credentials are missing; use `--no-sign` only for local ad-hoc verification",
+  "./scripts/build-macos-dmg.sh --no-sign",
   "Release and Pages workflow Apple secrets",
   "Local code cannot enforce GitHub",
   "environment rules; repository settings must allow",
@@ -162,6 +174,47 @@ function exactRunStepLine(text, command) {
   return -1;
 }
 
+function hasAdHocDmgBuildRunCommand(text) {
+  const lines = text.split(/\r?\n/);
+  const isBypassCommand = (line) => {
+    const trimmed = line.trim();
+    return (
+      trimmed !== "" &&
+      !trimmed.startsWith("#") &&
+      !trimmed.startsWith("echo ") &&
+      trimmed.includes("build-macos-dmg.sh") &&
+      (trimmed.includes("--no-sign") || trimmed.includes("CURIOSITY_SKIP_DMG_SIGN"))
+    );
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const runMatch = lines[index].match(/^(\s*)run:\s*(.*)$/);
+    if (!runMatch) {
+      continue;
+    }
+
+    const runIndent = runMatch[1].length;
+    const inlineCommand = runMatch[2].trim();
+    if (inlineCommand !== "|" && inlineCommand !== ">") {
+      if (isBypassCommand(inlineCommand)) {
+        return true;
+      }
+      continue;
+    }
+
+    for (let next = index + 1; next < lines.length; next += 1) {
+      if (lines[next].trim() !== "" && lines[next].match(/^\s*/)[0].length <= runIndent) {
+        break;
+      }
+      if (isBypassCommand(lines[next])) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function workflowJobBlock(text, jobName) {
   const lines = text.split(/\r?\n/);
   const start = lines.findIndex((line) => line === `  ${jobName}:`);
@@ -207,11 +260,24 @@ for (const text of requiredWorkflowText) {
 }
 
 const publicationReadinessStepLine = exactRunStepLine(workflow, "bash scripts/check-publication-readiness.sh");
+const signingCredentialsStepLine = exactRunStepLine(workflow, "./scripts/configure-apple-signing-ci.sh");
 const buildDmgStepLine = exactRunStepLine(workflow, "./scripts/build-macos-dmg.sh");
 if (publicationReadinessStepLine === -1 || buildDmgStepLine === -1 || publicationReadinessStepLine > buildDmgStepLine) {
   fail(
     ".github/workflows/release.yml",
     "Publication readiness must run before building the public release DMG",
+  );
+}
+if (signingCredentialsStepLine === -1 || buildDmgStepLine === -1 || signingCredentialsStepLine > buildDmgStepLine) {
+  fail(
+    ".github/workflows/release.yml",
+    "Apple signing credentials must be configured before building the public release DMG",
+  );
+}
+if (hasAdHocDmgBuildRunCommand(workflow)) {
+  fail(
+    ".github/workflows/release.yml",
+    "Public release workflow must not use ad-hoc DMG signing bypasses",
   );
 }
 

@@ -26,11 +26,10 @@ The script runs:
    `.app` bundle target.
 5. `hdiutil create` against a staging folder containing the `.app` bundle and
    an `/Applications` symlink.
-6. `codesign` seals the `.app` bundle with Developer ID when credentials are
-   available, otherwise with an ad-hoc local signature.
+6. `codesign` seals the `.app` bundle with Developer ID credentials.
 7. `hdiutil verify` against the produced DMG.
 8. `notarytool` submits the signed DMG and `stapler` attaches the notarization
-   ticket when notarization credentials are available.
+   ticket.
 9. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
    and passes strict code-signature verification before the script reports
    success. Notarized builds also run `stapler validate` and Gatekeeper
@@ -52,6 +51,8 @@ For local ad-hoc signed verification when Apple signing credentials are unavaila
 Ad-hoc signed builds are useful for local smoke checks. They are sealed so macOS
 does not report a malformed bundle, but browser download distribution requires
 Developer ID signing and notarization.
+The default release build fails when Developer ID signing or notarization
+credentials are missing; use `--no-sign` only for local ad-hoc verification.
 
 ## macOS Signing And Notarization
 
@@ -83,8 +84,9 @@ Then rerun:
 ```
 
 The packaging script signs the generated DMG when `APPLE_SIGNING_IDENTITY` is
-set. It submits and staples the DMG when either App Store Connect API
-credentials or Apple ID notarization credentials are present.
+set and requires notarization credentials on the default release build path. Use
+`./scripts/build-macos-dmg.sh --no-sign` for local ad-hoc verification without
+Apple credentials.
 
 ## GitHub Release Signing Secrets
 
