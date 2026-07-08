@@ -43,6 +43,15 @@ use sha2::{Digest, Sha256};
 use tauri::Manager;
 use url::Url;
 
+#[cfg(all(target_os = "macos", not(test)))]
+use objc2::available;
+#[cfg(all(target_os = "macos", not(test)))]
+use objc2::runtime::Bool;
+#[cfg(all(target_os = "macos", not(test)))]
+use objc2_event_kit::{EKAuthorizationStatus, EKEntityType, EKEventStore};
+#[cfg(all(target_os = "macos", not(test)))]
+use objc2_foundation::NSError;
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -62,6 +71,7 @@ fn main() {
         save_whisper_model_path,
         save_analysis_settings,
         save_raw_audio_retention_policy,
+        request_apple_calendar_access,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -89,6 +99,7 @@ fn main() {
         save_whisper_model_path,
         save_analysis_settings,
         save_raw_audio_retention_policy,
+        request_apple_calendar_access,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -444,6 +455,24 @@ fn save_raw_audio_retention_policy(
     save_raw_audio_retention_policy_for_app_root(&app_root, raw_audio_retention_policy)?;
     let snapshot_state = {
         let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn request_apple_calendar_access(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let calendar_context = request_apple_calendar_access_context();
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_calendar_context = Some(calendar_context);
         command_state.snapshot_state()
     };
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
@@ -905,7 +934,10 @@ fn desktop_snapshot_for_app_root_with_state(
         recording: recording_snapshot(app_root, command_state),
         model: model_status_from_settings(&settings),
         setup_guidance: setup_guidance_from_settings(&settings),
-        calendar_context: calendar_context_snapshot(),
+        calendar_context: command_state
+            .last_calendar_context
+            .clone()
+            .unwrap_or_else(calendar_context_snapshot),
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
@@ -1648,6 +1680,7 @@ struct DesktopCommandState {
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    last_calendar_context: Option<CalendarContextView>,
     transcription_job: Option<CommandJobView>,
     summary_job: Option<CommandJobView>,
 }
@@ -1668,6 +1701,7 @@ impl DesktopCommandState {
             last_export: self.last_export.clone(),
             last_delete: self.last_delete.clone(),
             last_analysis: self.last_analysis.clone(),
+            last_calendar_context: self.last_calendar_context.clone(),
             transcription_job: self.transcription_job.clone(),
             summary_job: self.summary_job.clone(),
         }
@@ -1776,6 +1810,7 @@ struct DesktopCommandSnapshotState {
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    last_calendar_context: Option<CalendarContextView>,
     transcription_job: Option<CommandJobView>,
     summary_job: Option<CommandJobView>,
 }
@@ -3622,14 +3657,190 @@ fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidance
 }
 
 fn calendar_context_snapshot() -> CalendarContextView {
+    calendar_context_from_authorization(apple_calendar_authorization_status())
+}
+
+fn request_apple_calendar_access_context() -> CalendarContextView {
+    calendar_context_from_authorization(request_apple_calendar_full_access())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppleCalendarAuthorizationStatus {
+    NotDetermined,
+    FullAccess,
+    WriteOnly,
+    Denied,
+    Restricted,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppleCalendarAccessRequestApi {
+    FullAccess,
+    LegacyEventAccess,
+}
+
+fn apple_calendar_access_request_api_for_availability(
+    full_access_api_available: bool,
+) -> AppleCalendarAccessRequestApi {
+    if full_access_api_available {
+        AppleCalendarAccessRequestApi::FullAccess
+    } else {
+        AppleCalendarAccessRequestApi::LegacyEventAccess
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn apple_calendar_access_request_api() -> AppleCalendarAccessRequestApi {
+    apple_calendar_access_request_api_for_availability(available!(macos = 14.0))
+}
+
+fn calendar_context_from_authorization(
+    status: AppleCalendarAuthorizationStatus,
+) -> CalendarContextView {
+    let (permission_state, availability_state, message, setup_guidance) = match status {
+        AppleCalendarAuthorizationStatus::NotDetermined => (
+            "NotRequested",
+            "PermissionRequired",
+            "Apple Calendar permission has not been requested.",
+            "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::FullAccess => (
+            "Granted",
+            "Ready",
+            "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+            "Future slices will load upcoming local events for manual context attachment. Calendar events never start recordings automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::WriteOnly => (
+            "Unavailable",
+            "Unavailable",
+            "Apple Calendar write-only access is not enough for meeting context.",
+            "Grant full Calendar access before loading upcoming local events. Calendar events never start recordings automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::Denied => (
+            "Denied",
+            "Unavailable",
+            "Apple Calendar access is denied.",
+            "Open macOS Privacy & Security > Calendars to grant access. Calendar events never start recordings automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::Restricted => (
+            "Unavailable",
+            "Unavailable",
+            "Apple Calendar access is restricted by macOS.",
+            "Check macOS Calendar privacy restrictions before using Calendar context. Calendar events never start recordings automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::Unavailable => (
+            "Unavailable",
+            "Unavailable",
+            "Apple Calendar context requires macOS EventKit.",
+            "Calendar context is read-only here, and recordings never start from calendar events automatically.",
+        ),
+        AppleCalendarAuthorizationStatus::Unknown => (
+            "Unavailable",
+            "Unavailable",
+            "Apple Calendar authorization returned an unknown status.",
+            "Check macOS Calendar privacy settings before using Calendar context. Calendar events never start recordings automatically.",
+        ),
+    };
     CalendarContextView {
         source: "AppleCalendar".to_string(),
-        permission_state: "NotRequested".to_string(),
-        availability_state: "Unavailable".to_string(),
-        message: "Apple Calendar context is not connected.".to_string(),
-        setup_guidance: "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.".to_string(),
+        permission_state: permission_state.to_string(),
+        availability_state: availability_state.to_string(),
+        message: message.to_string(),
+        setup_guidance: setup_guidance.to_string(),
         upcoming_events: Vec::new(),
         auto_start_enabled: false,
+    }
+}
+
+#[cfg(test)]
+fn apple_calendar_authorization_status() -> AppleCalendarAuthorizationStatus {
+    AppleCalendarAuthorizationStatus::NotDetermined
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn apple_calendar_authorization_status() -> AppleCalendarAuthorizationStatus {
+    map_eventkit_authorization_status(unsafe {
+        EKEventStore::authorizationStatusForEntityType(EKEntityType::Event)
+    })
+}
+
+#[cfg(not(any(target_os = "macos", test)))]
+fn apple_calendar_authorization_status() -> AppleCalendarAuthorizationStatus {
+    AppleCalendarAuthorizationStatus::Unavailable
+}
+
+#[cfg(test)]
+fn request_apple_calendar_full_access() -> AppleCalendarAuthorizationStatus {
+    AppleCalendarAuthorizationStatus::FullAccess
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn request_apple_calendar_full_access() -> AppleCalendarAuthorizationStatus {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let current_status = apple_calendar_authorization_status();
+    if current_status != AppleCalendarAuthorizationStatus::NotDetermined {
+        return current_status;
+    }
+    let store = unsafe { EKEventStore::new() };
+    let (sender, receiver) = mpsc::channel::<bool>();
+    let block = block2::RcBlock::new(move |granted: Bool, _error: *mut NSError| {
+        let _ = sender.send(granted.as_bool());
+    });
+
+    unsafe {
+        match apple_calendar_access_request_api() {
+            AppleCalendarAccessRequestApi::FullAccess => {
+                store.requestFullAccessToEventsWithCompletion(block2::RcBlock::as_ptr(&block));
+            }
+            AppleCalendarAccessRequestApi::LegacyEventAccess => {
+                #[allow(deprecated)]
+                store.requestAccessToEntityType_completion(
+                    EKEntityType::Event,
+                    block2::RcBlock::as_ptr(&block),
+                );
+            }
+        }
+    }
+
+    match receiver.recv_timeout(Duration::from_secs(300)) {
+        Ok(true) => AppleCalendarAuthorizationStatus::FullAccess,
+        Ok(false) => apple_calendar_authorization_status(),
+        Err(_) => {
+            // EventKit may still hold and call the completion block after our
+            // timeout. Keep the callback state and store alive rather than
+            // freeing closure memory under a late OS callback.
+            std::mem::forget(block);
+            std::mem::forget(store);
+            AppleCalendarAuthorizationStatus::Unavailable
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", test)))]
+fn request_apple_calendar_full_access() -> AppleCalendarAuthorizationStatus {
+    AppleCalendarAuthorizationStatus::Unavailable
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn map_eventkit_authorization_status(
+    status: EKAuthorizationStatus,
+) -> AppleCalendarAuthorizationStatus {
+    if status == EKAuthorizationStatus::NotDetermined {
+        AppleCalendarAuthorizationStatus::NotDetermined
+    } else if status == EKAuthorizationStatus::Restricted {
+        AppleCalendarAuthorizationStatus::Restricted
+    } else if status == EKAuthorizationStatus::Denied {
+        AppleCalendarAuthorizationStatus::Denied
+    } else if status == EKAuthorizationStatus::FullAccess {
+        AppleCalendarAuthorizationStatus::FullAccess
+    } else if status == EKAuthorizationStatus::WriteOnly {
+        AppleCalendarAuthorizationStatus::WriteOnly
+    } else {
+        AppleCalendarAuthorizationStatus::Unknown
     }
 }
 
@@ -4756,7 +4967,10 @@ mod tests {
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
         assert_eq!(json["calendarContext"]["source"], "AppleCalendar");
         assert_eq!(json["calendarContext"]["permissionState"], "NotRequested");
-        assert_eq!(json["calendarContext"]["availabilityState"], "Unavailable");
+        assert_eq!(
+            json["calendarContext"]["availabilityState"],
+            "PermissionRequired"
+        );
         assert_eq!(json["calendarContext"]["autoStartEnabled"], false);
         assert_eq!(
             json["calendarContext"]["upcomingEvents"]
@@ -4771,6 +4985,79 @@ mod tests {
 
         restore_whisper_env(previous);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn explicit_calendar_permission_request_returns_granted_context_without_events_or_autostart() {
+        let context = request_apple_calendar_access_context();
+        let json = serde_json::to_value(&context).expect("serialize calendar context");
+
+        assert_eq!(json["source"], "AppleCalendar");
+        assert_eq!(json["permissionState"], "Granted");
+        assert_eq!(json["availabilityState"], "Ready");
+        assert_eq!(json["autoStartEnabled"], false);
+        assert_eq!(
+            json["upcomingEvents"]
+                .as_array()
+                .expect("upcoming calendar events")
+                .len(),
+            0
+        );
+        assert!(json["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("never start recordings automatically"));
+    }
+
+    #[test]
+    fn calendar_authorization_statuses_map_to_safe_snapshot_states() {
+        let cases = [
+            (
+                AppleCalendarAuthorizationStatus::WriteOnly,
+                "Unavailable",
+                "Unavailable",
+            ),
+            (
+                AppleCalendarAuthorizationStatus::Denied,
+                "Denied",
+                "Unavailable",
+            ),
+            (
+                AppleCalendarAuthorizationStatus::Restricted,
+                "Unavailable",
+                "Unavailable",
+            ),
+            (
+                AppleCalendarAuthorizationStatus::Unavailable,
+                "Unavailable",
+                "Unavailable",
+            ),
+            (
+                AppleCalendarAuthorizationStatus::Unknown,
+                "Unavailable",
+                "Unavailable",
+            ),
+        ];
+
+        for (status, expected_permission, expected_availability) in cases {
+            let context = calendar_context_from_authorization(status);
+            assert_eq!(context.permission_state, expected_permission);
+            assert_eq!(context.availability_state, expected_availability);
+            assert!(!context.auto_start_enabled);
+            assert!(context.upcoming_events.is_empty());
+        }
+    }
+
+    #[test]
+    fn calendar_access_request_api_preserves_macos_13_support_floor() {
+        assert_eq!(
+            apple_calendar_access_request_api_for_availability(false),
+            AppleCalendarAccessRequestApi::LegacyEventAccess
+        );
+        assert_eq!(
+            apple_calendar_access_request_api_for_availability(true),
+            AppleCalendarAccessRequestApi::FullAccess
+        );
     }
 
     #[test]

@@ -74,6 +74,7 @@ type PendingCommand =
   | "save-whisper"
   | "save-analysis"
   | "save-retention"
+  | "request-calendar"
   | null;
 
 type ThemeMode = "dark" | "light";
@@ -328,6 +329,8 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
   const settingsInputDisabled = commandBusy;
   const settingsActionDisabled = commandBusy;
   const chooseWhisperModelDisabled = !commandSurfaceReady || commandBusy;
+  const requestCalendarDisabled =
+    !commandSurfaceReady || commandBusy || calendarContext.permissionState !== "NotRequested";
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -736,6 +739,14 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
           rawAudioRetentionPolicy: settingsForm.rawAudioRetentionPolicy,
         }),
       "Raw-audio retention saved.",
+    );
+  }
+
+  function requestCalendarAccess() {
+    void runSettingsSnapshotCommand(
+      "request-calendar",
+      (commands) => commands.requestAppleCalendarAccess(),
+      "Calendar permission state refreshed.",
     );
   }
 
@@ -1427,6 +1438,21 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                   <small>No upcoming calendar events loaded.</small>
                 )}
                 <small>Auto-start disabled.</small>
+                {calendarContext.permissionState === "NotRequested" ? (
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={requestCalendarDisabled}
+                    title={
+                      commandSurfaceReady
+                        ? "Request macOS Apple Calendar access for future manual event context."
+                        : commandUnavailableTitle
+                    }
+                    onClick={requestCalendarAccess}
+                  >
+                    {pendingCommand === "request-calendar" ? "Requesting calendar" : "Request calendar access"}
+                  </button>
+                ) : null}
               </div>
             </div>
             <div className="settings-form" aria-label="Local settings">
@@ -1615,7 +1641,7 @@ function calendarContextLabel(context: DesktopSnapshot["calendarContext"]) {
     return "Calendar context ready";
   }
   if (context.permissionState === "NotRequested") {
-    return "Calendar not connected";
+    return "Calendar permission needed";
   }
   return "Calendar unavailable";
 }

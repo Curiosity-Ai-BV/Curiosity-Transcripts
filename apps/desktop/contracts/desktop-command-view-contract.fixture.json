@@ -4,10 +4,10 @@
       "analysisCommand": null,
       "calendarContext": {
         "autoStartEnabled": false,
-        "availabilityState": "Unavailable",
-        "message": "Apple Calendar context is not connected.",
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
         "permissionState": "NotRequested",
-        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
         "source": "AppleCalendar",
         "upcomingEvents": []
       },
@@ -78,10 +78,10 @@
       "analysisCommand": null,
       "calendarContext": {
         "autoStartEnabled": false,
-        "availabilityState": "Unavailable",
-        "message": "Apple Calendar context is not connected.",
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
         "permissionState": "NotRequested",
-        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
         "source": "AppleCalendar",
         "upcomingEvents": []
       },
@@ -196,10 +196,10 @@
       "analysisCommand": null,
       "calendarContext": {
         "autoStartEnabled": false,
-        "availabilityState": "Unavailable",
-        "message": "Apple Calendar context is not connected.",
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
         "permissionState": "NotRequested",
-        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
         "source": "AppleCalendar",
         "upcomingEvents": []
       },

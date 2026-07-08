@@ -342,13 +342,17 @@ Goal: add calendar value without introducing silent recording risk.
 Deliverables:
 
 - Current Phase 6A status: the desktop snapshot and settings pane expose a
-  deterministic read-only Apple Calendar context state. It reports permission
-  as not requested, availability as unavailable, has an empty upcoming-events
-  list, and hard-codes auto-start disabled in the Rust/TypeScript contract.
-  This slice does not request EventKit permission, fetch calendar events, attach
-  recordings to events, store calendar tokens, contact hosted services, or add
-  any calendar-triggered recording path.
-- Add Apple Calendar permission and availability states.
+  deterministic read-only Apple Calendar context state. The app can request
+  Apple Calendar event access only from an explicit user action, using the
+  macOS 14+ full-access API when available and EventKit's older explicit
+  event-access prompt on the macOS 13 support floor. It reports current
+  permission/availability without prompting during snapshot load, has an empty
+  upcoming-events list, and hard-codes auto-start disabled in the Rust/TypeScript
+  contract. This slice does not fetch calendar events, attach recordings to
+  events, store calendar tokens, contact hosted services, or add any
+  calendar-triggered recording path.
+- Add Apple Calendar event loading behind the existing permission and
+  availability states.
 - Show upcoming events and allow a user to manually attach a recording to an
   event for naming/context.
 - Protect private, all-day, recurring, ambiguous, and overlapping events.

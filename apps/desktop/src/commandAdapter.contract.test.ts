@@ -553,6 +553,7 @@ describe("typed desktop command facade", () => {
     await facade.saveWhisperModelPath({ whisperModelPath: "/models/base.en.bin" });
     await facade.saveAnalysisSettings({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" });
     await facade.saveRawAudioRetentionPolicy({ rawAudioRetentionPolicy: "DeleteAfterTranscription" });
+    await facade.requestAppleCalendarAccess();
     const whisperPathTest = await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
@@ -597,6 +598,7 @@ describe("typed desktop command facade", () => {
         command: "save_raw_audio_retention_policy",
         args: { rawAudioRetentionPolicy: "DeleteAfterTranscription" },
       },
+      { command: "request_apple_calendar_access", args: undefined },
       { command: "test_whisper_model_path", args: { path: "/models/base.en.bin" } },
       {
         command: "test_ollama_connection",

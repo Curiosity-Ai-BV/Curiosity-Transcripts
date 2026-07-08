@@ -559,10 +559,10 @@ describe("desktop workspace shell", () => {
       calendarContext: {
         source: "AppleCalendar",
         permissionState: "NotRequested",
-        availabilityState: "Unavailable",
-        message: "Apple Calendar context is not connected.",
+        availabilityState: "PermissionRequired",
+        message: "Apple Calendar permission has not been requested.",
         setupGuidance:
-          "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+          "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
         upcomingEvents: [],
         autoStartEnabled: false,
       },
@@ -571,11 +571,51 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
 
     const calendarContext = screen.getByLabelText("Calendar context");
-    expect(within(calendarContext).getByText("Calendar not connected")).toBeInTheDocument();
-    expect(within(calendarContext).getByText("Apple Calendar context is not connected.")).toBeInTheDocument();
+    expect(within(calendarContext).getByText("Calendar permission needed")).toBeInTheDocument();
+    expect(within(calendarContext).getByText("Apple Calendar permission has not been requested.")).toBeInTheDocument();
     expect(within(calendarContext).getByText("No upcoming calendar events loaded.")).toBeInTheDocument();
     expect(within(calendarContext).getByText("Auto-start disabled.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request calendar access" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
+  });
+
+  it("requests Apple Calendar access only from the explicit calendar button", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      calendarContext: {
+        ...getMockDesktopSnapshot().calendarContext,
+        permissionState: "NotRequested",
+        availabilityState: "PermissionRequired",
+        message: "Apple Calendar permission has not been requested.",
+      },
+    });
+    const granted = {
+      ...initial,
+      calendarContext: {
+        ...initial.calendarContext,
+        permissionState: "Granted" as const,
+        availabilityState: "Ready" as const,
+        message: "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+      },
+    };
+    const requestAppleCalendarAccess = vi.fn(async () => granted);
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade({
+          requestAppleCalendarAccess,
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Request calendar access" }));
+
+    expect(requestAppleCalendarAccess).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Calendar context")).toHaveTextContent(
+      "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+    );
+    expect(screen.queryByRole("button", { name: "Request calendar access" })).not.toBeInTheDocument();
   });
 
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
@@ -2646,6 +2686,15 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
     saveWhisperModelPath: async () => snapshot,
     saveAnalysisSettings: async () => snapshot,
     saveRawAudioRetentionPolicy: async () => snapshot,
+    requestAppleCalendarAccess: async () => ({
+      ...snapshot,
+      calendarContext: {
+        ...snapshot.calendarContext,
+        permissionState: "Granted",
+        availabilityState: "Ready",
+        message: "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+      },
+    }),
     testWhisperModelPath: async () => ({
       state: "Valid",
       message: "Whisper model path is readable.",

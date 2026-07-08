@@ -306,6 +306,7 @@ export interface DesktopCommandFacade {
   saveWhisperModelPath(args: { whisperModelPath: string }): Promise<DesktopSnapshot>;
   saveAnalysisSettings(args: { ollamaBaseUrl: string; ollamaModel: string }): Promise<DesktopSnapshot>;
   saveRawAudioRetentionPolicy(args: { rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy }): Promise<DesktopSnapshot>;
+  requestAppleCalendarAccess(): Promise<DesktopSnapshot>;
   testWhisperModelPath(args: { path: string }): Promise<WhisperModelPathTestResult>;
   testOllamaConnection(args: { baseUrl: string; model: string }): Promise<OllamaConnectionTestResult>;
 }
@@ -905,10 +906,10 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
     calendarContext: {
       source: "AppleCalendar",
       permissionState: "NotRequested",
-      availabilityState: "Unavailable",
-      message: "Apple Calendar context is not connected.",
+      availabilityState: "PermissionRequired",
+      message: "Apple Calendar permission has not been requested.",
       setupGuidance:
-        "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
       upcomingEvents: [],
       autoStartEnabled: false,
     },
@@ -1549,6 +1550,7 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("save_analysis_settings", { ollamaBaseUrl, ollamaModel }),
     saveRawAudioRetentionPolicy: ({ rawAudioRetentionPolicy }) =>
       snapshotCommand("save_raw_audio_retention_policy", { rawAudioRetentionPolicy }),
+    requestAppleCalendarAccess: () => snapshotCommand("request_apple_calendar_access"),
     testWhisperModelPath: async ({ path }) => {
       const result = await fetchCommand<unknown>("test_whisper_model_path", { path });
       assertWhisperModelPathTestContract(result);

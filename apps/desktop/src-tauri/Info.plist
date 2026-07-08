@@ -8,5 +8,9 @@
   <string>Curiosity Transcripts uses screen recording permission to capture local system audio for meeting transcripts.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Curiosity Transcripts captures system audio only when you start a local meeting recording.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Curiosity Transcripts reads Apple Calendar events only after you request access, so you can manually attach meeting context. Calendar events never start recordings automatically.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Curiosity Transcripts reads Apple Calendar events only after you request access, so you can manually attach meeting context. Calendar events never start recordings automatically.</string>
 </dict>
 </plist>
