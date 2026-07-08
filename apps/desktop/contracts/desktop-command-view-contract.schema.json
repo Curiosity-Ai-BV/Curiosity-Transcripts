@@ -11,6 +11,7 @@
   "expectedCases": [
     "desktop_snapshot.empty",
     "desktop_snapshot.transcribed_analyzed_meeting",
+    "desktop_snapshot.unsupported_whisper_model",
     "desktop_snapshot.with_setup_evidence",
     "test_ollama_connection.available_configured_model",
     "test_ollama_connection.cloud_model_rejected",
@@ -92,6 +93,18 @@
         { "path": ["meetings", 0, "analysis", "summary"], "type": "nonEmptyString" },
         { "path": ["meetings", 0, "exportState", "state"], "type": "string", "enum": ["idle"] },
         { "path": ["meetings", 0, "deleteState", "state"], "type": "string", "enum": ["idle"] }
+      ]
+    },
+    {
+      "name": "desktop_snapshot.unsupported_whisper_model",
+      "paths": [
+        { "path": ["model", "kind"], "type": "string", "enum": ["unsupported"] },
+        { "path": ["model", "configuredPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["settings", "whisperModelPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["setupGuidance", "whisper", "state"], "type": "string", "enum": ["UnsupportedFile"] },
+        { "path": ["setupGuidance", "whisper", "configuredPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["setupGuidance", "whisper", "lastPathTest"], "type": "null" },
+        { "path": ["setupGuidance", "whisper", "lastSuccessfulTranscription"], "type": "null" }
       ]
     },
     {

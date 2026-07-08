@@ -1441,14 +1441,17 @@ function validateFirstRunSetupGuidance(
     `${pathLabel}.whisper.lastSuccessfulTranscription`,
     configuredModelPath,
   );
-  if (
-    modelKind === "unsupported" &&
-    whisperState === "UnsupportedFile" &&
-    whisper.lastSuccessfulTranscription !== null
-  ) {
-    throw new Error(
-      `desktop_snapshot contract drift: expected ${pathLabel}.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files`,
-    );
+  if (modelKind === "unsupported" && whisperState === "UnsupportedFile") {
+    if (whisper.lastPathTest !== null) {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${pathLabel}.whisper.lastPathTest to be null for unsupported Whisper model files`,
+      );
+    }
+    if (whisper.lastSuccessfulTranscription !== null) {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${pathLabel}.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files`,
+      );
+    }
   }
 
   const ollama = requireContractRecord(guidance.ollama, `${pathLabel}.ollama`);

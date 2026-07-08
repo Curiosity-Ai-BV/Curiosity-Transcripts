@@ -11250,6 +11250,29 @@ mod tests {
         canonicalize_app_root_paths(&mut evidence_snapshot, &evidence_root);
         fs::remove_dir_all(&evidence_root).expect("cleanup evidence fixture root");
 
+        let unsupported_snapshot_root = unique_test_root();
+        fs::create_dir_all(&unsupported_snapshot_root).expect("unsupported snapshot fixture root");
+        let unsupported_snapshot_model_path = unsupported_snapshot_root.join("notes.txt");
+        fs::write(
+            &unsupported_snapshot_model_path,
+            b"readable but not a supported model file",
+        )
+        .expect("unsupported snapshot fixture whisper path");
+        save_whisper_model_path_for_app_root(
+            &unsupported_snapshot_root,
+            unsupported_snapshot_model_path
+                .to_string_lossy()
+                .to_string(),
+        )
+        .expect("save unsupported snapshot fixture whisper path");
+        let mut unsupported_snapshot =
+            serialize_desktop_snapshot_case(&unsupported_snapshot_root, |root| {
+                desktop_snapshot_for_app_root(root)
+            });
+        canonicalize_app_root_paths(&mut unsupported_snapshot, &unsupported_snapshot_root);
+        fs::remove_dir_all(&unsupported_snapshot_root)
+            .expect("cleanup unsupported snapshot fixture root");
+
         let whisper_root = unique_test_root();
         fs::create_dir_all(&whisper_root).expect("whisper fixture root");
         let model_path = whisper_root.join("fixture-whisper.bin");
@@ -11298,6 +11321,7 @@ mod tests {
                 "desktop_snapshot.empty": empty_snapshot,
                 "desktop_snapshot.transcribed_analyzed_meeting": meeting_snapshot,
                 "desktop_snapshot.with_setup_evidence": evidence_snapshot,
+                "desktop_snapshot.unsupported_whisper_model": unsupported_snapshot,
                 "test_whisper_model_path.valid_readable_file": readable_whisper,
                 "test_whisper_model_path.unsupported_extension": unsupported_whisper,
                 "test_whisper_model_path.missing_path": serde_json::to_value(test_whisper_model_path_value(""))

@@ -32,6 +32,7 @@ describe("desktop snapshot DTO contract", () => {
   it.each([
     "desktop_snapshot.empty",
     "desktop_snapshot.transcribed_analyzed_meeting",
+    "desktop_snapshot.unsupported_whisper_model",
     "desktop_snapshot.with_setup_evidence",
   ])(
     "accepts the Rust-serialized %s fixture",
@@ -667,6 +668,46 @@ describe("desktop snapshot DTO contract", () => {
       }),
     ).rejects.toThrow(
       "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files",
+    );
+  });
+
+  it("rejects unsupported Whisper model snapshots with stale path-test evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: {
+              testedPath: "/models/notes.txt",
+              testedAtMs: 1_700_000_001_000,
+              state: "Invalid",
+              fileSizeBytes: null,
+              sha256: null,
+              failureDetail: "Unsupported Whisper model file extension.",
+            },
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest to be null for unsupported Whisper model files",
     );
   });
 

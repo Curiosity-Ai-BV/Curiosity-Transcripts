@@ -235,6 +235,21 @@ if (fixture && schema) {
   badPrimitive.cases["desktop_snapshot.with_setup_evidence"].setupGuidance.ollama.availability = 42;
   expectRejected("bad primitive at setupGuidance.ollama.availability", badPrimitive, schema);
 
+  const unsupportedKindDrift = clone(fixture);
+  unsupportedKindDrift.cases["desktop_snapshot.unsupported_whisper_model"].model.kind = "untested";
+  expectRejected("unsupported snapshot kind drift", unsupportedKindDrift, schema);
+
+  const unsupportedPathEvidenceLeak = clone(fixture);
+  unsupportedPathEvidenceLeak.cases["desktop_snapshot.unsupported_whisper_model"].setupGuidance.whisper.lastPathTest = {
+    testedPath: "<app-root>/notes.txt",
+    testedAtMs: 1_700_000_001_000,
+    state: "Invalid",
+    fileSizeBytes: null,
+    sha256: null,
+    failureDetail: "Unsupported Whisper model file extension.",
+  };
+  expectRejected("unsupported snapshot path-test evidence leak", unsupportedPathEvidenceLeak, schema);
+
   const debugLeak = clone(fixture);
   debugLeak.cases["desktop_snapshot.empty"].commandSurface.detail = "seed_dev_fixture";
   expectRejected("debug-only command string in fixture", debugLeak, schema);
