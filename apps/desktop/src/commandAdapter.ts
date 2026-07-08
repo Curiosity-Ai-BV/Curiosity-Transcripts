@@ -1546,14 +1546,22 @@ function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): voi
   const evidence = requireContractRecord(value, pathLabel);
   requireString(evidence.testedPath, `${pathLabel}.testedPath`);
   requireNonNegativeInteger(evidence.testedAtMs, `${pathLabel}.testedAtMs`);
-  requireEnum(evidence.state, ["Valid", "Invalid"], `${pathLabel}.state`);
-  const fileSizeBytes = requireNullableNumber(evidence.fileSizeBytes, `${pathLabel}.fileSizeBytes`);
-  if (fileSizeBytes !== null) {
-    requireNonNegativeInteger(fileSizeBytes, `${pathLabel}.fileSizeBytes`);
-  }
-  const sha256 = requireNullableString(evidence.sha256, `${pathLabel}.sha256`);
-  if (sha256 !== null && !/^[a-f0-9]{64}$/.test(sha256)) {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
+  const state = requireEnum(evidence.state, ["Valid", "Invalid"], `${pathLabel}.state`);
+  if (state === "Valid") {
+    requirePositiveInteger(evidence.fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+    const sha256 = requireString(evidence.sha256, `${pathLabel}.sha256`);
+    if (!/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
+    }
+  } else {
+    const fileSizeBytes = requireNullableNumber(evidence.fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+    if (fileSizeBytes !== null) {
+      requireNonNegativeInteger(fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+    }
+    const sha256 = requireNullableString(evidence.sha256, `${pathLabel}.sha256`);
+    if (sha256 !== null && !/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
+    }
   }
   requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
 }
@@ -1625,6 +1633,7 @@ function validateWhisperModelReadinessEvidence(
         `desktop_snapshot contract drift: expected ${evidencePath}.fileSizeBytes for ready Whisper model`,
       );
     }
+    requirePositiveInteger(fileSizeBytes, `${evidencePath}.fileSizeBytes`);
     return;
   }
 
@@ -1882,10 +1891,7 @@ function assertWhisperModelPathTestContract(value: unknown): asserts value is Wh
   requireString(result.setupGuidance, "test_whisper_model_path.setupGuidance");
 
   if (state === "Valid") {
-    const fileSizeBytes = requireNumber(result.fileSizeBytes, "test_whisper_model_path.fileSizeBytes");
-    if (!Number.isInteger(fileSizeBytes) || fileSizeBytes < 0) {
-      throw new Error("desktop_snapshot contract drift: expected test_whisper_model_path.fileSizeBytes to be a non-negative integer");
-    }
+    requirePositiveInteger(result.fileSizeBytes, "test_whisper_model_path.fileSizeBytes");
     const sha256 = requireString(result.sha256, "test_whisper_model_path.sha256");
     if (!/^[a-f0-9]{64}$/.test(sha256)) {
       throw new Error("desktop_snapshot contract drift: expected test_whisper_model_path.sha256 to be a SHA-256 hex string");

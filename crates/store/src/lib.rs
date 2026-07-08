@@ -205,12 +205,18 @@ pub struct OllamaConnectionTestEvidence {
 
 impl WhisperPathTestEvidence {
     fn is_valid_snapshot_evidence(&self) -> bool {
-        matches!(self.state.as_str(), "Valid" | "Invalid")
-            && self
+        match self.state.as_str() {
+            "Valid" => {
+                matches!(self.file_size_bytes, Some(size) if size > 0)
+                    && self.sha256.as_deref().map(is_lower_hex_sha256) == Some(true)
+            }
+            "Invalid" => self
                 .sha256
                 .as_deref()
                 .map(is_lower_hex_sha256)
-                .unwrap_or(true)
+                .unwrap_or(true),
+            _ => false,
+        }
     }
 }
 

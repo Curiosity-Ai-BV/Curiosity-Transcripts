@@ -16,6 +16,7 @@ type DesktopCommandViewContractFixture = {
 };
 
 const rustContractFixture = desktopCommandViewContract as DesktopCommandViewContractFixture;
+const validWhisperSha256 = "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54";
 
 const tauriInvoke = vi.hoisted(() => vi.fn());
 
@@ -732,7 +733,7 @@ describe("desktop snapshot DTO contract", () => {
         testedAtMs: 1_700_000_001_000,
         state: "Valid",
         fileSizeBytes: 16,
-        sha256: null,
+        sha256: validWhisperSha256,
         failureDetail: null,
       },
       "desktop_snapshot.setupGuidance.whisper.lastPathTest.testedPath",
@@ -745,6 +746,18 @@ describe("desktop snapshot DTO contract", () => {
         state: "Valid",
         fileSizeBytes: null,
         sha256: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.fileSizeBytes",
+    ],
+    [
+      "zero file metadata",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: 0,
+        sha256: validWhisperSha256,
         failureDetail: null,
       },
       "desktop_snapshot.setupGuidance.whisper.lastPathTest.fileSizeBytes",
@@ -802,7 +815,7 @@ describe("desktop snapshot DTO contract", () => {
               testedAtMs: 1_700_000_001_000,
               state: "Valid",
               fileSizeBytes: 16,
-              sha256: null,
+              sha256: validWhisperSha256,
               failureDetail: null,
             },
             lastSuccessfulTranscription: null,
@@ -1418,6 +1431,25 @@ describe("typed desktop command facade", () => {
           state: "Valid",
           message: "Whisper model path is readable.",
           setupGuidance: "",
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.testWhisperModelPath({ path: "/models/base.en.bin" })).rejects.toThrow(
+      "test_whisper_model_path.fileSizeBytes",
+    );
+  });
+
+  it("fails loudly when a valid Whisper path test reports zero-byte metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_whisper_model_path") {
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 0,
+          sha256: validWhisperSha256,
         } as never;
       }
       return getMockDesktopSnapshot() as never;

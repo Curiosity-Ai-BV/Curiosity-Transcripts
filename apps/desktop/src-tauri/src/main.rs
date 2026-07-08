@@ -4813,6 +4813,12 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
             "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
         );
     }
+    if metadata.len() == 0 {
+        return WhisperModelPathTestView::invalid(
+            "Whisper model path points to an empty file.",
+            "Choose a non-empty whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+        );
+    }
     match sha256_for_readable_file(&path) {
         Ok(sha256) => WhisperModelPathTestView {
             state: "Valid".to_string(),
@@ -6920,6 +6926,60 @@ mod tests {
         assert!(result.file_size_bytes.is_some());
         assert!(result.sha256.is_some());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_whisper_model_path_rejects_empty_supported_files_without_readiness_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        for file_name in ["empty-whisper.bin", "empty-whisper.gguf"] {
+            let model_path = root.join(file_name);
+            fs::write(&model_path, b"").expect("empty model file");
+            let model_path = model_path.to_string_lossy().to_string();
+
+            save_whisper_model_path_for_app_root(&root, model_path.clone())
+                .expect("save whisper path");
+            let result =
+                test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+                    .expect("persist invalid empty whisper path evidence");
+            let result_json = serde_json::to_value(&result).expect("serialize result");
+
+            assert_eq!(result.state, "Invalid");
+            assert!(result.message.contains("empty file"));
+            let result_object = result_json.as_object().expect("result object");
+            assert!(!result_object.contains_key("fileSizeBytes"));
+            assert!(!result_object.contains_key("sha256"));
+
+            let settings = app_settings_for_app_root(&root).expect("settings");
+            let evidence = settings
+                .whisper_path_test_evidence
+                .as_ref()
+                .expect("persisted invalid evidence");
+            assert_eq!(evidence.tested_path, model_path);
+            assert_eq!(evidence.state, "Invalid");
+            assert_eq!(evidence.file_size_bytes, None);
+            assert_eq!(evidence.sha256, None);
+            assert!(evidence
+                .failure_detail
+                .as_deref()
+                .expect("failure detail")
+                .contains("empty file"));
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+            let snapshot_json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            assert_ne!(snapshot_json["model"]["kind"], "ready");
+            assert_eq!(
+                snapshot_json["setupGuidance"]["whisper"]["lastPathTest"]["state"],
+                "Invalid"
+            );
+        }
+
+        restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
     }
 

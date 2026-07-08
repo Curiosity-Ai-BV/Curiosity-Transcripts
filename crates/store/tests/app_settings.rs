@@ -343,6 +343,59 @@ fn app_settings_ignore_and_clear_contract_invalid_setup_test_evidence() {
 }
 
 #[test]
+fn app_settings_ignore_and_clear_zero_size_valid_whisper_path_evidence() {
+    let root = test_root("zero-size-valid-whisper-evidence");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    drop(store);
+
+    let conn = Connection::open(&db_path).expect("open sqlite");
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+        params![
+            "whisper_path_test_evidence",
+            json!({
+                "testedPath": "/models/ggml-base.en.bin",
+                "testedAtMs": 1_700_000_001_000_u64,
+                "state": "Valid",
+                "fileSizeBytes": 0,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "failureDetail": null
+            })
+            .to_string()
+        ],
+    )
+    .expect("insert zero-size valid whisper evidence");
+    drop(conn);
+
+    let reopened = Store::open(&db_path, root).expect("reopen store");
+    reopened.migrate().expect("migrate reopened store");
+    let settings = reopened
+        .app_settings()
+        .expect("zero-size valid evidence should not fail settings");
+    assert_eq!(settings.whisper_path_test_evidence, None);
+
+    reopened
+        .save_whisper_model_path("/models/ggml-base.en.bin")
+        .expect("same whisper path save should clear zero-size valid evidence");
+
+    let conn = Connection::open(&db_path).expect("open sqlite after save");
+    let evidence_count: i64 = conn
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM app_settings
+            WHERE key = ?1
+            ",
+            params!["whisper_path_test_evidence"],
+            |row| row.get(0),
+        )
+        .expect("count whisper path evidence settings");
+    assert_eq!(evidence_count, 0);
+}
+
+#[test]
 fn app_settings_persist_supported_raw_audio_retention_default_across_store_reopen() {
     let root = test_root("retention-persist");
     let db_path = root.join("app.db");
