@@ -331,7 +331,10 @@ Deliverables:
 Current Phase 5A status: the Rust-produced desktop command/view contract fixture
 is checked in at `apps/desktop/contracts/desktop-command-view-contract.fixture.json`.
 Rust tests guard exact equality against the generated command/view payload, and
-TS command adapter contract tests consume the same fixture.
+TS command adapter contract tests consume the same fixture. Snapshot-returning
+commands, setup test commands, and `search_meetings` results are also validated
+at the TypeScript command-adapter boundary before the desktop shell consumes
+them.
 
 Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov`, writes
 Rust LCOV reports to `release-artifacts/coverage/rust`, runs frontend Vitest V8

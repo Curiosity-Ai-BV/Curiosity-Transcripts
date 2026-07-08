@@ -1725,6 +1725,15 @@ function assertOllamaConnectionTestContract(value: unknown): asserts value is Ol
   requireNullableString(result.pullCommand, "test_ollama_connection.pullCommand");
 }
 
+function assertMeetingSearchResultsContract(value: unknown): asserts value is MeetingSearchResult[] {
+  requireContractArray(value, "search_meetings").forEach((result, index) => {
+    const pathLabel = `search_meetings[${index}]`;
+    const record = requireContractRecord(result, pathLabel);
+    requireNonEmptyString(record.meeting_id, `${pathLabel}.meeting_id`);
+    requireString(record.title, `${pathLabel}.title`);
+  });
+}
+
 function retentionDetail(policy: RawAudioRetentionPolicy): string {
   if (policy === "DeleteAfterTranscription") {
     return "Raw audio will be deleted after transcription.";
@@ -1751,6 +1760,9 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
     if (command === "test_ollama_connection") {
       assertOllamaConnectionTestContract(result);
     }
+    if (command === "search_meetings") {
+      assertMeetingSearchResultsContract(result);
+    }
     return result as T;
   };
 }
@@ -1764,7 +1776,11 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
 
   return {
     desktopSnapshot: () => snapshotCommand("desktop_snapshot"),
-    searchMeetings: ({ query }) => fetchCommand<MeetingSearchResult[]>("search_meetings", { query }),
+    searchMeetings: async ({ query }) => {
+      const result = await fetchCommand<unknown>("search_meetings", { query });
+      assertMeetingSearchResultsContract(result);
+      return result;
+    },
     startRecording: (args) =>
       snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
     importAudioFile: ({ sourcePath, title }) =>

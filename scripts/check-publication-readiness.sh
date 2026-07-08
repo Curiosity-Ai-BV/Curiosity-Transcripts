@@ -102,6 +102,7 @@ require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Pha
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
+require_text docs/production-readiness-roadmap.md '`search_meetings` results are also validated' 'Phase 5A search result command contract boundary'
 require_text docs/production-readiness-roadmap.md 'Current Phase 5B coverage artifact status' 'Phase 5B coverage artifact status'
 require_text docs/production-readiness-roadmap.md 'release-artifacts/coverage' 'Phase 5B coverage artifact output path'
 require_text docs/production-readiness-roadmap.md 'no global percentage threshold' 'Phase 5B non-percentage coverage boundary'

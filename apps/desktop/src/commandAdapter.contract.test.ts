@@ -1152,6 +1152,49 @@ describe("typed desktop command facade", () => {
     await expect(facade.stopRecording()).rejects.toThrow("desktop_snapshot.recording.permission_state");
   });
 
+  it("validates search result arrays before exposing them to App", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "search_meetings") {
+        return [
+          {
+            meeting_id: "meeting-1",
+            title: "Launch review",
+          },
+        ] as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.searchMeetings({ query: "launch" })).resolves.toEqual([
+      {
+        meeting_id: "meeting-1",
+        title: "Launch review",
+      },
+    ]);
+  });
+
+  it("fails loudly when search results omit required fields", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "search_meetings") {
+        return [{ meeting_id: "meeting-1" }] as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.searchMeetings({ query: "launch" })).rejects.toThrow("search_meetings[0].title");
+  });
+
+  it("validates search results from the production Tauri fetcher", async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    tauriInvoke.mockResolvedValue([{ title: "Missing id" }]);
+    const fetchCommand = getDesktopCommandFetcher();
+
+    expect(fetchCommand).toBeDefined();
+    await expect(fetchCommand!("search_meetings", { query: "launch" })).rejects.toThrow(
+      "search_meetings[0].meeting_id",
+    );
+  });
+
   it("fails loudly when a valid Whisper path test omits readable file metadata", async () => {
     const facade = createDesktopCommandFacade(async (command) => {
       if (command === "test_whisper_model_path") {
