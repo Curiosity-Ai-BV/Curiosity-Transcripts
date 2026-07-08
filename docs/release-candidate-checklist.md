@@ -7,6 +7,19 @@ builds are out of scope until workflows, QA, and public copy change together.
 Skipped smoke checks are not passes. Record the build, machine, macOS version,
 model paths, and any skipped item in the release notes.
 
+Use `docs/release-candidate-smoke-evidence.template.json` as the starting point
+for manual smoke evidence. Validate the checked-in template with no path:
+`node scripts/check-release-smoke-evidence.js`. Validate a filled manual
+evidence file by passing its path explicitly:
+`node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`.
+Template validation is not proof that smoke passed; it only proves the evidence
+shape is still checkable. Filled non-template evidence fails validation by
+default if any manual item is pending, skipped, or failed, or if required
+build/signing/notarization/machine/model status fields remain pending. Use
+`--allow-incomplete` only while collecting draft evidence, and never treat a
+filled evidence file as a pass when any item or required status field remains
+pending, skipped, or failed.
+
 Automated release readiness must include `node scripts/check-tauri-security.js`
 and `node scripts/check-tauri-command-surface.js` through
 `bash scripts/check-publication-readiness.sh`; the gate fails null or loosened
@@ -17,6 +30,9 @@ settings, app service DTOs, and desktop command/view DTO/contract shape against
 plain API key, OAuth/access/refresh/calendar token, encryption key, hosted
 provider secret, generic secret, credential, password, or serde rename alias
 fields before manual smoke starts.
+The same publication readiness gate validates the smoke evidence template and
+runs `node scripts/check-release-smoke-evidence.js --self-test` so release
+evidence drift fails before manual smoke starts.
 
 Desktop npm dependencies must pass `npm audit --audit-level=high` after
 `npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions
@@ -88,9 +104,10 @@ splitting, or complete privacy/deletion/recovery coverage.
   artifact is stored under app-private meeting storage, then delete the meeting
   and confirm the original source file remains untouched.
 - Transcription: transcribe the recorded meeting with the configured local
-  Whisper model and verify channel-tagged transcript segments appear. During
-  one transcription and one summary run, quit and relaunch the app to verify
-  durable job recovery shows a truthful state.
+  Whisper model and verify channel-tagged transcript segments appear.
+- Durable job recovery: during one transcription and one summary run, quit and
+  relaunch the app to verify durable job recovery shows a truthful recovered,
+  retryable, failed, or completed state.
 - Correction: edit one transcript segment, save it, relaunch, and verify the
   corrected text plus original-text indication are still visible.
 - Summary: generate a local Ollama summary after transcription and verify

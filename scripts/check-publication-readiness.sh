@@ -49,10 +49,12 @@ done
 check_file "site/index.html"
 check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
+check_file "docs/release-candidate-smoke-evidence.template.json"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "scripts/check-plain-secret-storage.js"
+check_file "scripts/check-release-smoke-evidence.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file ".github/dependabot.yml"
@@ -117,6 +119,12 @@ require_text docs/production-readiness-roadmap.md 'Current Phase 5B coverage art
 require_text docs/production-readiness-roadmap.md 'release-artifacts/coverage' 'Phase 5B coverage artifact output path'
 require_text docs/production-readiness-roadmap.md 'no global percentage threshold' 'Phase 5B non-percentage coverage boundary'
 require_normalized_text docs/production-readiness-roadmap.md 'not generated DTOs or module splitting' 'Phase 5B generated DTO/module split boundary'
+require_text docs/production-readiness-roadmap.md 'Current smoke evidence manifest/validator status' 'smoke evidence manifest and validator status'
+require_text docs/production-readiness-roadmap.md 'release-candidate-smoke-evidence\.template\.json' 'smoke evidence template roadmap reference'
+require_text docs/production-readiness-roadmap.md 'check-release-smoke-evidence\.js' 'smoke evidence validator roadmap reference'
+require_text docs/production-readiness-roadmap.md 'path/to/filled-evidence\.json' 'path-based filled smoke evidence validation roadmap command'
+require_text docs/production-readiness-roadmap.md 'not proof that smoke passed' 'smoke evidence validator does not overclaim manual smoke'
+require_text docs/production-readiness-roadmap.md 'hardware smoke remain manual and not yet completed' 'real hardware smoke remains manual'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
@@ -130,6 +138,12 @@ require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'r
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'check-tauri-command-surface\.js' 'Tauri command surface release-candidate gate'
 require_text docs/release-candidate-checklist.md 'node scripts/check-plain-secret-storage\.js' 'plain secret storage release-candidate gate'
+require_text docs/release-candidate-checklist.md 'release-candidate-smoke-evidence\.template\.json' 'smoke evidence template release-candidate documentation'
+require_text docs/release-candidate-checklist.md 'node scripts/check-release-smoke-evidence\.js' 'smoke evidence validator release-candidate documentation'
+require_text docs/release-candidate-checklist.md 'path/to/filled-evidence\.json' 'path-based filled smoke evidence validation documentation'
+require_text docs/release-candidate-checklist.md 'Template validation is not proof' 'smoke evidence template validation does not overclaim'
+require_text docs/release-candidate-checklist.md 'build/signing/notarization/machine/model status fields remain pending' 'strict non-manual smoke metadata validation documentation'
+require_text docs/release-candidate-checklist.md 'allow-incomplete' 'draft incomplete smoke evidence validation flag documentation'
 require_text docs/release-candidate-checklist.md 'app service DTOs' 'plain secret storage app service DTO release-candidate scope'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS permissions release-candidate smoke item'
@@ -322,6 +336,9 @@ if ! node --check scripts/generate-supply-chain-artifacts.js >/dev/null; then
   failures=1
 fi
 if ! node --check scripts/check-coverage-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node --check scripts/check-release-smoke-evidence.js >/dev/null; then
   failures=1
 fi
 if ! node <<'NODE'
@@ -683,6 +700,8 @@ require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Depen
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-command-surface\.js; then' 'Tauri command surface publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
 require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
@@ -769,6 +788,14 @@ fi
 
 if ! node scripts/check-plain-secret-storage.js; then
   printf '::error file=scripts/check-plain-secret-storage.js::Plain secret storage guard failed\n' >&2
+  failures=1
+fi
+
+if ! node scripts/check-release-smoke-evidence.js; then
+  failures=1
+fi
+
+if ! node scripts/check-release-smoke-evidence.js --self-test; then
   failures=1
 fi
 

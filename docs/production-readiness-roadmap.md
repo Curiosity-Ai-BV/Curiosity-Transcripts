@@ -45,6 +45,23 @@ setup, production privacy/security hardening, release confidence on real
 hardware, feature-matrix verification, signing credentials/process docs, and
 deeper maintainability work.
 
+Current smoke evidence manifest/validator status: the pending-only template at
+`docs/release-candidate-smoke-evidence.template.json` and dependency-free
+validator at `scripts/check-release-smoke-evidence.js` make future clean macOS
+DMG smoke evidence durable and machine-checkable. The validator checks build,
+machine, artifact/checksum, model setup, and ordered manual smoke item evidence,
+and rejects filled non-template evidence by default when any item is pending,
+skipped, or failed, or when required build/signing/notarization/machine/model
+status fields remain pending. This is not proof that smoke passed; it is only
+evidence plumbing.
+Run `node scripts/check-release-smoke-evidence.js` with no path to validate only
+the checked-in template. Run
+`node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json` to
+validate filled manual smoke evidence.
+Real clean-user install, macOS permission, Whisper/Ollama setup, recording,
+transcription, summary, export, delete, relaunch, uninstall, signing, model, and
+hardware smoke remain manual and not yet completed.
+
 Slice 0 public source-of-truth decisions:
 
 - Shipped desktop export surface: JSON, Markdown, and SRT export through the UI
@@ -448,6 +465,9 @@ cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 node scripts/check-tauri-security.js
+# Validates only docs/release-candidate-smoke-evidence.template.json.
+node scripts/check-release-smoke-evidence.js
+node scripts/check-release-smoke-evidence.js --self-test
 bash scripts/check-publication-readiness.sh
 ```
 
