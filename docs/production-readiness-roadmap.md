@@ -134,8 +134,11 @@ Deliverables:
   availability unknown until matching `Test Ollama` evidence exists, and reports
   matching last-test evidence as available, missing-model, or
   unavailable-at-last-test state with installed-model details or the deterministic
-  pull command. No background health checks run. Model download/management and
-  automatic Ollama pulls remain later work. The desktop snapshot and Settings UI
+  pull command. Running `Test Ollama` for the currently saved local URL/model
+  refreshes the Settings readiness snapshot immediately, while unsaved edits
+  remain transient feedback until they are saved. No background health checks
+  run. Model download/management and automatic Ollama pulls remain later work.
+  The desktop snapshot and Settings UI
   now expose manual model setup options separately from readiness: an existing
   local Whisper `.bin` or `.gguf` file path, and local Ollama candidate tags with
   copy-only `ollama pull ...` commands. These options never download models,

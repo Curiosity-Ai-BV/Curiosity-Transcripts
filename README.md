@@ -116,7 +116,9 @@ Implemented MVP flows:
   check. Ollama availability stays unknown until matching `Test Ollama` evidence
   exists. The last explicit Ollama observation is shown as available,
   missing-model, or unavailable-at-last-test evidence without becoming a
-  background health check. Settings also exposes manual model setup options:
+  background health check. Testing the saved local URL/model refreshes the
+  readiness snapshot immediately; unsaved edits remain transient feedback until
+  saved. Settings also exposes manual model setup options:
   choose an existing local Whisper `.bin` or `.gguf` file, and pick from local
   Ollama candidate tags with copy-only pull commands. These options do not
   download models, pull Ollama models, or perform background probes.
@@ -518,7 +520,8 @@ is unknown until the user runs the Settings pane's `Test Ollama` action for the
 matching saved local URL/model. Matching last-test evidence is reported as
 available, missing-model, or unavailable-at-last-test guidance, including
 installed-model evidence or the suggested pull command, but it is not treated as
-current availability.
+current availability. If the tested values are unsaved edits, Settings keeps the
+result as transient feedback until those values are saved.
 
 End-to-end expectation:
 

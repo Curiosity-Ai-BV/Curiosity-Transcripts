@@ -2551,14 +2551,39 @@ describe("desktop workspace shell", () => {
   it("tests configured Ollama reachability from settings", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
+    const settings = {
+      whisperModelPath: "",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3.6:27b",
+      exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain" as const,
+    };
     const initial = connectedSnapshot({
-      settings: {
-        whisperModelPath: "",
-        ollamaBaseUrl: "http://127.0.0.1:11434",
-        ollamaModel: "qwen3.6:27b",
-        exportDirectory: null,
-        rawAudioRetentionPolicy: "Retain",
-      },
+      settings,
+      setupGuidance: ollamaSetupGuidance({
+        baseUrl: settings.ollamaBaseUrl,
+        model: settings.ollamaModel,
+      }),
+    });
+    const refreshed = connectedSnapshot({
+      settings,
+      setupGuidance: ollamaSetupGuidance({
+        baseUrl: settings.ollamaBaseUrl,
+        model: settings.ollamaModel,
+        availability: "AvailableAtLastTest",
+        message: "Ollama was available at the last manual test.",
+        setupGuidance: "Summaries can run with local Ollama based on the last explicit test.",
+        lastConnectionTest: {
+          baseUrl: settings.ollamaBaseUrl,
+          requestedModel: settings.ollamaModel,
+          testedAtMs: 1_700_000_003_000,
+          state: "Available",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["gemma4:31b", "qwen3.6:27b"],
+          pullCommand: null,
+          failureDetail: null,
+        },
+      }),
     });
     const commandFacade = fakeCommandFacade({
       testOllamaConnection: async (args) => {
@@ -2571,6 +2596,10 @@ describe("desktop workspace shell", () => {
           installedLocalModels: ["gemma4:31b", "qwen3.6:27b"],
           pullCommand: null,
         };
+      },
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return refreshed;
       },
     });
 
@@ -2586,13 +2615,97 @@ describe("desktop workspace shell", () => {
           model: "qwen3.6:27b",
         },
       },
+      { method: "desktopSnapshot" },
     ]);
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Ollama available at last test")).toBeInTheDocument();
+    expect(within(readiness).getByText("Ollama was available at the last manual test.")).toBeInTheDocument();
+    expect(readiness).toHaveTextContent("Last explicit Test Ollama: Available at 2023-11-14T22:13:23.000Z");
     expect(screen.getByText("Ollama is reachable and qwen3.6:27b is installed.")).toBeInTheDocument();
     expect(screen.getByText("Installed models: gemma4:31b, qwen3.6:27b")).toBeInTheDocument();
   });
 
-  it("shows the manual Ollama pull command when the selected model is missing", async () => {
+  it("refreshes readiness with the manual Ollama pull command when the selected saved model is missing", async () => {
     const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const settings = {
+      whisperModelPath: "",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3.6:27b",
+      exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain" as const,
+    };
+    const initial = connectedSnapshot({
+      settings,
+      setupGuidance: ollamaSetupGuidance({
+        baseUrl: settings.ollamaBaseUrl,
+        model: settings.ollamaModel,
+      }),
+    });
+    const refreshed = connectedSnapshot({
+      settings,
+      setupGuidance: ollamaSetupGuidance({
+        baseUrl: settings.ollamaBaseUrl,
+        model: settings.ollamaModel,
+        availability: "MissingModelAtLastTest",
+        message: "Ollama is reachable, but qwen3.6:27b is not installed.",
+        setupGuidance: "Install the selected model with `ollama pull qwen3.6:27b`, then retry.",
+        lastConnectionTest: {
+          baseUrl: settings.ollamaBaseUrl,
+          requestedModel: settings.ollamaModel,
+          testedAtMs: 1_700_000_003_000,
+          state: "Unavailable",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["gemma4:31b"],
+          pullCommand: "ollama pull qwen3.6:27b",
+          failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+        },
+      }),
+    });
+    const commandFacade = fakeCommandFacade({
+      testOllamaConnection: async (args) => {
+        calls.push({ method: "testOllamaConnection", args });
+        return {
+          state: "Unavailable",
+          message: "Ollama is reachable, but qwen3.6:27b is not installed.",
+          setupGuidance: "Install the selected model with `ollama pull qwen3.6:27b`, then retry.",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["gemma4:31b"],
+          pullCommand: "ollama pull qwen3.6:27b",
+        };
+      },
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return refreshed;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.click(screen.getByRole("button", { name: "Test Ollama" }));
+
+    expect(calls).toEqual([
+      {
+        method: "testOllamaConnection",
+        args: {
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+        },
+      },
+      { method: "desktopSnapshot" },
+    ]);
+    const feedback = screen.getByRole("status");
+    expect(within(feedback).getByText("Ollama is reachable, but qwen3.6:27b is not installed.")).toBeInTheDocument();
+    expect(within(feedback).getByText("Installed models: gemma4:31b")).toBeInTheDocument();
+    expect(within(feedback).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Ollama model missing")).toBeInTheDocument();
+    expect(within(readiness).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
+  });
+
+  it("keeps Ollama readiness unchanged when testing unsaved analysis settings", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
     const initial = connectedSnapshot({
       settings: {
         whisperModelPath: "",
@@ -2601,26 +2714,49 @@ describe("desktop workspace shell", () => {
         exportDirectory: null,
         rawAudioRetentionPolicy: "Retain",
       },
+      setupGuidance: ollamaSetupGuidance({
+        baseUrl: "http://127.0.0.1:11434",
+        model: "qwen3.6:27b",
+      }),
     });
     const commandFacade = fakeCommandFacade({
-      testOllamaConnection: async () => ({
-        state: "Unavailable",
-        message: "Ollama is reachable, but qwen3.6:27b is not installed.",
-        setupGuidance: "Install the selected model with `ollama pull qwen3.6:27b`, then retry.",
-        selectedLocalModelTag: "qwen3.6:27b",
-        installedLocalModels: ["gemma4:31b"],
-        pullCommand: "ollama pull qwen3.6:27b",
-      }),
+      testOllamaConnection: async (args) => {
+        calls.push({ method: "testOllamaConnection", args });
+        return {
+          state: "Available",
+          message: "Ollama is reachable and gemma4:31b is installed.",
+          setupGuidance: "",
+          selectedLocalModelTag: "gemma4:31b",
+          installedLocalModels: ["gemma4:31b"],
+          pullCommand: null,
+        };
+      },
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return connectedSnapshot();
+      },
     });
 
     render(<App snapshot={initial} commandFacade={commandFacade} />);
 
+    await user.clear(screen.getByLabelText("Ollama model"));
+    await user.type(screen.getByLabelText("Ollama model"), "gemma4:31b");
     await user.click(screen.getByRole("button", { name: "Test Ollama" }));
 
+    expect(calls).toEqual([
+      {
+        method: "testOllamaConnection",
+        args: {
+          baseUrl: "http://127.0.0.1:11434",
+          model: "gemma4:31b",
+        },
+      },
+    ]);
     const feedback = screen.getByRole("status");
-    expect(within(feedback).getByText("Ollama is reachable, but qwen3.6:27b is not installed.")).toBeInTheDocument();
-    expect(within(feedback).getByText("Installed models: gemma4:31b")).toBeInTheDocument();
-    expect(within(feedback).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
+    expect(within(feedback).getByText("Ollama is reachable and gemma4:31b is installed.")).toBeInTheDocument();
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Ollama availability unknown")).toBeInTheDocument();
+    expect(within(readiness).queryByText("Ollama available at last test")).not.toBeInTheDocument();
   });
 
   it("clears successful Ollama reachability feedback when tested inputs change", async () => {
@@ -3340,6 +3476,25 @@ function whisperSetupGuidanceForPath(
       compatibilityNote: "Readability does not prove model compatibility.",
       lastPathTest,
       lastSuccessfulTranscription: null,
+    },
+  };
+}
+
+function ollamaSetupGuidance(
+  overrides: Partial<ReturnType<typeof getMockDesktopSnapshot>["setupGuidance"]["ollama"]> = {},
+) {
+  const base = getMockDesktopSnapshot();
+  return {
+    ...base.setupGuidance,
+    ollama: {
+      state: "ConfiguredNotChecked" as const,
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3.6:27b",
+      availability: "UnknownUntilTest" as const,
+      message: "Ollama is configured for a local loopback URL and model.",
+      setupGuidance: "Start Ollama manually, install the selected local model if needed, then run Test Ollama.",
+      lastConnectionTest: null,
+      ...overrides,
     },
   };
 }

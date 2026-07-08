@@ -691,10 +691,19 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
+      const testedBaseUrl = settingsForm.ollamaBaseUrl;
+      const testedModel = settingsForm.ollamaModel;
       const result = await commandFacade.testOllamaConnection({
-        baseUrl: settingsForm.ollamaBaseUrl,
-        model: settingsForm.ollamaModel,
+        baseUrl: testedBaseUrl,
+        model: testedModel,
       });
+      if (
+        testedBaseUrl.trim() === currentSnapshot.settings.ollamaBaseUrl.trim() &&
+        testedModel.trim() === currentSnapshot.settings.ollamaModel.trim()
+      ) {
+        const nextSnapshot = await commandFacade.desktopSnapshot();
+        applyDesktopSnapshot(nextSnapshot);
+      }
       setSettingsFeedback({
         tone: result.state === "Available" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,
