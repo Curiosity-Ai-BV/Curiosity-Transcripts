@@ -1,11 +1,14 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const root = path.resolve(__dirname, "..");
 const fixturePath = path.join(root, "apps", "desktop", "contracts", "desktop-command-view-contract.fixture.json");
 const schemaPath = path.join(root, "apps", "desktop", "contracts", "desktop-command-view-contract.schema.json");
+const receiptPath = path.join(root, "release-artifacts", "contracts", "desktop-command-view-contract.receipt.json");
 const fixtureLabel = "apps/desktop/contracts/desktop-command-view-contract.fixture.json";
 const schemaLabel = "apps/desktop/contracts/desktop-command-view-contract.schema.json";
+const receiptLabel = "release-artifacts/contracts/desktop-command-view-contract.receipt.json";
 const scriptLabel = "scripts/check-desktop-command-view-contract.js";
 
 let ok = true;
@@ -22,6 +25,62 @@ function readJson(file, label) {
     fail(label, `Unable to read or parse JSON: ${error.message}`);
     return null;
   }
+}
+
+function parseArgs(argv) {
+  const options = {
+    help: false,
+    writeArtifact: false,
+  };
+
+  for (const arg of argv) {
+    if (arg === "--write-artifact") {
+      options.writeArtifact = true;
+    } else if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else {
+      fail(scriptLabel, `Unexpected argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function buildReceipt(fixture, schema) {
+  return {
+    version: 1,
+    kind: "desktop-command-view-contract-receipt",
+    status: "passed",
+    checker: {
+      path: scriptLabel,
+      command: "node scripts/check-desktop-command-view-contract.js --write-artifact",
+    },
+    fixture: {
+      path: fixtureLabel,
+      sha256: sha256File(fixturePath),
+      version: fixture.version,
+      owner: fixture.owner,
+    },
+    schema: {
+      path: schemaLabel,
+      sha256: sha256File(schemaPath),
+      version: schema.version,
+      kind: schema.kind,
+      scope: schema.scope,
+      expectedCases: schema.expectedCases,
+      forbiddenStrings: schema.forbiddenStrings,
+    },
+  };
+}
+
+function writeReceipt(fixture, schema) {
+  fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+  fs.writeFileSync(receiptPath, `${JSON.stringify(buildReceipt(fixture, schema), null, 2)}\n`);
+  console.log(`Wrote desktop command/view contract receipt: ${receiptLabel}`);
 }
 
 function pathLabel(pathParts) {
@@ -219,6 +278,24 @@ function expectSchemaRejected(name, schema) {
   }
 }
 
+const options = parseArgs(process.argv.slice(2));
+
+if (options.help) {
+  console.log(
+    [
+      "Usage: node scripts/check-desktop-command-view-contract.js",
+      "       node scripts/check-desktop-command-view-contract.js --write-artifact",
+      "",
+      `--write-artifact writes ${receiptLabel} after validation passes.`,
+    ].join("\n"),
+  );
+  process.exit(ok ? 0 : 1);
+}
+
+if (!ok) {
+  process.exit(1);
+}
+
 const fixture = readJson(fixturePath, fixtureLabel);
 const schema = readJson(schemaPath, schemaLabel);
 
@@ -279,6 +356,10 @@ if (fixture && schema) {
 
 if (!ok) {
   process.exit(1);
+}
+
+if (options.writeArtifact) {
+  writeReceipt(fixture, schema);
 }
 
 console.log("Desktop command/view contract shape gate passed.");

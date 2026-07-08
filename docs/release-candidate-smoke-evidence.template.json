@@ -260,7 +260,7 @@
           "PENDING: record source presence for desktop command/view fixture and schema, and command/view contract checker results before manual smoke"
         ],
         "artifacts": [
-          "PENDING: attach contract checker output and fixture/schema path evidence"
+          "PENDING: attach release-artifacts/contracts/desktop-command-view-contract.receipt.json with fixture/schema hash evidence"
         ],
         "skipReason": "PENDING: required only if status becomes skipped"
       },

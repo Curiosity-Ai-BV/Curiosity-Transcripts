@@ -83,6 +83,7 @@ require_text README.md 'JSON remains the deterministic integration format' 'dete
 require_text README.md 'Imported local WAV workflow' 'implemented imported WAV workflow claim'
 require_text README.md 'Transcript segment correction' 'implemented transcript correction workflow claim'
 require_text README.md 'desktop-command-view-contract\.fixture\.json' 'checked-in desktop command/view contract fixture documentation'
+require_text README.md 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'desktop command/view contract receipt README documentation'
 require_text README.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link'
 require_text README.md 'docs/at-rest-data-strategy\.md' 'at-rest data strategy link'
 require_text README.md 'App-level encryption-at-rest and keychain-backed secret storage are not' 'current encryption/keychain non-implementation disclosure'
@@ -116,6 +117,7 @@ require_text docs/production-readiness-roadmap.md 'retryable jobs now surface re
 require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Phase 5A command/view contract fixture status'
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.schema\.json' 'Phase 5A checked-in contract shape artifact path'
+require_text docs/production-readiness-roadmap.md 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'Phase 5A command/view contract receipt artifact path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
 require_text docs/production-readiness-roadmap.md 'fixture-derived shape lock' 'Phase 5A fixture-derived schema boundary'
@@ -176,6 +178,8 @@ require_text docs/release-candidate-checklist.md 'durable job recovery' 'durable
 require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.fixture\.json' 'command/view contract fixture release-candidate expectation'
 require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.schema\.json' 'command/view contract shape release-candidate expectation'
 require_text docs/release-candidate-checklist.md 'node scripts/check-desktop-command-view-contract\.js' 'command/view contract shape checker release-candidate command'
+require_text docs/release-candidate-checklist.md 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'command/view contract receipt release-candidate artifact'
+require_text docs/release-candidate-smoke-evidence.template.json 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'command/view contract receipt smoke evidence artifact'
 require_text docs/release-candidate-checklist.md 'node scripts/check-coverage-artifacts\.js' 'coverage artifact checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact release-candidate output path'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
@@ -458,6 +462,8 @@ require_text .github/workflows/ci.yml 'pkg-config' 'Tauri Linux pkg-config depen
 require_text .github/workflows/ci.yml 'libayatana-appindicator3-dev' 'Tauri Linux app indicator dependency'
 require_text .github/workflows/ci.yml 'librsvg2-dev' 'Tauri Linux SVG dependency'
 require_text .github/workflows/ci.yml 'npm run test' 'desktop test CI gate'
+require_text .github/workflows/ci.yml 'node scripts/check-desktop-command-view-contract\.js --write-artifact' 'desktop command/view contract receipt CI gate'
+require_text .github/workflows/ci.yml 'path: release-artifacts/contracts' 'desktop command/view contract artifact upload path'
 require_text .github/workflows/ci.yml 'npm run test:coverage' 'desktop frontend coverage artifact CI gate'
 require_text .github/workflows/ci.yml 'node scripts/check-coverage-artifacts\.js' 'coverage artifact source-path checker CI gate'
 require_text .github/workflows/ci.yml 'path: release-artifacts/coverage' 'coverage artifact upload path'
@@ -546,6 +552,9 @@ const installCargoLlvmCov = requireStep("Install cargo-llvm-cov");
 const installTauriLinuxDeps = requireStep("Install Tauri Linux system dependencies");
 const generateRustCoverage = requireStep("Generate Rust coverage artifacts");
 const installDesktop = requireStep("Install desktop dependencies");
+const testFrontend = requireStep("Test desktop frontend");
+const generateContract = requireStep("Generate desktop command/view contract artifact");
+const uploadContract = requireStep("Upload desktop command/view contract artifact");
 const generateFrontendCoverage = requireStep("Generate desktop frontend coverage");
 const checkCoverage = requireStep("Check coverage artifacts");
 const uploadCoverage = requireStep("Upload coverage artifacts");
@@ -568,6 +577,21 @@ if (!hasLine(generateFrontendCoverage, /^\s*run:\s*npm run test:coverage\s*$/)) 
 if (!hasLine(checkCoverage, /^\s*run:\s*node scripts\/check-coverage-artifacts\.js\s*$/)) {
   fail("Check coverage artifacts step must run node scripts/check-coverage-artifacts.js");
 }
+if (!hasLine(generateContract, /^\s*run:\s*node scripts\/check-desktop-command-view-contract\.js --write-artifact\s*$/)) {
+  fail("Generate desktop command/view contract artifact step must write the receipt artifact");
+}
+if (!hasLine(uploadContract, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
+  fail("Upload desktop command/view contract artifact step must use actions/upload-artifact@v4");
+}
+if (!hasLine(uploadContract, /^\s*name:\s*desktop-command-view-contract-artifact\s*$/)) {
+  fail("Upload desktop command/view contract artifact step must name the artifact desktop-command-view-contract-artifact");
+}
+if (!hasLine(uploadContract, /^\s*path:\s*release-artifacts\/contracts\s*$/)) {
+  fail("Upload desktop command/view contract artifact step must upload release-artifacts/contracts");
+}
+if (!hasLine(uploadContract, /^\s*if-no-files-found:\s*error\s*$/)) {
+  fail("Upload desktop command/view contract artifact step must fail when contract artifacts are missing");
+}
 if (!hasLine(uploadCoverage, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
   fail("Upload coverage artifacts step must use actions/upload-artifact@v4");
 }
@@ -586,24 +610,33 @@ const coverageSteps = [
   installTauriLinuxDeps,
   generateRustCoverage,
   installDesktop,
+  testFrontend,
+  generateContract,
+  uploadContract,
   generateFrontendCoverage,
   checkCoverage,
   uploadCoverage,
 ];
 if (!coverageSteps.every((step) => step?.job === "checks")) {
-  fail("Coverage install, generation, check, and upload steps must run in the checks CI job");
+  fail("Coverage and contract artifact install, generation, check, and upload steps must run in the checks CI job");
 }
 if (
   installCargoLlvmCov &&
   installTauriLinuxDeps &&
   generateRustCoverage &&
   installDesktop &&
+  testFrontend &&
+  generateContract &&
+  uploadContract &&
   generateFrontendCoverage &&
   checkCoverage &&
   uploadCoverage &&
   (
     installCargoLlvmCov.index > generateRustCoverage.index ||
     installTauriLinuxDeps.index > generateRustCoverage.index ||
+    installDesktop.index > testFrontend.index ||
+    testFrontend.index > generateContract.index ||
+    generateContract.index > uploadContract.index ||
     installDesktop.index > generateFrontendCoverage.index ||
     generateRustCoverage.index > checkCoverage.index ||
     generateFrontendCoverage.index > checkCoverage.index ||
@@ -868,6 +901,8 @@ require_text scripts/check-publication-readiness.sh 'node scripts/check-release-
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
 require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
+require_text scripts/check-desktop-command-view-contract.js 'write-artifact writes \$\{receiptLabel\}' 'desktop command/view contract receipt write mode'
+require_text scripts/check-desktop-command-view-contract.js 'desktop-command-view-contract-receipt' 'desktop command/view contract receipt kind'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
 require_text scripts/generate-supply-chain-artifacts.js 'cargo metadata --locked --format-version 1' 'root Cargo locked metadata command'
 require_text scripts/generate-supply-chain-artifacts.js 'aarch64-apple-darwin' 'arm64 macOS Cargo metadata target filter'

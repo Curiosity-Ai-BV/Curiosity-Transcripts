@@ -28,6 +28,8 @@ const criticalSteps = [
   ["checks", "Upload supply-chain artifacts"],
   ["checks", "Audit desktop npm dependencies"],
   ["checks", "Test desktop frontend"],
+  ["checks", "Generate desktop command/view contract artifact"],
+  ["checks", "Upload desktop command/view contract artifact"],
   ["checks", "Generate desktop frontend coverage"],
   ["checks", "Check coverage artifacts"],
   ["checks", "Upload coverage artifacts"],

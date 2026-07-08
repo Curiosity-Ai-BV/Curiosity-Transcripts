@@ -167,6 +167,16 @@ jobs:
         working-directory: apps/desktop
         run: npm run test
 
+      - name: Generate desktop command/view contract artifact
+        run: node scripts/check-desktop-command-view-contract.js --write-artifact
+
+      - name: Upload desktop command/view contract artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-command-view-contract-artifact
+          path: release-artifacts/contracts
+          if-no-files-found: error
+
       - name: Generate desktop frontend coverage
         working-directory: apps/desktop
         run: npm run test:coverage

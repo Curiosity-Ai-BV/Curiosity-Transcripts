@@ -409,15 +409,19 @@ The fixture-derived shape lock is checked in at
 `apps/desktop/contracts/desktop-command-view-contract.schema.json`, and
 `scripts/check-desktop-command-view-contract.js` guards exact fixture case names,
 critical nested fields, primitive types, enum values, and debug-only command
-leakage in publication readiness. Rust tests guard exact equality against the
-generated command/view payload, and TS command adapter contract tests consume the same fixture.
+leakage in publication readiness. CI writes deterministic release evidence to
+`release-artifacts/contracts/desktop-command-view-contract.receipt.json` with
+fixture and schema hashes, expected case names, forbidden strings, and checker
+status. Rust tests guard exact equality against the generated command/view
+payload, and TS command adapter contract tests consume the same fixture.
 Snapshot-returning commands, setup test commands, and
 `search_meetings` results are also validated at the TypeScript command-adapter
 boundary before the desktop shell consumes them. The Tauri command-surface gate
 now guards the frontend-to-release registration subset and the
 `DESKTOP_SNAPSHOT_COMMANDS` validation allowlist so facade drift fails before
 manual QA. This is a fixture-derived shape lock plus command-registration guard,
-not generated DTO ownership; full generated DTOs remain later work.
+not generated DTO ownership; the receipt is evidence packaging, and full
+generated DTOs remain later work.
 
 Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov` with the
 exact tool provenance command

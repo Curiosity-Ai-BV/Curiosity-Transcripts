@@ -105,7 +105,9 @@ Implemented MVP flows:
   edit-history storage seam, and export/search refresh path.
 - Checked-in desktop command/view contract fixture at
   `apps/desktop/contracts/desktop-command-view-contract.fixture.json`, guarded by
-  Rust exact-equality and TS command adapter contract tests.
+  Rust exact-equality and TS command adapter contract tests. CI also uploads
+  `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
+  deterministic release evidence for the fixture/schema hashes.
 - Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
   missing/readable Whisper paths are typed, readable paths remain compatibility
   unverified, explicit `Test path` evidence is persisted when run, and
