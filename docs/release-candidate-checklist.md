@@ -58,7 +58,8 @@ license metadata reports filtered to `aarch64-apple-darwin` for both Rust
 dependency graphs. The script normalizes npm SBOM timestamp and serial-number
 fields so repeated runs are stable. Treat this as a metadata/reporting check,
 not a legal license allowlist. Secret scanning runs through `.github/workflows/secret-scanning.yml`
-with the official Gitleaks CLI container `ghcr.io/gitleaks/gitleaks:v8.30.0`,
+with the official digest-pinned Gitleaks CLI container
+`ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9`,
 full git history, redacted output, and default fail-on-detection behavior. The
 workflow uses the CLI container instead of the Gitleaks Action so organization CI
 does not depend on a `GITLEAKS_LICENSE` secret. GitHub secret scanning, branch

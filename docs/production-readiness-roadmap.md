@@ -247,13 +247,14 @@ a legal license allowlist. `cargo deny`, Rust CycloneDX tooling, `cargo-about`,
 and license allowlists are not part of the current gate.
 
 Current secret scanning status: `.github/workflows/secret-scanning.yml` runs the
-official Gitleaks CLI container `ghcr.io/gitleaks/gitleaks:v8.30.0` on push,
-pull request, workflow dispatch, and a weekly schedule. It checks out full git
-history with `fetch-depth: 0` and runs a redacted `gitleaks detect` scan that
-keeps Gitleaks default fail-on-detection behavior. This uses the CLI container
-instead of the Gitleaks Action because organization repositories require a
-`GITLEAKS_LICENSE` secret for that action. GitHub secret scanning, branch
-protection, and alert triage policy remain release governance work unless
+official digest-pinned Gitleaks CLI container
+`ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9`
+on push, pull request, workflow dispatch, and a weekly schedule. It checks out
+full git history with `fetch-depth: 0` and runs a redacted `gitleaks detect`
+scan that keeps Gitleaks default fail-on-detection behavior. This uses the CLI
+container instead of the Gitleaks Action because organization repositories
+require a `GITLEAKS_LICENSE` secret for that action. GitHub secret scanning,
+branch protection, and alert triage policy remain release governance work unless
 configured separately.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes

@@ -131,7 +131,7 @@ require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
 require_text docs/production-readiness-roadmap.md 'legal license allowlist' 'non-allowlist supply-chain boundary'
 require_text docs/production-readiness-roadmap.md 'Current secret scanning status' 'current secret scanning status'
-require_text docs/production-readiness-roadmap.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0' 'pinned Gitleaks CLI container documentation'
+require_text docs/production-readiness-roadmap.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9' 'digest-pinned Gitleaks CLI container documentation'
 require_text docs/production-readiness-roadmap.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license boundary'
 require_text docs/production-readiness-roadmap.md 'protection, and alert triage policy' 'secret scanning governance boundary'
 require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
@@ -181,7 +181,7 @@ require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-c
 require_text docs/release-candidate-checklist.md 'release-artifacts/supply-chain' 'supply-chain artifact output path'
 require_text docs/release-candidate-checklist.md 'metadata/reporting check' 'supply-chain metadata/reporting boundary'
 require_text docs/release-candidate-checklist.md 'Secret scanning runs through `.github/workflows/secret-scanning\.yml`' 'secret scanning release-candidate workflow'
-require_text docs/release-candidate-checklist.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0' 'pinned Gitleaks release-candidate workflow'
+require_text docs/release-candidate-checklist.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9' 'digest-pinned Gitleaks release-candidate workflow'
 require_text docs/release-candidate-checklist.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'protection, and alert triage policy' 'secret scanning governance release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
@@ -674,7 +674,7 @@ jobs:
 
       - name: Run Gitleaks secret scan
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.0 detect --source=/repo --redact --verbose --no-banner
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9 detect --source=/repo --redact --verbose --no-banner
 `;
 let ok = true;
 
