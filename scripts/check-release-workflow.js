@@ -12,6 +12,16 @@ const packagePath = path.join(root, "apps", "desktop", "package.json");
 const lockPath = path.join(root, "apps", "desktop", "package-lock.json");
 const tauriCargoPath = path.join(root, "apps", "desktop", "src-tauri", "Cargo.toml");
 const tauriConfigPath = path.join(root, "apps", "desktop", "src-tauri", "tauri.conf.json");
+const releaseWorkflowLabel = ".github/workflows/release.yml";
+
+const criticalReleaseSteps = [
+  "Check release version sources",
+  "Check publication readiness",
+  "Configure Apple signing credentials",
+  "Build signed and notarized macOS DMG",
+  "Stage versioned release assets",
+  "Create or update GitHub Release",
+];
 
 const requiredWorkflowText = [
   "macos-26",
@@ -233,6 +243,178 @@ function workflowJobBlock(text, jobName) {
   return block;
 }
 
+function unquoteWorkflowValue(value) {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function parseReleaseWorkflowSteps(text) {
+  const steps = [];
+  let current = null;
+  let currentJob = null;
+  let inJobs = false;
+  let inSteps = false;
+
+  const pushCurrent = () => {
+    if (current) {
+      steps.push(current);
+      current = null;
+    }
+  };
+
+  for (const line of text.split(/\r?\n/)) {
+    if (/^jobs:\s*$/.test(line)) {
+      inJobs = true;
+      continue;
+    }
+
+    if (inJobs) {
+      const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+      if (jobMatch) {
+        pushCurrent();
+        currentJob = jobMatch[1];
+        inSteps = false;
+        continue;
+      }
+
+      if (/^ {4}steps:\s*$/.test(line)) {
+        pushCurrent();
+        inSteps = true;
+        continue;
+      }
+
+      if (/^ {4}[A-Za-z0-9_-]+:\s*/.test(line)) {
+        pushCurrent();
+        inSteps = false;
+      }
+    }
+
+    if (!inSteps) {
+      continue;
+    }
+
+    const stepStartMatch = line.match(/^ {6}-\s+(.+?)\s*$/);
+    if (stepStartMatch) {
+      pushCurrent();
+      current = { job: currentJob, name: undefined, lines: [line] };
+      const inlineNameMatch = stepStartMatch[1].match(/^name:\s*(.+?)\s*$/);
+      if (inlineNameMatch) {
+        current.name = unquoteWorkflowValue(inlineNameMatch[1]);
+      }
+      continue;
+    }
+
+    if (current) {
+      current.lines.push(line);
+      const nameMatch = line.match(/^ {8}name:\s*(.+?)\s*$/);
+      if (!current.name && nameMatch) {
+        current.name = unquoteWorkflowValue(nameMatch[1]);
+      }
+    }
+  }
+
+  pushCurrent();
+  return steps;
+}
+
+function hasWorkflowStepKey(step, key) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const quotedKeyPattern = `(?:"${escapedKey}"|'${escapedKey}'|${escapedKey})`;
+  return step.lines.some((line) => {
+    return (
+      new RegExp(`^ {6}-\\s+${quotedKeyPattern}\\s*:`).test(line) ||
+      new RegExp(`^ {8}${quotedKeyPattern}\\s*:`).test(line)
+    );
+  });
+}
+
+function validateCriticalReleaseStepMetadata(text) {
+  const errors = [];
+  const steps = parseReleaseWorkflowSteps(text);
+
+  for (const name of criticalReleaseSteps) {
+    const matches = steps.filter((step) => step.job === "build-release-dmg" && step.name === name);
+    if (matches.length === 0) {
+      errors.push(`Missing critical release step: build-release-dmg / ${name}`);
+      continue;
+    }
+    if (matches.length > 1) {
+      errors.push(`Critical release step must be unique: build-release-dmg / ${name}`);
+    }
+    for (const step of matches) {
+      if (hasWorkflowStepKey(step, "if")) {
+        errors.push(`Critical release step must not be conditionally skipped: build-release-dmg / ${name}`);
+      }
+      if (hasWorkflowStepKey(step, "continue-on-error")) {
+        errors.push(`Critical release step must fail release when its command fails: build-release-dmg / ${name}`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+function expectCriticalReleaseStepRejected(name, text, expectedText) {
+  const errors = validateCriticalReleaseStepMetadata(text);
+  if (errors.length === 0) {
+    fail("scripts/check-release-workflow.js", `Guardrail fixture did not reject: ${name}`);
+    return;
+  }
+  if (!errors.some((error) => error.includes(expectedText))) {
+    fail(
+      "scripts/check-release-workflow.js",
+      `Guardrail fixture rejected ${name}, but not for ${expectedText}`,
+    );
+  }
+}
+
+function insertCriticalStepSiblingKey(text, stepName, keyLine) {
+  const marker = `      - name: ${stepName}\n`;
+  return text.replace(marker, `${marker}${keyLine}\n`);
+}
+
+function moveCriticalStepNameAfterInlineKey(text, stepName, keyLine) {
+  return text.replace(`      - name: ${stepName}\n`, `      - ${keyLine}\n        name: ${stepName}\n`);
+}
+
+function runCriticalReleaseStepSelfGuards(text) {
+  const conditionalReadinessStep = insertCriticalStepSiblingKey(
+    text,
+    "Check publication readiness",
+    '        "if": ${{ always() }}',
+  );
+  if (conditionalReadinessStep === text) {
+    fail("scripts/check-release-workflow.js", "Guardrail fixture did not mutate source: conditional critical step");
+  } else {
+    expectCriticalReleaseStepRejected(
+      "conditional critical step",
+      conditionalReadinessStep,
+      "conditionally skipped",
+    );
+  }
+
+  const failOpenBuildStep = moveCriticalStepNameAfterInlineKey(
+    text,
+    "Build signed and notarized macOS DMG",
+    "'continue-on-error': true",
+  );
+  if (failOpenBuildStep === text) {
+    fail("scripts/check-release-workflow.js", "Guardrail fixture did not mutate source: fail-open critical step");
+  } else {
+    expectCriticalReleaseStepRejected(
+      "fail-open critical step",
+      failOpenBuildStep,
+      "must fail release",
+    );
+  }
+}
+
 function firstShellCommandLine(text, matches) {
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
@@ -252,6 +434,11 @@ const readme = readRequired(readmePath, "README.md");
 const buildScript = readRequired(buildScriptPath, "scripts/build-macos-dmg.sh");
 const packageScript = readRequired(packageScriptPath, "scripts/package-macos-dmg.sh");
 const dmgDocs = readRequired(dmgDocsPath, "docs/macos-dmg-release.md");
+
+runCriticalReleaseStepSelfGuards(workflow);
+for (const error of validateCriticalReleaseStepMetadata(workflow)) {
+  fail(releaseWorkflowLabel, error);
+}
 
 for (const text of requiredWorkflowText) {
   if (!workflow.includes(text)) {
