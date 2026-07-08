@@ -155,6 +155,13 @@ hosted provider secrets, and encryption keys. Actual encryption-at-rest,
 keychain-backed secret storage, migration/recovery support, and richer retention
 controls remain later work unless implemented in separate slices.
 
+Current Phase 2E delete cleanup status: startup/reopen now finalizes pending
+delete intents for deleted or deleted-at meetings. Cleanup removes app-private
+artifacts, manifests, meeting-scoped private database rows, `processing_jobs`,
+and `meeting_search` rows. User-owned exports remain outside app control and are
+reported instead of recovered or deleted. Job recovery skips deleted/deleted-at
+meetings.
+
 Success criteria:
 
 - A release candidate has no obvious desktop renderer hardening gap.

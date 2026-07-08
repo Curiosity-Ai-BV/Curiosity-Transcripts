@@ -65,8 +65,12 @@ output are still future hardening gates unless a later slice adds them.
   `apps/desktop/contracts/desktop-command-view-contract.fixture.json` is present
   in the build source and covered by the Rust/TS contract checks before manual
   smoke starts.
-- Delete: delete the meeting and verify app-private transcript, analysis, and
-  audio artifacts are removed or explicitly reported as skipped.
+- Delete: delete the meeting and verify app-private transcript, analysis,
+  manifests, meeting-scoped private DB rows, `processing_jobs`, and
+  `meeting_search` rows are removed. Verify app-private audio artifacts are
+  removed or explicitly reported as skipped. If cleanup is interrupted after the
+  delete intent is recorded, relaunch and verify startup finalizes pending
+  app-private cleanup; user-owned exports remain outside app deletion control.
 - Uninstall and private-data handling: uninstall the app, inspect the documented
   app-private data location, and verify user-owned exported files remain
   outside app deletion control.
