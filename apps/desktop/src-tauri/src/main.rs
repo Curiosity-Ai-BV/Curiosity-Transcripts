@@ -1178,8 +1178,8 @@ fn attach_calendar_event_context_for_app_root(
     privacy_confirmed: bool,
     attached_at_ms: u64,
 ) -> Result<DesktopSnapshot, String> {
-    let events = calendar_context_snapshot(command_state.last_calendar_authorization_status)
-        .upcoming_events;
+    let events =
+        calendar_context_snapshot(command_state.last_calendar_authorization_status).upcoming_events;
     attach_calendar_event_context_for_app_root_with_events(
         app_root,
         command_state,
@@ -6172,9 +6172,7 @@ mod tests {
             &root,
             "http://127.0.0.1:11434".to_string(),
             "Qwen3.6:27B".to_string(),
-            &RecordingOllamaTransport::tags_response(
-                r#"{"models":[{"name":"gemma4:31b"}]}"#,
-            ),
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
             1_700_000_003_000,
         )
         .expect("test ollama");
@@ -6217,10 +6215,7 @@ mod tests {
             &root,
             "http://127.0.0.1:11434".to_string(),
             "qwen3.6:27b".to_string(),
-            &RecordingOllamaTransport::tags_http_error(
-                500,
-                r#"{"error":"tags unavailable"}"#,
-            ),
+            &RecordingOllamaTransport::tags_http_error(500, r#"{"error":"tags unavailable"}"#),
             1_700_000_004_000,
         )
         .expect("test ollama");
@@ -6263,9 +6258,7 @@ mod tests {
             &root,
             "http://127.0.0.1:11434".to_string(),
             "deepseek-v3.2:cloud".to_string(),
-            &RecordingOllamaTransport::tags_response(
-                r#"{"models":[{"name":"qwen3.6:27b"}]}"#,
-            ),
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#),
             1_700_000_005_000,
         )
         .expect("test ollama");
@@ -8723,7 +8716,10 @@ mod tests {
 
         assert_eq!(json["transcription"]["state"], "Complete");
         assert_eq!(json["model"]["kind"], "untested");
-        assert_eq!(json["setupGuidance"]["whisper"]["lastPathTest"], serde_json::Value::Null);
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             json["setupGuidance"]["whisper"]["message"],
             "Whisper model path is readable and has completed transcription before."
@@ -8732,10 +8728,7 @@ mod tests {
             .as_str()
             .expect("compatibility note")
             .contains("historical evidence"));
-        assert_eq!(
-            evidence["modelPath"],
-            model_path.to_string_lossy().as_ref()
-        );
+        assert_eq!(evidence["modelPath"], model_path.to_string_lossy().as_ref());
         assert_eq!(evidence["usedAtMs"], 1_700_000_001_000_u64);
         assert_eq!(evidence["provider"], "local-whisper");
         assert_eq!(evidence["modelName"], "fixture-whisper.bin");
