@@ -212,12 +212,15 @@ Current Phase 2B status: desktop npm drift is gated by
 `/apps/desktop` npm, root Cargo, desktop Tauri Cargo, and GitHub Actions
 updates.
 
-Current Rust advisory gate status: CI installs `cargo-audit` with
-`cargo install cargo-audit --locked` and runs `cargo audit` for both dependency
-graphs: at the repository root and from `apps/desktop/src-tauri`. The gate fails
-on vulnerable crates and reports informational warning advisories. The desktop
-lockfile has been updated from `plist` 1.9.0 to 1.10.0 so its transitive
-`quick-xml` dependency is on the fixed 0.41.0 line.
+Current Rust advisory gate status: CI installs `cargo-audit` with the exact
+tool provenance command
+`cargo install cargo-audit --version 0.22.2 --locked` and runs `cargo audit` for
+both dependency graphs: at the repository root and from
+`apps/desktop/src-tauri`. Publication readiness rejects loosening or removing
+that exact CI install pin. The gate fails on vulnerable crates and reports
+informational warning advisories. The desktop lockfile has been updated from
+`plist` 1.9.0 to 1.10.0 so its transitive `quick-xml` dependency is on the fixed
+0.41.0 line.
 
 Current CodeQL code scanning status: `.github/workflows/codeql.yml` runs
 advanced CodeQL setup on push, pull request, and a weekly schedule for exactly
@@ -387,17 +390,20 @@ Snapshot-returning commands, setup test commands, and
 boundary before the desktop shell consumes them. This is a fixture-derived shape
 lock, not generated DTO ownership; full generated DTOs remain later work.
 
-Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov`, writes
-Rust LCOV reports to `release-artifacts/coverage/rust`, runs frontend Vitest V8
-coverage to `release-artifacts/coverage/frontend`, checks the reports with
+Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov` with the
+exact tool provenance command
+`cargo install cargo-llvm-cov --version 0.8.7 --locked`, writes Rust LCOV reports
+to `release-artifacts/coverage/rust`, runs frontend Vitest V8 coverage to
+`release-artifacts/coverage/frontend`, checks the reports with
 `node scripts/check-coverage-artifacts.js`, and uploads
 `release-artifacts/coverage`. The checker verifies LCOV source-path visibility
 and at least one positive `DA` line in each matching source record
 for `apps/desktop/src/App.tsx`, `apps/desktop/src/commandAdapter.ts`,
 `crates/store/src/lib.rs`, and `apps/desktop/src-tauri/src/main.rs`. This is a
-report-visibility gate with no global percentage threshold; not generated DTOs
-or module splitting, and not a claim of comprehensive coverage for all privacy,
-deletion, recovery, provider, or release-metadata paths.
+report-visibility gate with no global percentage threshold; publication
+readiness rejects loosening or removing the exact CI install pin. It is not
+generated DTOs or module splitting, and not a claim of comprehensive coverage
+for all privacy, deletion, recovery, provider, or release-metadata paths.
 
 Later work: generated DTOs, module splitting, and broader seam-by-seam coverage
 intent checks after those seams are split behind smaller facades.

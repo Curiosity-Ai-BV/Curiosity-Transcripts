@@ -126,6 +126,7 @@ require_text docs/production-readiness-roadmap.md 'path/to/filled-evidence\.json
 require_text docs/production-readiness-roadmap.md 'not proof that smoke passed' 'smoke evidence validator does not overclaim manual smoke'
 require_text docs/production-readiness-roadmap.md 'hardware smoke remain manual and not yet completed' 'real hardware smoke remains manual'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
+require_text docs/production-readiness-roadmap.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
 require_text docs/production-readiness-roadmap.md 'legal license allowlist' 'non-allowlist supply-chain boundary'
@@ -134,6 +135,7 @@ require_text docs/production-readiness-roadmap.md 'ghcr\.io/gitleaks/gitleaks:v8
 require_text docs/production-readiness-roadmap.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license boundary'
 require_text docs/production-readiness-roadmap.md 'protection, and alert triage policy' 'secret scanning governance boundary'
 require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
+require_text docs/production-readiness-roadmap.md 'cargo install cargo-llvm-cov --version 0\.8\.7 --locked' 'pinned cargo-llvm-cov roadmap documentation'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'check-tauri-command-surface\.js' 'Tauri command surface release-candidate gate'
@@ -173,6 +175,7 @@ require_text docs/release-candidate-checklist.md 'JSON, Markdown, and SRT' 'curr
 require_text docs/release-candidate-checklist.md 'At-rest disclosure' 'at-rest disclosure release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'encryption-at-rest is not implemented in v1' 'release notes at-rest encryption disclosure'
 require_text docs/release-candidate-checklist.md 'CodeQL scans Rust and JavaScript/TypeScript' 'CodeQL release-candidate visibility expectation'
+require_text docs/release-candidate-checklist.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-chain-artifacts\.js' 'supply-chain artifact release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/supply-chain' 'supply-chain artifact output path'
@@ -182,6 +185,7 @@ require_text docs/release-candidate-checklist.md 'ghcr\.io/gitleaks/gitleaks:v8\
 require_text docs/release-candidate-checklist.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'protection, and alert triage policy' 'secret scanning governance release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
+require_text docs/release-candidate-checklist.md 'cargo install cargo-llvm-cov --version 0\.8\.7 --locked' 'pinned cargo-llvm-cov release-candidate documentation'
 require_text docs/at-rest-data-strategy.md 'app-private local storage' 'v1 app-private storage decision'
 require_text docs/at-rest-data-strategy.md 'encryption-at-rest is not implemented yet' 'v1 encryption-at-rest non-implementation'
 require_text docs/at-rest-data-strategy.md 'SQLite database' 'SQLite at-rest data scope'
@@ -201,8 +205,8 @@ done
 
 require_text apps/desktop/src-tauri/Cargo.toml '^license = "Apache-2\.0"$' 'desktop backend Apache-2.0 license metadata'
 require_text .github/workflows/ci.yml 'cargo fmt --check' 'Rust formatting CI gate'
-require_text .github/workflows/ci.yml 'cargo install cargo-audit --locked' 'cargo-audit CI installation'
-require_text .github/workflows/ci.yml 'cargo install cargo-llvm-cov --locked' 'cargo-llvm-cov CI installation'
+require_text .github/workflows/ci.yml 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit CI installation'
+require_text .github/workflows/ci.yml 'cargo install cargo-llvm-cov --version 0\.8\.7 --locked' 'pinned cargo-llvm-cov CI installation'
 if ! node <<'NODE'
 const fs = require("fs");
 
@@ -263,8 +267,8 @@ function hasLine(step, pattern) {
 }
 
 const install = requireStep("Install cargo-audit");
-if (!hasLine(install, /^\s*run:\s*cargo install cargo-audit --locked\s*$/)) {
-  fail("Install cargo-audit step must run cargo install cargo-audit --locked");
+if (!hasLine(install, /^\s*run:\s*cargo install cargo-audit --version 0\.22\.2 --locked\s*$/)) {
+  fail("Install cargo-audit step must run cargo install cargo-audit --version 0.22.2 --locked");
 }
 
 const rootAudit = requireStep("Audit Rust workspace dependencies");
@@ -411,8 +415,8 @@ const generateFrontendCoverage = requireStep("Generate desktop frontend coverage
 const checkCoverage = requireStep("Check coverage artifacts");
 const uploadCoverage = requireStep("Upload coverage artifacts");
 
-if (!hasLine(installCargoLlvmCov, /^\s*run:\s*cargo install cargo-llvm-cov --locked\s*$/)) {
-  fail("Install cargo-llvm-cov step must run cargo install cargo-llvm-cov --locked");
+if (!hasLine(installCargoLlvmCov, /^\s*run:\s*cargo install cargo-llvm-cov --version 0\.8\.7 --locked\s*$/)) {
+  fail("Install cargo-llvm-cov step must run cargo install cargo-llvm-cov --version 0.8.7 --locked");
 }
 if (!hasLine(generateRustCoverage, /^\s*cargo llvm-cov --workspace --lcov --output-path release-artifacts\/coverage\/rust\/workspace\.lcov\s*$/)) {
   fail("Generate Rust coverage artifacts step must create the workspace LCOV report");

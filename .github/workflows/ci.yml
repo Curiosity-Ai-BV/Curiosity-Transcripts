@@ -25,10 +25,10 @@ jobs:
           rustup default stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
 
       - name: Check publication readiness
         run: bash scripts/check-publication-readiness.sh
