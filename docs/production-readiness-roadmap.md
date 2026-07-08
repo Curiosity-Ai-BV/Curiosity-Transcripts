@@ -341,21 +341,20 @@ Goal: add calendar value without introducing silent recording risk.
 
 Deliverables:
 
-- Current Phase 6A status: the desktop snapshot and settings pane expose a
-  deterministic read-only Apple Calendar context state. The app can request
+- Current Phase 6A/6B/6C status: the desktop snapshot and settings pane expose
+  a deterministic read-only Apple Calendar context state. The app can request
   Apple Calendar event access only from an explicit user action, using the
   macOS 14+ full-access API when available and EventKit's older explicit
-  event-access prompt on the macOS 13 support floor. It reports current
-  permission/availability without prompting during snapshot load, has an empty
-  upcoming-events list, and hard-codes auto-start disabled in the Rust/TypeScript
-  contract. This slice does not fetch calendar events, attach recordings to
-  events, store calendar tokens, contact hosted services, or add any
-  calendar-triggered recording path.
-- Add Apple Calendar event loading behind the existing permission and
-  availability states.
-- Show upcoming events and allow a user to manually attach a recording to an
-  event for naming/context.
-- Protect private, all-day, recurring, ambiguous, and overlapping events.
+  event-access prompt on the macOS 13 support floor. When access is granted, the
+  app loads a bounded read-only list of upcoming local Apple Calendar events
+  behind the existing permission and availability states, marks private/unknown,
+  all-day, recurring, ambiguous, and overlapping event shapes non-attachable,
+  and hard-codes auto-start disabled in the Rust/TypeScript contract. This path
+  does not attach recordings to events, store calendar tokens, contact hosted
+  services, or add any calendar-triggered recording path.
+- Allow a user to manually attach a recording to a safe event for naming/context.
+- Add durable tests around manual attachment persistence, delete behavior, and
+  private/all-day/recurring/ambiguous/overlapping-event protections.
 - Keep auto-start disabled until allowlists, ambiguous-event handling, and
   always-visible recording indicators are implemented and tested.
 

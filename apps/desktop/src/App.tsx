@@ -1429,7 +1429,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                     {calendarContext.upcomingEvents.map((event) => (
                       <div key={event.id} className="calendar-event-row">
                         <strong>{event.title}</strong>
-                        <span>{event.calendarTitle}</span>
+                        <span>{formatCalendarEventMetadata(event)}</span>
                         <small>{event.safetyNote}</small>
                       </div>
                     ))}
@@ -1810,4 +1810,31 @@ function formatTime(ms: number) {
 
 function formatEvidenceTimestamp(ms: number) {
   return new Date(ms).toISOString();
+}
+
+function formatCalendarEventMetadata(event: DesktopSnapshot["calendarContext"]["upcomingEvents"][number]) {
+  const flags = [
+    formatCalendarEventRange(event.startsAtMs, event.endsAtMs),
+    event.calendarTitle,
+    `${event.privacy} privacy`,
+    event.overlapState !== "None" ? event.overlapState : null,
+    event.isAllDay ? "All day" : null,
+    event.isRecurring ? "Recurring" : null,
+  ].filter(Boolean);
+
+  return flags.join(" / ");
+}
+
+function formatCalendarEventRange(startsAtMs: number, endsAtMs: number) {
+  const start = new Date(startsAtMs);
+  const end = new Date(endsAtMs);
+  return `${start.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}-${end.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }

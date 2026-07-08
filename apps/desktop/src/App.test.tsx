@@ -595,7 +595,7 @@ describe("desktop workspace shell", () => {
         ...initial.calendarContext,
         permissionState: "Granted" as const,
         availabilityState: "Ready" as const,
-        message: "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+        message: "Apple Calendar access is granted; no upcoming events found in the next 24 hours.",
       },
     };
     const requestAppleCalendarAccess = vi.fn(async () => granted);
@@ -613,9 +613,76 @@ describe("desktop workspace shell", () => {
 
     expect(requestAppleCalendarAccess).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Calendar context")).toHaveTextContent(
-      "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+      "Apple Calendar access is granted; no upcoming events found in the next 24 hours.",
     );
     expect(screen.queryByRole("button", { name: "Request calendar access" })).not.toBeInTheDocument();
+  });
+
+  it("renders loaded Apple Calendar events as read-only safety context", () => {
+    const snapshot = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        meeting_id: "",
+        recording_id: null,
+        state: "Idle",
+        permission_state: "Ready",
+        recovery_action: "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+      },
+      calendarContext: {
+        source: "AppleCalendar",
+        permissionState: "Granted",
+        availabilityState: "Ready",
+        message: "Apple Calendar access is granted; 2 upcoming events loaded for manual review.",
+        setupGuidance:
+          "Upcoming local events are read-only and not stored. Manual attachment remains disabled in this slice, and calendar events never start recordings automatically.",
+        upcomingEvents: [
+          {
+            id: "event-1",
+            title: "Design Review",
+            calendarTitle: "Work",
+            startsAtMs: Date.UTC(2026, 6, 8, 9, 0),
+            endsAtMs: Date.UTC(2026, 6, 8, 10, 0),
+            isAllDay: false,
+            isRecurring: false,
+            privacy: "Unknown",
+            overlapState: "Overlapping",
+            attachable: false,
+            safetyNote: "Overlaps another event; attachment is disabled until ambiguity handling is implemented.",
+          },
+          {
+            id: "event-2",
+            title: "Private Planning",
+            calendarTitle: "Leadership",
+            startsAtMs: Date.UTC(2026, 6, 8, 9, 30),
+            endsAtMs: Date.UTC(2026, 6, 8, 10, 30),
+            isAllDay: false,
+            isRecurring: true,
+            privacy: "Private",
+            overlapState: "Overlapping",
+            attachable: false,
+            safetyNote: "Recurring event; attachment is disabled until recurrence handling is implemented.",
+          },
+        ],
+        autoStartEnabled: false,
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const calendarContext = screen.getByLabelText("Calendar context");
+    expect(within(calendarContext).getByText("Design Review")).toBeInTheDocument();
+    expect(within(calendarContext).getByText(/Work.*Unknown privacy.*Overlapping/)).toBeInTheDocument();
+    expect(
+      within(calendarContext).getByText(
+        "Overlaps another event; attachment is disabled until ambiguity handling is implemented.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(calendarContext).getByText("Private Planning")).toBeInTheDocument();
+    expect(
+      within(calendarContext).getByText(/Leadership.*Private privacy.*Overlapping.*Recurring/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /attach/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
   });
 
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
@@ -2692,7 +2759,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
         ...snapshot.calendarContext,
         permissionState: "Granted",
         availabilityState: "Ready",
-        message: "Apple Calendar access is granted; upcoming event loading is not enabled in this slice.",
+        message: "Apple Calendar access is granted; no upcoming events found in the next 24 hours.",
       },
     }),
     testWhisperModelPath: async () => ({
