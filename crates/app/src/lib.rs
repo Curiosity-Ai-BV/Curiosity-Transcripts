@@ -573,6 +573,18 @@ pub fn generate_summary_command_with_cancellation(
     }
     match outcome {
         AnalysisOutcome::Completed(analysis) => {
+            if analysis.network_used {
+                return Ok(Some(AnalysisCommandDto {
+                    meeting_id: meeting_id.to_string(),
+                    state: AnalysisCommandState::Failed,
+                    analysis: None,
+                    failure: Some(AnalysisFailureDto {
+                        code: "hosted_provider_gated".to_string(),
+                        message: "hosted analysis requires explicit key selection and transcript data-disclosure confirmation before it can run.".to_string(),
+                        setup_guidance: "Configure explicit key selection and transcript data-disclosure confirmation before running hosted analysis.".to_string(),
+                    }),
+                }));
+            }
             store.persist_analysis_result(&analysis)?;
             Ok(Some(AnalysisCommandDto {
                 meeting_id: meeting_id.to_string(),
