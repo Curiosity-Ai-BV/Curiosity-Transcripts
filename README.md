@@ -114,8 +114,8 @@ Remaining gaps:
 - First-run model download/management UI for Whisper and Ollama.
 - Richer privacy controls for retention, encryption/key management, keychain
   secrets, storage location, provider disclosure, and remaining exported files.
-- Feature-matrix and real-hardware release confidence for default, no-Whisper,
-  and ScreenCaptureKit system-audio builds.
+- Real-hardware release confidence for default, no-Whisper, and
+  ScreenCaptureKit system-audio builds.
 - Calendar integration, starting with Apple Calendar context before cloud
   calendar connectors.
 - Developer ID signed and notarized macOS DMG workflows exist; Apple signing
@@ -148,8 +148,9 @@ Near-term product hardening:
 - Finish per-meeting privacy controls for raw-audio retention, local-only versus
   hosted-provider use, storage location, and remaining exported files after
   deletion.
-- Add feature-matrix verification and broader real-hardware release confidence
-  for the supported desktop build variants.
+- Keep feature-matrix verification in CI, including macOS CI for the
+  ScreenCaptureKit compile path, and add broader real-hardware release
+  confidence for the supported desktop build variants.
 - Keep the macOS installer path reproducible with ad-hoc signed local builds,
   then keep browser-distributed releases Developer ID signed and notarized.
 

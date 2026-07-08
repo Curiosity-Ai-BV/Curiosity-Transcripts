@@ -64,6 +64,9 @@ jobs:
       - name: Test desktop Rust backend
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
+      - name: Test desktop Rust backend without Whisper
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
+
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -117,3 +120,18 @@ jobs:
       - name: Build desktop frontend
         working-directory: apps/desktop
         run: npm run build
+
+  macos-system-audio-check:
+    runs-on: macos-26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Check desktop Rust backend with ScreenCaptureKit system audio
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features --features system-audio-screencapturekit

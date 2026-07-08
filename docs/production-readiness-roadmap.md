@@ -161,9 +161,10 @@ user.
 
 Deliverables:
 
-- Current Phase 3B/3C status: transcription and summary job start, cancel,
+- Current Phase 3B/3C/3D status: transcription and summary job start, cancel,
   finish, and restart recovery now persist through `processing_jobs`; retry UX
-  and feature-matrix verification remain later work.
+  remains later work. CI now gates no-Whisper desktop tests and the
+  ScreenCaptureKit system-audio feature compile path on macOS.
 - Move transcription and summary job ownership from in-memory Tauri state into
   durable `processing_jobs` records.
 - Reconcile running/cancel-requested jobs on startup and mark them recovered,
@@ -172,8 +173,9 @@ Deliverables:
   and idempotency keys for transcription and summary jobs.
 - Keep cancellation semantics deterministic: canceled jobs must not persist
   completed backend output after the cancel boundary.
-- Add feature-matrix verification for default desktop builds, no-Whisper builds,
-  and ScreenCaptureKit system-audio builds.
+- Keep feature-matrix verification in CI for default desktop builds,
+  no-Whisper builds, and ScreenCaptureKit system-audio compile checks on macOS.
+  Real-hardware smoke and release confidence remain manual/later work.
 
 Success criteria:
 
