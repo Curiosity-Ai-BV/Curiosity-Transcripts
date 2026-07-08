@@ -113,6 +113,104 @@ done
 
 require_text apps/desktop/src-tauri/Cargo.toml '^license = "Apache-2\.0"$' 'desktop backend Apache-2.0 license metadata'
 require_text .github/workflows/ci.yml 'cargo fmt --check' 'Rust formatting CI gate'
+require_text .github/workflows/ci.yml 'cargo install cargo-audit --locked' 'cargo-audit CI installation'
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/ci.yml";
+const text = fs.readFileSync(file, "utf8");
+const steps = [];
+let current = null;
+let inJobs = false;
+let currentJob = null;
+
+for (const line of text.split(/\r?\n/)) {
+  if (/^jobs:\s*$/.test(line)) {
+    inJobs = true;
+    continue;
+  }
+  if (inJobs) {
+    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (jobMatch) {
+      if (current) {
+        steps.push(current);
+        current = null;
+      }
+      currentJob = jobMatch[1];
+    }
+  }
+  const match = line.match(/^ {6}- name:\s*(.+?)\s*$/);
+  if (match) {
+    if (current) {
+      steps.push(current);
+    }
+    current = { name: match[1], job: currentJob, index: steps.length, lines: [line] };
+  } else if (current) {
+    current.lines.push(line);
+  }
+}
+
+if (current) {
+  steps.push(current);
+}
+
+let ok = true;
+
+function fail(message) {
+  console.error(`::error file=${file}::${message}`);
+  ok = false;
+}
+
+function requireStep(name) {
+  const step = steps.find((candidate) => candidate.name === name);
+  if (!step) {
+    fail(`Missing CI step: ${name}`);
+  }
+  return step;
+}
+
+function hasLine(step, pattern) {
+  return step?.lines.some((line) => pattern.test(line)) ?? false;
+}
+
+const install = requireStep("Install cargo-audit");
+if (!hasLine(install, /^\s*run:\s*cargo install cargo-audit --locked\s*$/)) {
+  fail("Install cargo-audit step must run cargo install cargo-audit --locked");
+}
+
+const rootAudit = requireStep("Audit Rust workspace dependencies");
+if (!hasLine(rootAudit, /^\s*run:\s*cargo audit\s*$/)) {
+  fail("Root Rust advisory audit step must run cargo audit");
+}
+if (hasLine(rootAudit, /^\s*working-directory:/)) {
+  fail("Root Rust advisory audit step must not set working-directory");
+}
+
+const desktopAudit = requireStep("Audit desktop Rust backend dependencies");
+if (!hasLine(desktopAudit, /^\s*working-directory:\s*apps\/desktop\/src-tauri\s*$/)) {
+  fail("Desktop Rust advisory audit step must run from apps/desktop/src-tauri");
+}
+if (!hasLine(desktopAudit, /^\s*run:\s*cargo audit\s*$/)) {
+  fail("Desktop Rust advisory audit step must run cargo audit");
+}
+
+if (install?.job !== rootAudit?.job || install?.job !== desktopAudit?.job) {
+  fail("cargo-audit install, root audit, and desktop audit steps must be in the same CI job");
+}
+if (
+  install &&
+  rootAudit &&
+  desktopAudit &&
+  (install.index > rootAudit.index || install.index > desktopAudit.index)
+) {
+  fail("Install cargo-audit step must run before root and desktop Rust advisory audit steps");
+}
+
+process.exit(ok ? 0 : 1);
+NODE
+then
+  failures=1
+fi
 require_text .github/workflows/ci.yml 'cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check' 'desktop Rust formatting CI gate'
 require_text .github/workflows/ci.yml 'cargo test --workspace' 'Rust test CI gate'
 require_text .github/workflows/ci.yml 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' 'desktop Rust test CI gate'

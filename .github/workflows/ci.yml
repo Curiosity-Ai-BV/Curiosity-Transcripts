@@ -24,6 +24,9 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy --component rustfmt
           rustup default stable
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Check publication readiness
         run: bash scripts/check-publication-readiness.sh
 
@@ -38,6 +41,9 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --check
+
+      - name: Audit Rust workspace dependencies
+        run: cargo audit
 
       - name: Install Tauri Linux system dependencies
         run: |
@@ -57,6 +63,10 @@ jobs:
 
       - name: Check desktop Rust formatting
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
+      - name: Audit desktop Rust backend dependencies
+        working-directory: apps/desktop/src-tauri
+        run: cargo audit
 
       - name: Test Rust workspace
         run: cargo test --workspace

@@ -13,8 +13,11 @@ loosened Tauri renderer CSP values before manual smoke starts.
 
 Desktop npm dependencies must pass `npm audit --audit-level=high` after
 `npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions
-update automation present. CodeQL, cargo audit or cargo deny, SBOM, and license
-output are still future hardening gates unless a later slice adds them.
+update automation present. Rust dependencies must pass `cargo audit` at the
+repository root and from `apps/desktop/src-tauri`; warning-class RustSec
+advisories should be recorded for dependency triage even when no vulnerable
+crate is present. CodeQL, SBOM, and license output are still future hardening
+gates unless a later slice adds them; `cargo deny` is not part of this gate.
 
 ## Manual Smoke Items
 

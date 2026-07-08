@@ -146,8 +146,18 @@ Deliverables:
 Current Phase 2B status: desktop npm drift is gated by
 `npm audit --audit-level=high` in CI, and Dependabot is configured for
 `/apps/desktop` npm, root Cargo, desktop Tauri Cargo, and GitHub Actions
-updates. CodeQL, cargo audit or cargo deny, SBOM, and license output remain
-later Phase 2C hardening unless implemented in a separate slice.
+updates.
+
+Current Rust advisory gate status: CI installs `cargo-audit` with
+`cargo install cargo-audit --locked` and runs `cargo audit` for both dependency
+graphs: at the repository root and from `apps/desktop/src-tauri`. The gate fails
+on vulnerable crates and reports informational warning advisories. The desktop
+lockfile has been updated from `plist` 1.9.0 to 1.10.0 so its transitive
+`quick-xml` dependency is on the fixed 0.41.0 line.
+
+CodeQL, SBOM, and license output remain later Phase 2 hardening unless
+implemented in separate slices. `cargo deny` is not part of the current advisory
+gate.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes
 per-meeting privacy data state: private audio storage path, captured raw-audio
@@ -314,9 +324,14 @@ A production release candidate should pass:
 
 ```sh
 cargo fmt --check
+cargo audit
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+(
+  cd apps/desktop/src-tauri
+  cargo audit
+)
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 node scripts/check-tauri-security.js
