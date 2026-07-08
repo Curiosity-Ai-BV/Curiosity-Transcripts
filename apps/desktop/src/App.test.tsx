@@ -919,6 +919,38 @@ describe("desktop workspace shell", () => {
     expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/default-picker.wav");
   });
 
+  it("uses a scoped single-file Whisper model native picker by default", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    dialogOpen.mockResolvedValue("/Users/adrian/models/ggml-base.en.bin");
+
+    render(<App snapshot={initial} commandFacade={fakeCommandFacade()} />);
+
+    await user.click(screen.getByRole("button", { name: "Choose model" }));
+
+    expect(dialogOpen).toHaveBeenCalledWith({
+      title: "Choose Whisper model file",
+      multiple: false,
+      directory: false,
+      fileAccessMode: "scoped",
+      filters: [
+        {
+          name: "Whisper model",
+          extensions: ["bin", "gguf"],
+        },
+      ],
+    });
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/Users/adrian/models/ggml-base.en.bin");
+  });
+
   it("preserves a typed WAV path when the native picker is canceled", async () => {
     const user = userEvent.setup();
     const initial = connectedSnapshot({
@@ -1519,6 +1551,204 @@ describe("desktop workspace shell", () => {
     ]);
     expect(screen.getByText("Whisper model path saved.")).toBeInTheDocument();
     expect(screen.getByLabelText("Whisper model path")).toHaveValue("/models/ggml-base.en.bin");
+  });
+
+  it("preserves a typed Whisper model path when model picking is canceled", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+          chooseWhisperModelPath: async () => null,
+        }}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Whisper model path"), "/Users/adrian/models/typed.bin");
+    await user.click(screen.getByRole("button", { name: "Choose model" }));
+
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/Users/adrian/models/typed.bin");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("preserves a typed Whisper model path and reports model picker errors in settings feedback", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+          chooseWhisperModelPath: async () => {
+            throw new Error("native model dialog failed");
+          },
+        }}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Whisper model path"), "/Users/adrian/models/typed.bin");
+    await user.click(screen.getByRole("button", { name: "Choose model" }));
+
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/Users/adrian/models/typed.bin");
+    expect(screen.getByRole("status")).toHaveTextContent("native model dialog failed");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("uses the picked Whisper model path for existing test and save actions", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const saved = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: "/Users/adrian/models/chosen.gguf",
+      },
+      settings: {
+        whisperModelPath: "/Users/adrian/models/chosen.gguf",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      testWhisperModelPath: async (args) => {
+        calls.push({ method: "testWhisperModelPath", args });
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+        };
+      },
+      saveWhisperModelPath: async (args) => {
+        calls.push({ method: "saveWhisperModelPath", args });
+        return saved;
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={commandFacade}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+          chooseWhisperModelPath: async () => "/Users/adrian/models/chosen.gguf",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Choose model" }));
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+    await screen.findByText("Whisper model path is readable.");
+    await user.click(screen.getByRole("button", { name: "Save Whisper" }));
+
+    expect(calls).toEqual([
+      {
+        method: "testWhisperModelPath",
+        args: { path: "/Users/adrian/models/chosen.gguf" },
+      },
+      {
+        method: "saveWhisperModelPath",
+        args: { whisperModelPath: "/Users/adrian/models/chosen.gguf" },
+      },
+    ]);
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue("/Users/adrian/models/chosen.gguf");
+  });
+
+  it("disables native Whisper model picking when commands are unavailable or another command is busy", async () => {
+    const user = userEvent.setup();
+    const unavailable = connectedSnapshot({
+      commandSurface: {
+        ready: false,
+        detail: "Desktop command surface is unavailable.",
+      },
+    });
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const returnedAfterStart = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Recording",
+        permission_state: "Ready",
+        recovery_action: "Recording desktop audio.",
+      },
+    });
+    let finishCommand: () => void = () => undefined;
+    const pendingSnapshot = new Promise<ReturnType<typeof connectedSnapshot>>((resolve) => {
+      finishCommand = () => resolve(returnedAfterStart);
+    });
+    const commandFacade = fakeCommandFacade({
+      startRecording: async () => pendingSnapshot,
+    });
+
+    const { rerender } = render(
+      <App
+        snapshot={unavailable}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+          chooseWhisperModelPath: async () => "/Users/adrian/models/chosen.gguf",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Choose model" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Test path" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save Whisper" })).toBeEnabled();
+
+    rerender(
+      <App
+        snapshot={initial}
+        commandFacade={commandFacade}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+          chooseWhisperModelPath: async () => "/Users/adrian/models/chosen.gguf",
+        }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+    expect(screen.getByRole("button", { name: "Choose model" })).toBeDisabled();
+
+    finishCommand();
+    expect(await screen.findByRole("button", { name: "Choose model" })).toBeEnabled();
   });
 
   it("saves local analysis settings through the desktop command", async () => {

@@ -439,9 +439,10 @@ cd apps/desktop
 CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
 ```
 
-The desktop settings pane can save a local Whisper model path and shows first-run
-readiness guidance for missing paths and readable-but-unverified files. If no
-path is saved, the desktop `transcribe_meeting` command falls back to
+The desktop settings pane can choose a local Whisper model file with a native
+file picker, keep the path editable, save the path, and show first-run readiness
+guidance for missing paths and readable-but-unverified files. If no path is
+saved, the desktop `transcribe_meeting` command falls back to
 `CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
 default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
 unavailable-backend state. If the effective model path is missing, the UI should

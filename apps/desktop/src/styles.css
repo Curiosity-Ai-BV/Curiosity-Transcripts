@@ -562,7 +562,8 @@ h3 {
   gap: 10px;
 }
 
-.import-wav-control {
+.import-wav-control,
+.path-picker-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
@@ -989,7 +990,8 @@ h3 {
     grid-template-columns: 1fr;
   }
 
-  .import-wav-control {
+  .import-wav-control,
+  .path-picker-control {
     grid-template-columns: 1fr;
   }
 

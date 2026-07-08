@@ -46,16 +46,18 @@ const ACTIVE_JOB_POLL_INTERVAL_MS = 250;
 interface AppProps {
   snapshot?: DesktopSnapshot;
   commandFacade?: DesktopCommandFacade;
-  filePicker?: ImportWavFilePicker;
+  filePicker?: Partial<AppFilePicker>;
 }
 
-interface ImportWavFilePicker {
+interface AppFilePicker {
   chooseImportWavPath(): Promise<string | null>;
+  chooseWhisperModelPath(): Promise<string | null>;
 }
 
 type PendingCommand =
   | "start"
   | "choose-wav"
+  | "choose-whisper-model"
   | "import"
   | "stop"
   | "transcribe"
@@ -75,8 +77,9 @@ type PendingCommand =
 
 type ThemeMode = "dark" | "light";
 
-const defaultImportWavFilePicker: ImportWavFilePicker = {
+const defaultAppFilePicker: AppFilePicker = {
   chooseImportWavPath: chooseNativeImportWavPath,
+  chooseWhisperModelPath: chooseNativeWhisperModelPath,
 };
 
 async function chooseNativeImportWavPath(): Promise<string | null> {
@@ -89,6 +92,27 @@ async function chooseNativeImportWavPath(): Promise<string | null> {
       {
         name: "WAV audio",
         extensions: ["wav"],
+      },
+    ],
+  });
+
+  if (Array.isArray(selected)) {
+    return typeof selected[0] === "string" ? selected[0] : null;
+  }
+
+  return selected;
+}
+
+async function chooseNativeWhisperModelPath(): Promise<string | null> {
+  const selected: string | string[] | null = await open({
+    title: "Choose Whisper model file",
+    multiple: false,
+    directory: false,
+    fileAccessMode: "scoped",
+    filters: [
+      {
+        name: "Whisper model",
+        extensions: ["bin", "gguf"],
       },
     ],
   });
@@ -124,7 +148,8 @@ interface SettingsFeedback {
       };
 }
 
-export default function App({ snapshot, commandFacade, filePicker = defaultImportWavFilePicker }: AppProps) {
+export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
+  const appFilePicker = { ...defaultAppFilePicker, ...filePicker };
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
@@ -299,6 +324,7 @@ export default function App({ snapshot, commandFacade, filePicker = defaultImpor
     !segmentDraft.trim();
   const settingsInputDisabled = commandBusy;
   const settingsActionDisabled = commandBusy;
+  const chooseWhisperModelDisabled = !commandSurfaceReady || commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -419,12 +445,32 @@ export default function App({ snapshot, commandFacade, filePicker = defaultImpor
     setPendingCommand("choose-wav");
     setCommandError(null);
     try {
-      const sourcePath = await filePicker.chooseImportWavPath();
+      const sourcePath = await appFilePicker.chooseImportWavPath();
       if (sourcePath) {
         setImportWavPath(sourcePath);
       }
     } catch (error) {
       setCommandError(commandErrorMessage(error));
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  async function chooseWhisperModelFile() {
+    if (!commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("choose-whisper-model");
+    setCommandError(null);
+    setSettingsFeedback(null);
+    try {
+      const modelPath = await appFilePicker.chooseWhisperModelPath();
+      if (modelPath) {
+        setSettingsForm((current) => ({ ...current, whisperModelPath: modelPath }));
+      }
+    } catch (error) {
+      setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
     } finally {
       setPendingCommand(null);
     }
@@ -721,6 +767,11 @@ export default function App({ snapshot, commandFacade, filePicker = defaultImpor
       : isRecordingActive
         ? "Stop the active recording before choosing audio."
         : "Choose a local WAV source file.";
+  const chooseWhisperModelButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : "Choose a local Whisper model file.";
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -1299,18 +1350,30 @@ export default function App({ snapshot, commandFacade, filePicker = defaultImpor
               </div>
             </div>
             <div className="settings-form" aria-label="Local settings">
-              <label className="settings-field" htmlFor="whisper-model-path">
-                <span>Whisper model path</span>
-                <input
-                  id="whisper-model-path"
-                  value={settingsForm.whisperModelPath}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
-                  }
-                  placeholder="/absolute/path/to/ggml-base.en.bin"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
+              <div className="path-picker-control">
+                <label className="settings-field" htmlFor="whisper-model-path">
+                  <span>Whisper model path</span>
+                  <input
+                    id="whisper-model-path"
+                    value={settingsForm.whisperModelPath}
+                    onChange={(event) =>
+                      setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
+                    }
+                    placeholder="/absolute/path/to/ggml-base.en.bin"
+                    disabled={settingsInputDisabled}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={chooseWhisperModelDisabled}
+                  title={chooseWhisperModelButtonTitle}
+                  onClick={chooseWhisperModelFile}
+                >
+                  <FolderOpen size={16} weight="regular" />
+                  {pendingCommand === "choose-whisper-model" ? "Choosing model" : "Choose model"}
+                </button>
+              </div>
               <div className="settings-buttons">
                 <button
                   type="button"
