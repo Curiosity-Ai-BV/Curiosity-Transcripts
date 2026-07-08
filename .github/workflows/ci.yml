@@ -21,11 +21,14 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt --component llvm-tools-preview
           rustup default stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - name: Check publication readiness
         run: bash scripts/check-publication-readiness.sh
@@ -76,6 +79,12 @@ jobs:
 
       - name: Test desktop Rust backend without Whisper
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
+
+      - name: Generate Rust coverage artifacts
+        run: |
+          mkdir -p release-artifacts/coverage/rust
+          cargo llvm-cov --workspace --lcov --output-path release-artifacts/coverage/rust/workspace.lcov
+          cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --lcov --output-path release-artifacts/coverage/rust/desktop-tauri.lcov
 
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -136,6 +145,20 @@ jobs:
       - name: Test desktop frontend
         working-directory: apps/desktop
         run: npm run test
+
+      - name: Generate desktop frontend coverage
+        working-directory: apps/desktop
+        run: npm run test:coverage
+
+      - name: Check coverage artifacts
+        run: node scripts/check-coverage-artifacts.js
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-artifacts
+          path: release-artifacts/coverage
+          if-no-files-found: error
 
       - name: Build desktop frontend
         working-directory: apps/desktop

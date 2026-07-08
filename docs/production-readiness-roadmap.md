@@ -1,6 +1,6 @@
 # Production Readiness Roadmap
 
-Date: 2026-07-07
+Date: 2026-07-08
 
 ## Assumptions
 
@@ -310,7 +310,19 @@ is checked in at `apps/desktop/contracts/desktop-command-view-contract.fixture.j
 Rust tests guard exact equality against the generated command/view payload, and
 TS command adapter contract tests consume the same fixture.
 
-Later work: generated DTOs, module splitting, and coverage reporting.
+Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov`, writes
+Rust LCOV reports to `release-artifacts/coverage/rust`, runs frontend Vitest V8
+coverage to `release-artifacts/coverage/frontend`, checks the reports with
+`node scripts/check-coverage-artifacts.js`, and uploads
+`release-artifacts/coverage`. The checker verifies LCOV source-path visibility
+for `apps/desktop/src/App.tsx`, `apps/desktop/src/commandAdapter.ts`,
+`crates/store/src/lib.rs`, and `apps/desktop/src-tauri/src/main.rs`. This is a
+report-visibility gate with no global percentage threshold; not generated DTOs
+or module splitting, and not a claim of comprehensive coverage for all privacy,
+deletion, recovery, provider, or release-metadata paths.
+
+Later work: generated DTOs, module splitting, and broader seam-by-seam coverage
+intent checks after those seams are split behind smaller facades.
 
 Success criteria:
 

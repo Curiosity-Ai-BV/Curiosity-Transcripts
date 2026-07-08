@@ -50,6 +50,7 @@ check_file "site/index.html"
 check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "scripts/generate-supply-chain-artifacts.js"
+check_file "scripts/check-coverage-artifacts.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
@@ -98,6 +99,10 @@ require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Pha
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
+require_text docs/production-readiness-roadmap.md 'Current Phase 5B coverage artifact status' 'Phase 5B coverage artifact status'
+require_text docs/production-readiness-roadmap.md 'release-artifacts/coverage' 'Phase 5B coverage artifact output path'
+require_text docs/production-readiness-roadmap.md 'no global percentage threshold' 'Phase 5B non-percentage coverage boundary'
+require_normalized_text docs/production-readiness-roadmap.md 'not generated DTOs or module splitting' 'Phase 5B generated DTO/module split boundary'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
@@ -120,6 +125,13 @@ require_text docs/release-candidate-checklist.md 'Summary' 'summary release-cand
 require_text docs/release-candidate-checklist.md 'Export' 'export release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'durable job recovery' 'durable job recovery release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.fixture\.json' 'command/view contract fixture release-candidate expectation'
+require_text docs/release-candidate-checklist.md 'node scripts/check-coverage-artifacts\.js' 'coverage artifact checker release-candidate command'
+require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact release-candidate output path'
+require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
+require_text docs/release-candidate-checklist.md 'apps/desktop/src/commandAdapter\.ts' 'frontend command adapter coverage source-path expectation'
+require_text docs/release-candidate-checklist.md 'crates/store/src/lib\.rs' 'Rust store coverage source-path expectation'
+require_text docs/release-candidate-checklist.md 'apps/desktop/src-tauri/src/main\.rs' 'desktop Tauri main coverage source-path expectation'
+require_text docs/release-candidate-checklist.md 'no global percentage threshold' 'release-candidate non-percentage coverage boundary'
 require_text docs/release-candidate-checklist.md 'Delete' 'delete release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'startup finalizes pending' 'pending delete restart cleanup release-candidate smoke expectation'
 require_text docs/release-candidate-checklist.md 'user-owned exports' 'user-owned export delete boundary release-candidate smoke expectation'
@@ -155,6 +167,7 @@ done
 require_text apps/desktop/src-tauri/Cargo.toml '^license = "Apache-2\.0"$' 'desktop backend Apache-2.0 license metadata'
 require_text .github/workflows/ci.yml 'cargo fmt --check' 'Rust formatting CI gate'
 require_text .github/workflows/ci.yml 'cargo install cargo-audit --locked' 'cargo-audit CI installation'
+require_text .github/workflows/ci.yml 'cargo install cargo-llvm-cov --locked' 'cargo-llvm-cov CI installation'
 if ! node <<'NODE'
 const fs = require("fs");
 
@@ -256,6 +269,8 @@ require_text .github/workflows/ci.yml 'cargo fmt --manifest-path apps/desktop/sr
 require_text .github/workflows/ci.yml 'cargo test --workspace' 'Rust test CI gate'
 require_text .github/workflows/ci.yml 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' 'desktop Rust test CI gate'
 require_text .github/workflows/ci.yml 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features' 'no-Whisper desktop Rust test CI gate'
+require_text .github/workflows/ci.yml 'cargo llvm-cov --workspace --lcov --output-path release-artifacts/coverage/rust/workspace\.lcov' 'Rust workspace coverage artifact CI gate'
+require_text .github/workflows/ci.yml 'cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --lcov --output-path release-artifacts/coverage/rust/desktop-tauri\.lcov' 'desktop Tauri coverage artifact CI gate'
 require_text .github/workflows/ci.yml 'runs-on: macos-26' 'macOS runner for ScreenCaptureKit system-audio compile gate'
 require_text .github/workflows/ci.yml 'cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features --features system-audio-screencapturekit' 'ScreenCaptureKit system-audio desktop compile CI gate'
 require_text .github/workflows/ci.yml 'cargo clippy --workspace --all-targets -- -D warnings' 'Rust clippy CI gate'
@@ -269,9 +284,158 @@ require_text .github/workflows/ci.yml 'pkg-config' 'Tauri Linux pkg-config depen
 require_text .github/workflows/ci.yml 'libayatana-appindicator3-dev' 'Tauri Linux app indicator dependency'
 require_text .github/workflows/ci.yml 'librsvg2-dev' 'Tauri Linux SVG dependency'
 require_text .github/workflows/ci.yml 'npm run test' 'desktop test CI gate'
+require_text .github/workflows/ci.yml 'npm run test:coverage' 'desktop frontend coverage artifact CI gate'
+require_text .github/workflows/ci.yml 'node scripts/check-coverage-artifacts\.js' 'coverage artifact source-path checker CI gate'
+require_text .github/workflows/ci.yml 'path: release-artifacts/coverage' 'coverage artifact upload path'
 require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
 require_text .github/workflows/ci.yml 'npm audit --audit-level=high' 'desktop npm audit CI gate'
+require_text apps/desktop/package.json '"test:coverage": "vitest run --coverage"' 'desktop Vitest coverage npm script'
+require_text apps/desktop/package.json '"@vitest/coverage-v8"' 'desktop Vitest V8 coverage dependency'
+require_text apps/desktop/vite.config.ts 'reportsDirectory: "../../release-artifacts/coverage/frontend"' 'frontend coverage output directory'
+require_text apps/desktop/vite.config.ts 'reporter: \["lcovonly"\]' 'frontend LCOV-only coverage reporter'
+require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/App\.tsx' 'coverage checker frontend App path'
+require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/commandAdapter\.ts' 'coverage checker frontend command adapter path'
+require_text scripts/check-coverage-artifacts.js 'crates/store/src/lib\.rs' 'coverage checker Rust store path'
+require_text scripts/check-coverage-artifacts.js 'apps/desktop/src-tauri/src/main\.rs' 'coverage checker desktop Tauri main path'
 if ! node --check scripts/generate-supply-chain-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node --check scripts/check-coverage-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/ci.yml";
+const text = fs.readFileSync(file, "utf8");
+const steps = [];
+let current = null;
+let inJobs = false;
+let currentJob = null;
+
+for (const line of text.split(/\r?\n/)) {
+  if (/^jobs:\s*$/.test(line)) {
+    inJobs = true;
+    continue;
+  }
+  if (inJobs) {
+    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (jobMatch) {
+      if (current) {
+        steps.push(current);
+        current = null;
+      }
+      currentJob = jobMatch[1];
+    }
+  }
+  const match = line.match(/^ {6}- name:\s*(.+?)\s*$/);
+  if (match) {
+    if (current) {
+      steps.push(current);
+    }
+    current = { name: match[1], job: currentJob, index: steps.length, lines: [line] };
+  } else if (current) {
+    current.lines.push(line);
+  }
+}
+
+if (current) {
+  steps.push(current);
+}
+
+let ok = true;
+
+function fail(message) {
+  console.error(`::error file=${file}::${message}`);
+  ok = false;
+}
+
+function requireStep(name) {
+  const step = steps.find((candidate) => candidate.name === name);
+  if (!step) {
+    fail(`Missing CI step: ${name}`);
+  }
+  return step;
+}
+
+function hasLine(step, pattern) {
+  return step?.lines.some((line) => pattern.test(line)) ?? false;
+}
+
+const installCargoLlvmCov = requireStep("Install cargo-llvm-cov");
+const installTauriLinuxDeps = requireStep("Install Tauri Linux system dependencies");
+const generateRustCoverage = requireStep("Generate Rust coverage artifacts");
+const installDesktop = requireStep("Install desktop dependencies");
+const generateFrontendCoverage = requireStep("Generate desktop frontend coverage");
+const checkCoverage = requireStep("Check coverage artifacts");
+const uploadCoverage = requireStep("Upload coverage artifacts");
+
+if (!hasLine(installCargoLlvmCov, /^\s*run:\s*cargo install cargo-llvm-cov --locked\s*$/)) {
+  fail("Install cargo-llvm-cov step must run cargo install cargo-llvm-cov --locked");
+}
+if (!hasLine(generateRustCoverage, /^\s*cargo llvm-cov --workspace --lcov --output-path release-artifacts\/coverage\/rust\/workspace\.lcov\s*$/)) {
+  fail("Generate Rust coverage artifacts step must create the workspace LCOV report");
+}
+if (!hasLine(generateRustCoverage, /^\s*cargo llvm-cov --manifest-path apps\/desktop\/src-tauri\/Cargo\.toml --lcov --output-path release-artifacts\/coverage\/rust\/desktop-tauri\.lcov\s*$/)) {
+  fail("Generate Rust coverage artifacts step must create the desktop Tauri LCOV report");
+}
+if (!hasLine(generateFrontendCoverage, /^\s*working-directory:\s*apps\/desktop\s*$/)) {
+  fail("Generate desktop frontend coverage step must run from apps/desktop");
+}
+if (!hasLine(generateFrontendCoverage, /^\s*run:\s*npm run test:coverage\s*$/)) {
+  fail("Generate desktop frontend coverage step must run npm run test:coverage");
+}
+if (!hasLine(checkCoverage, /^\s*run:\s*node scripts\/check-coverage-artifacts\.js\s*$/)) {
+  fail("Check coverage artifacts step must run node scripts/check-coverage-artifacts.js");
+}
+if (!hasLine(uploadCoverage, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
+  fail("Upload coverage artifacts step must use actions/upload-artifact@v4");
+}
+if (!hasLine(uploadCoverage, /^\s*name:\s*coverage-artifacts\s*$/)) {
+  fail("Upload coverage artifacts step must name the artifact coverage-artifacts");
+}
+if (!hasLine(uploadCoverage, /^\s*path:\s*release-artifacts\/coverage\s*$/)) {
+  fail("Upload coverage artifacts step must upload release-artifacts/coverage");
+}
+if (!hasLine(uploadCoverage, /^\s*if-no-files-found:\s*error\s*$/)) {
+  fail("Upload coverage artifacts step must fail when coverage artifacts are missing");
+}
+
+const coverageSteps = [
+  installCargoLlvmCov,
+  installTauriLinuxDeps,
+  generateRustCoverage,
+  installDesktop,
+  generateFrontendCoverage,
+  checkCoverage,
+  uploadCoverage,
+];
+if (!coverageSteps.every((step) => step?.job === "checks")) {
+  fail("Coverage install, generation, check, and upload steps must run in the checks CI job");
+}
+if (
+  installCargoLlvmCov &&
+  installTauriLinuxDeps &&
+  generateRustCoverage &&
+  installDesktop &&
+  generateFrontendCoverage &&
+  checkCoverage &&
+  uploadCoverage &&
+  (
+    installCargoLlvmCov.index > generateRustCoverage.index ||
+    installTauriLinuxDeps.index > generateRustCoverage.index ||
+    installDesktop.index > generateFrontendCoverage.index ||
+    generateRustCoverage.index > checkCoverage.index ||
+    generateFrontendCoverage.index > checkCoverage.index ||
+    checkCoverage.index > uploadCoverage.index
+  )
+) {
+  fail("Coverage artifacts must be generated after tool/dependency setup, checked after Rust and frontend coverage, and uploaded after the checker");
+}
+
+process.exit(ok ? 0 : 1);
+NODE
+then
   failures=1
 fi
 if ! node <<'NODE'
