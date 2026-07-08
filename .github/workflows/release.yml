@@ -116,6 +116,7 @@ jobs:
             echo
             echo "Manual smoke status:"
             echo "- Skipped smoke checks are not passes. Record the build, machine, macOS version, model paths, and any skipped microphone, ScreenCaptureKit, Whisper, Ollama, offline, export, delete, or uninstall item before treating this release as ready."
+            echo "- Start from docs/release-candidate-smoke-evidence.template.json, then validate filled manual evidence with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json. This workflow does not validate filled manual evidence automatically."
             echo
             echo "Privacy and storage disclosure:"
             echo "- App-level encryption-at-rest is not implemented in v1. App-private local data relies on OS and user-account file protections; user-owned source files and exports can remain outside the app delete boundary."

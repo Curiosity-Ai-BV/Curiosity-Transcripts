@@ -58,6 +58,9 @@ Run `node scripts/check-release-smoke-evidence.js` with no path to validate only
 the checked-in template. Run
 `node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json` to
 validate filled manual smoke evidence.
+Generated GitHub Release notes now point maintainers to that template and
+path-based validator command, but the release workflow does not validate filled
+evidence automatically.
 Real clean-user install, macOS permission, Whisper/Ollama setup, recording,
 transcription, summary, export, delete, relaunch, uninstall, signing, model, and
 hardware smoke remain manual and not yet completed.
