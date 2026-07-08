@@ -38,6 +38,9 @@ output are still future hardening gates unless a later slice adds them.
 - Recording: start and stop a short recording with microphone plus
   ScreenCaptureKit system audio where permissions allow; verify private WAV
   artifacts and truthful mic-only fallback when system audio is unavailable.
+- Import WAV: enter a local `.wav` source path, import it, verify the copied
+  artifact is stored under app-private meeting storage, then delete the meeting
+  and confirm the original source file remains untouched.
 - Transcription: transcribe the recorded meeting with the configured local
   Whisper model and verify channel-tagged transcript segments appear.
 - Correction: edit one transcript segment, save it, relaunch, and verify the

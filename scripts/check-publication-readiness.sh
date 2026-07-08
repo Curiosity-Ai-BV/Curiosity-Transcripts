@@ -58,6 +58,7 @@ require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS perm
 require_text docs/release-candidate-checklist.md 'Model setup' 'model setup release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Offline-after-setup' 'offline-after-setup release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Recording' 'recording release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'Import WAV' 'imported WAV release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Transcription' 'transcription release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Summary' 'summary release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Export' 'export release-candidate smoke item'

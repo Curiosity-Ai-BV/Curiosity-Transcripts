@@ -201,12 +201,19 @@ Deliverables:
 
 Current Phase 4A status: transcript segment correction is wired through the
 existing store edit-history seam, desktop command surface, TS contract, and a
-minimal one-segment inline editor. Import remains later Phase 4 work.
+minimal one-segment inline editor.
 
 Current Phase 4B status: Markdown and SRT are productized beside JSON through
 the app command layer, generic Tauri `export_meeting` command, format-aware
 desktop UI/state, focused Rust/Tauri/TS/React tests, and docs. JSON remains the
 deterministic integration format.
+
+Current Phase 4C status: local `.wav` import is wired through the desktop
+command surface and existing store/transcription/export seams. The command
+copies a validated user-provided WAV path into app-private meeting storage,
+persists a completed imported recording artifact with the private relative path
+and final copied-file SHA-256, and leaves MP3/M4A, transcoding, drag/drop,
+batch import, metadata extraction, and native file picking out of scope.
 
 Success criteria:
 

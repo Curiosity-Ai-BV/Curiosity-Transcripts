@@ -47,6 +47,7 @@ interface AppProps {
 
 type PendingCommand =
   | "start"
+  | "import"
   | "stop"
   | "transcribe"
   | "rename"
@@ -95,6 +96,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
   const [renameTitle, setRenameTitle] = useState(selectedTitleFromSnapshot(initialSnapshot));
   const [recordingTitle, setRecordingTitle] = useState("");
+  const [importWavPath, setImportWavPath] = useState("");
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
   const [segmentDraft, setSegmentDraft] = useState("");
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromSnapshot(initialSnapshot));
@@ -247,6 +249,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const importWavPathDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const importDisabled = importWavPathDisabled || !importWavPath.trim();
   const correctionDisabled =
     !commandSurfaceReady ||
     !selectedMeeting ||
@@ -314,6 +318,9 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       const nextSnapshot = await command(commandFacade);
       applyDesktopSnapshot(nextSnapshot);
       setRecordingTitle("");
+      if (pending === "import") {
+        setImportWavPath("");
+      }
     } catch (error) {
       setCommandError(commandErrorMessage(error));
     } finally {
@@ -334,6 +341,18 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     void runSnapshotCommand(
       "start",
       (commands) => commands.startRecording(title ? { title } : undefined),
+    );
+  }
+
+  function importWavFile() {
+    const sourcePath = importWavPath.trim();
+    if (!sourcePath) {
+      return;
+    }
+    const title = recordingTitle.trim();
+    void runSnapshotCommand(
+      "import",
+      (commands) => commands.importAudioFile(title ? { sourcePath, title } : { sourcePath }),
     );
   }
 
@@ -596,6 +615,15 @@ export default function App({ snapshot, commandFacade }: AppProps) {
         : isRecordingActive
         ? "Stop desktop recording."
         : "No active desktop recording to stop.";
+  const importButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop the active recording before importing audio."
+        : importWavPath.trim()
+          ? "Import the WAV file into private app storage."
+          : "Enter a local WAV source path before importing.";
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -640,6 +668,78 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   function toggleTheme() {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   }
+
+  const recordingControls = (
+    <section className="recording-strip" aria-label="Recording controls and status">
+      <div className="strip-primary">
+        <IconFrame tone={recording.tone}>
+          <Waveform size={22} weight="regular" />
+        </IconFrame>
+        <div>
+          <div className="strip-heading-row">
+            <h2>Recording</h2>
+            <StatusPill tone={recording.tone} label={recording.label} />
+          </div>
+          <p>{recording.detail}</p>
+        </div>
+      </div>
+      <div className="recording-actions">
+        <label className="recording-title-field" htmlFor="recording-title">
+          <span>Recording title</span>
+          <input
+            id="recording-title"
+            value={recordingTitle}
+            onChange={(event) => setRecordingTitle(event.target.value)}
+            placeholder="Optional meeting title"
+            disabled={recordingTitleDisabled}
+          />
+        </label>
+        <label className="recording-title-field" htmlFor="import-wav-path">
+          <span>WAV source path</span>
+          <input
+            id="import-wav-path"
+            value={importWavPath}
+            onChange={(event) => setImportWavPath(event.target.value)}
+            placeholder="/path/to/audio.wav"
+            disabled={importWavPathDisabled}
+          />
+        </label>
+        <div className="recording-buttons">
+          <button
+            type="button"
+            className="button primary"
+            disabled={startDisabled}
+            title={startButtonTitle}
+            onClick={startRecording}
+          >
+            <Microphone size={16} weight="regular" />
+            {pendingCommand === "start" ? "Starting recording" : "Start recording"}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={importDisabled}
+            title={importButtonTitle}
+            onClick={importWavFile}
+          >
+            <FileText size={16} weight="regular" />
+            {pendingCommand === "import" ? "Importing WAV" : "Import WAV"}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={stopDisabled}
+            title={stopButtonTitle}
+            onClick={stopRecording}
+          >
+            <Waveform size={16} weight="regular" />
+            {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
+          </button>
+        </div>
+        <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
+      </div>
+    </section>
+  );
 
   return (
     <main className="app-shell" data-theme={theme}>
@@ -754,55 +854,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
           <section className="detail-pane" aria-label="Meeting detail">
             {selectedMeeting ? (
               <>
-                <section className="recording-strip" aria-label="Recording controls and status">
-                  <div className="strip-primary">
-                    <IconFrame tone={recording.tone}>
-                      <Waveform size={22} weight="regular" />
-                    </IconFrame>
-                    <div>
-                      <div className="strip-heading-row">
-                        <h2>Recording</h2>
-                        <StatusPill tone={recording.tone} label={recording.label} />
-                      </div>
-                      <p>{recording.detail}</p>
-                    </div>
-                  </div>
-                  <div className="recording-actions">
-                    <label className="recording-title-field" htmlFor="recording-title">
-                      <span>Recording title</span>
-                      <input
-                        id="recording-title"
-                        value={recordingTitle}
-                        onChange={(event) => setRecordingTitle(event.target.value)}
-                        placeholder="Optional meeting title"
-                        disabled={recordingTitleDisabled}
-                      />
-                    </label>
-                    <div className="recording-buttons">
-                      <button
-                        type="button"
-                        className="button primary"
-                        disabled={startDisabled}
-                        title={startButtonTitle}
-                        onClick={startRecording}
-                      >
-                        <Microphone size={16} weight="regular" />
-                        {pendingCommand === "start" ? "Starting recording" : "Start recording"}
-                      </button>
-                      <button
-                        type="button"
-                        className="button"
-                        disabled={stopDisabled}
-                        title={stopButtonTitle}
-                        onClick={stopRecording}
-                      >
-                        <Waveform size={16} weight="regular" />
-                        {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
-                      </button>
-                    </div>
-                    <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
-                  </div>
-                </section>
+                {recordingControls}
 
                 <div className="detail-header">
                   <div>
@@ -1002,7 +1054,10 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                 </div>
               </>
             ) : (
-              <p className="empty-state">No meeting selected.</p>
+              <>
+                {recordingControls}
+                <p className="empty-state">No meeting selected.</p>
+              </>
             )}
           </section>
 

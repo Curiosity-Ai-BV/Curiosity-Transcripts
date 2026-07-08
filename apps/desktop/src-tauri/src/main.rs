@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -61,6 +61,7 @@ fn main() {
         test_ollama_connection,
         audio_smoke_status,
         system_audio_smoke_recording,
+        import_audio_file,
         start_microphone_recording,
         stop_microphone_recording,
         cancel_microphone_recording,
@@ -86,6 +87,7 @@ fn main() {
         test_ollama_connection,
         audio_smoke_status,
         system_audio_smoke_recording,
+        import_audio_file,
         start_microphone_recording,
         stop_microphone_recording,
         cancel_microphone_recording,
@@ -462,10 +464,7 @@ fn start_microphone_recording(
         .map_err(|error| format!("resolve app data directory: {error}"))?;
     {
         let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        if command_state.active_recording.is_some() || command_state.starting_recording {
-            return Err("Stop the active recording before starting another one.".to_string());
-        }
-        command_state.starting_recording = true;
+        command_state.begin_recording_start()?;
     }
 
     let mut started_state = DesktopCommandState::default();
@@ -479,7 +478,7 @@ fn start_microphone_recording(
     );
     let snapshot_state = {
         let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        command_state.starting_recording = false;
+        command_state.finish_recording_start();
         match result {
             Ok(_) => {
                 command_state.active_recording = started_state.active_recording.take();
@@ -678,6 +677,44 @@ fn cancel_summary(
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
     cancel_summary_job_for_app_root(&app_root, state.inner(), &job_id)
+}
+
+#[tauri::command]
+fn import_audio_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    source_path: String,
+    title: Option<String>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.begin_import_audio()?;
+        command_state.snapshot_state()
+    };
+    let result = import_audio_file_recording_for_app_root(
+        &app_root,
+        &snapshot_state,
+        source_path,
+        title,
+        current_timestamp_ms(),
+    );
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_import_audio();
+        if let Ok(recording) = &result {
+            command_state.last_recording = Some(recording.clone());
+            command_state.last_transcription = None;
+        }
+        command_state.snapshot_state()
+    };
+    match result {
+        Ok(_) => desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -1378,6 +1415,7 @@ fn dev_fixture_wav_bytes() -> Vec<u8> {
 struct DesktopCommandState {
     active_recording: Option<ActiveDesktopRecording>,
     starting_recording: bool,
+    importing_audio: bool,
     last_recording: Option<CommandRecordingDto>,
     last_transcription: Option<TranscriptionCommandView>,
     last_export: Option<ExportCommandState>,
@@ -1412,6 +1450,39 @@ impl DesktopCommandState {
             .as_ref()
             .map(|recording| recording.meeting_id == meeting_id)
             .unwrap_or(false)
+    }
+
+    fn begin_recording_start(&mut self) -> Result<(), String> {
+        if self.active_recording.is_some() || self.starting_recording {
+            return Err("Stop the active recording before starting another one.".to_string());
+        }
+        if self.importing_audio {
+            return Err("Finish the active audio import before starting a recording.".to_string());
+        }
+        self.starting_recording = true;
+        Ok(())
+    }
+
+    fn finish_recording_start(&mut self) {
+        self.starting_recording = false;
+    }
+
+    fn begin_import_audio(&mut self) -> Result<(), String> {
+        if self.active_recording.is_some() {
+            return Err("Stop the active recording before importing audio.".to_string());
+        }
+        if self.starting_recording {
+            return Err("Finish recording startup before importing audio.".to_string());
+        }
+        if self.importing_audio {
+            return Err("Finish the active audio import before importing another WAV.".to_string());
+        }
+        self.importing_audio = true;
+        Ok(())
+    }
+
+    fn finish_import_audio(&mut self) {
+        self.importing_audio = false;
     }
 
     fn begin_transcription_job(
@@ -1771,6 +1842,283 @@ impl ActiveMicrophoneRecording for MacosDesktopWavRecording {
 impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
     fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
         (*self).stop(ended_at_ms).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+fn import_audio_file_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    source_path: String,
+    title: Option<String>,
+    imported_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let snapshot_state = command_state.snapshot_state();
+    let recording = import_audio_file_recording_for_app_root(
+        app_root,
+        &snapshot_state,
+        source_path,
+        title,
+        imported_at_ms,
+    )?;
+    command_state.last_recording = Some(recording);
+    command_state.last_transcription = None;
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn import_audio_file_recording_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    source_path: String,
+    title: Option<String>,
+    imported_at_ms: u64,
+) -> Result<CommandRecordingDto, String> {
+    if command_state.active_recording.is_some() {
+        return Err("Stop the active recording before importing audio.".to_string());
+    }
+
+    let source_path = validate_import_source_path(&source_path)?;
+    let sample_rate_hz = validate_wav_header(&source_path)?;
+    let meeting_id = format!("meeting-{imported_at_ms}");
+    let recording_id = format!("recording-{imported_at_ms}");
+    let title = title
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Imported WAV".to_string());
+    let relative_path = imported_artifact_relative_path(&meeting_id, &recording_id);
+    let temp_relative_path = imported_temp_artifact_relative_path(&meeting_id, &recording_id);
+    let destination_path = app_root.join(&relative_path);
+    let temp_destination_path = app_root.join(&temp_relative_path);
+    let session_dir = destination_path
+        .parent()
+        .ok_or_else(|| "Imported WAV destination path is invalid.".to_string())?
+        .to_path_buf();
+    let mut finalized_destination = false;
+
+    let import_result = (|| {
+        std::fs::create_dir_all(&session_dir).map_err(|error| {
+            format!("Imported WAV private directory could not be created: {error}")
+        })?;
+        if destination_path.exists() {
+            return Err("Imported WAV destination already exists.".to_string());
+        }
+        let _ = std::fs::remove_file(&temp_destination_path);
+        std::fs::copy(&source_path, &temp_destination_path).map_err(|error| {
+            format!("Imported WAV could not be copied to private storage: {error}")
+        })?;
+        let sha256 = sha256_for_readable_file(&temp_destination_path)
+            .map_err(|error| format!("Imported WAV private copy could not be hashed: {error}"))?;
+        std::fs::rename(&temp_destination_path, &destination_path).map_err(|error| {
+            format!("Imported WAV could not be finalized in private storage: {error}")
+        })?;
+        finalized_destination = true;
+
+        let mut meeting = Meeting::new_manual(&meeting_id, title, imported_at_ms);
+        let session = RecordingSession::start(
+            &recording_id,
+            &meeting_id,
+            RecordingSource::Imported,
+            imported_at_ms,
+            sample_rate_hz,
+        );
+        meeting
+            .start_recording(&session)
+            .map_err(|error| error.to_string())?;
+        let artifact = AudioArtifact::new_private(
+            imported_artifact_id(&recording_id),
+            &recording_id,
+            ArtifactKind::Imported,
+            &relative_path,
+            &sha256,
+        );
+        let store = open_store(app_root)?;
+        store
+            .insert_recording_start_with_artifacts(
+                &meeting,
+                &session,
+                std::slice::from_ref(&artifact),
+            )
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = store.complete_recording_session_with_artifacts(
+            &meeting_id,
+            &recording_id,
+            imported_at_ms,
+            RecordingSource::Imported,
+            &[CompletedAudioArtifact {
+                artifact_id: artifact.id,
+                sha256,
+            }],
+        ) {
+            let delete_error = store.delete_meeting(&meeting_id).err();
+            let mut message = error.to_string();
+            if let Some(delete_error) = delete_error {
+                message.push_str(&format!(
+                    ". Imported WAV row cleanup also failed: {delete_error}"
+                ));
+            }
+            return Err(message);
+        }
+
+        Ok::<(), String>(())
+    })();
+
+    if let Err(error) = import_result {
+        cleanup_imported_private_copy(
+            &destination_path,
+            &temp_destination_path,
+            &session_dir,
+            finalized_destination,
+        );
+        return Err(error);
+    }
+
+    Ok(recording_dto(
+        &meeting_id,
+        Some(recording_id),
+        CommandRecordingState::Complete,
+        AppPermissionState::Ready,
+        microphone_storage_path(&meeting_id),
+        "Imported local WAV into private app storage.",
+    ))
+}
+
+fn validate_import_source_path(source_path: &str) -> Result<PathBuf, String> {
+    let trimmed = source_path.trim();
+    if trimmed.is_empty() {
+        return Err("WAV source path is required.".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err("WAV source file does not exist.".to_string());
+    }
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
+    if !metadata.is_file() {
+        return Err("WAV source path must be a file.".to_string());
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("wav"))
+        .unwrap_or(true)
+    {
+        return Err("WAV source file must have a .wav extension.".to_string());
+    }
+    Ok(path)
+}
+
+fn validate_wav_header(path: &Path) -> Result<u32, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?
+        .len();
+    let mut riff_header = [0_u8; 12];
+    file.read_exact(&mut riff_header)
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    if &riff_header[0..4] != b"RIFF" || &riff_header[8..12] != b"WAVE" {
+        return Err("WAV source file has an unsupported WAV header.".to_string());
+    }
+
+    let mut sample_rate_hz = None;
+    let mut has_data_chunk = false;
+    loop {
+        let mut chunk_header = [0_u8; 8];
+        match file.read_exact(&mut chunk_header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(_) => return Err("WAV source file has an unsupported WAV header.".to_string()),
+        }
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+        ensure_wav_chunk_payload_available(&mut file, chunk_size, file_len)?;
+        match &chunk_header[0..4] {
+            b"fmt " => {
+                if chunk_size < 16 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                let mut fmt = [0_u8; 16];
+                file.read_exact(&mut fmt)
+                    .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+                let audio_format = u16::from_le_bytes([fmt[0], fmt[1]]);
+                let sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
+                let bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
+                if !matches!(audio_format, 1 | 3) || sample_rate == 0 || bits_per_sample == 0 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                sample_rate_hz = Some(sample_rate);
+                seek_wav_chunk_remainder(&mut file, chunk_size - 16)?;
+            }
+            b"data" => {
+                if chunk_size == 0 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                has_data_chunk = true;
+                seek_wav_chunk_remainder(&mut file, chunk_size)?;
+            }
+            _ => seek_wav_chunk_remainder(&mut file, chunk_size)?,
+        }
+        if chunk_size % 2 == 1 {
+            file.seek(SeekFrom::Current(1))
+                .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+        }
+    }
+
+    match (sample_rate_hz, has_data_chunk) {
+        (Some(sample_rate), true) => Ok(sample_rate),
+        _ => Err("WAV source file has an unsupported WAV header.".to_string()),
+    }
+}
+
+fn ensure_wav_chunk_payload_available(
+    file: &mut std::fs::File,
+    chunk_size: u64,
+    file_len: u64,
+) -> Result<(), String> {
+    let payload_start = file
+        .stream_position()
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    let padded_size = chunk_size
+        .checked_add(chunk_size % 2)
+        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
+    let payload_end = payload_start
+        .checked_add(padded_size)
+        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
+    if payload_end > file_len {
+        return Err("WAV source file has an unsupported WAV header.".to_string());
+    }
+    Ok(())
+}
+
+fn seek_wav_chunk_remainder(file: &mut std::fs::File, bytes: u64) -> Result<(), String> {
+    let offset = i64::try_from(bytes)
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    file.seek(SeekFrom::Current(offset))
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    Ok(())
+}
+
+fn cleanup_imported_private_copy(
+    destination_path: &Path,
+    temp_destination_path: &Path,
+    session_dir: &Path,
+    remove_final_destination: bool,
+) {
+    let _ = std::fs::remove_file(temp_destination_path);
+    if remove_final_destination {
+        let _ = std::fs::remove_file(destination_path);
+    }
+    let _ = std::fs::remove_dir(session_dir);
+    if let Some(audio_dir) = session_dir.parent() {
+        let _ = std::fs::remove_dir(audio_dir);
+    }
+    if let Some(meeting_dir) = session_dir.parent().and_then(Path::parent) {
+        let _ = std::fs::remove_dir(meeting_dir);
     }
 }
 
@@ -2778,6 +3126,10 @@ fn system_audio_artifact_id(recording_id: &str) -> String {
     format!("artifact-{recording_id}-system")
 }
 
+fn imported_artifact_id(recording_id: &str) -> String {
+    format!("artifact-{recording_id}-imported")
+}
+
 fn artifact_id_for_stream(recording_id: &str, stream: StreamKind) -> String {
     match stream {
         StreamKind::Microphone => artifact_id(recording_id),
@@ -2850,6 +3202,20 @@ fn microphone_artifact_relative_path(meeting_id: &str, recording_id: &str) -> St
 fn system_audio_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
     format!(
         "{}/{recording_id}/raw-system.wav",
+        microphone_storage_path(meeting_id)
+    )
+}
+
+fn imported_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
+    format!(
+        "{}/{recording_id}/imported.wav",
+        microphone_storage_path(meeting_id)
+    )
+}
+
+fn imported_temp_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
+    format!(
+        "{}/{recording_id}/imported.wav.tmp",
         microphone_storage_path(meeting_id)
     )
 }
@@ -4963,6 +5329,330 @@ mod tests {
     }
 
     #[test]
+    fn import_audio_file_persists_private_completed_imported_wav_artifact() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("customer-call.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Customer call".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let copied_path = root.join(&artifact.path);
+        let source_sha256 = sha256_for_readable_file(&source_path).expect("source hash");
+
+        assert_eq!(snapshot.recording.state, CommandRecordingState::Complete);
+        assert_eq!(
+            snapshot.recording.storage_location.app_private_path,
+            format!("meetings/{meeting_id}/audio")
+        );
+        assert_eq!(
+            store.meeting_status(&meeting_id).expect("meeting status"),
+            "Complete"
+        );
+        assert_eq!(
+            store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Complete"
+        );
+        assert_eq!(artifact.kind, "Imported");
+        assert_eq!(
+            artifact.path,
+            format!("meetings/{meeting_id}/audio/{recording_id}/imported.wav")
+        );
+        assert_ne!(artifact.path, source_path.display().to_string());
+        assert!(copied_path.is_file());
+        assert!(!root
+            .join(imported_temp_artifact_relative_path(
+                &meeting_id,
+                &recording_id
+            ))
+            .exists());
+        assert_eq!(
+            fs::read(&copied_path).expect("copied wav"),
+            fs::read(&source_path).expect("source wav")
+        );
+        assert_eq!(artifact.sha256, source_sha256);
+        assert!(!artifact.sha256.starts_with("sha256:pending"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_invalid_sources_without_persisting_rows_or_private_files() {
+        let invalid_root = unique_test_root();
+        let missing_path = invalid_root.join("missing.wav");
+        let directory_path = invalid_root.join("directory.wav");
+        let non_wav_path = invalid_root.join("not-a-wav.txt");
+        let malformed_wav_path = invalid_root.join("malformed.wav");
+        fs::create_dir_all(&directory_path).expect("directory source");
+        fs::write(&non_wav_path, b"not wav").expect("non wav source");
+        fs::write(&malformed_wav_path, b"RIFFbut not enough").expect("malformed wav source");
+
+        for (source_path, expected_message) in [
+            ("".to_string(), "WAV source path is required"),
+            (
+                missing_path.display().to_string(),
+                "WAV source file does not exist",
+            ),
+            (
+                directory_path.display().to_string(),
+                "WAV source path must be a file",
+            ),
+            (
+                non_wav_path.display().to_string(),
+                "WAV source file must have a .wav extension",
+            ),
+            (
+                malformed_wav_path.display().to_string(),
+                "WAV source file has an unsupported WAV header",
+            ),
+        ] {
+            let root = unique_test_root();
+            let mut command_state = DesktopCommandState::default();
+
+            let error = import_audio_file_for_app_root(
+                &root,
+                &mut command_state,
+                source_path,
+                Some("Rejected".to_string()),
+                1_700_000_000_000,
+            )
+            .expect_err("invalid import should fail");
+            let store = open_store(&root).expect("open store");
+
+            assert!(
+                error.contains(expected_message),
+                "{error:?} did not contain {expected_message:?}"
+            );
+            assert_eq!(store.count("meetings").expect("meetings"), 0);
+            assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+            assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+            assert!(!root.join("meetings").exists());
+            assert!(command_state.last_recording.is_none());
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+
+        fs::remove_dir_all(invalid_root).expect("invalid source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_truncated_data_chunk_without_persisting_rows_or_private_files() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("truncated-data.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_truncated_data_chunk_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Truncated".to_string()),
+            1_700_000_000_000,
+        )
+        .expect_err("truncated data chunk should fail before persistence");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("WAV source file has an unsupported WAV header"),
+            "{error:?}"
+        );
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(!root.join("meetings").exists());
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_missing_odd_chunk_pad_without_persisting_rows_or_private_files() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("missing-data-pad.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_missing_odd_data_chunk_pad_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Missing pad".to_string()),
+            1_700_000_000_000,
+        )
+        .expect_err("missing odd chunk pad should fail before persistence");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("WAV source file has an unsupported WAV header"),
+            "{error:?}"
+        );
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(!root.join("meetings").exists());
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_guard_rejects_concurrent_import_and_recording_start() {
+        let mut command_state = DesktopCommandState::default();
+
+        command_state.begin_import_audio().expect("begin import");
+        let second_import = command_state
+            .begin_import_audio()
+            .expect_err("second import must be rejected");
+        let start_while_importing = command_state
+            .begin_recording_start()
+            .expect_err("recording start must be rejected while importing");
+        command_state.finish_import_audio();
+        command_state
+            .begin_recording_start()
+            .expect("recording start after import finishes");
+        let import_while_starting = command_state
+            .begin_import_audio()
+            .expect_err("import must be rejected during recording startup");
+
+        assert_eq!(
+            second_import,
+            "Finish the active audio import before importing another WAV."
+        );
+        assert_eq!(
+            start_while_importing,
+            "Finish the active audio import before starting a recording."
+        );
+        assert_eq!(
+            import_while_starting,
+            "Finish recording startup before importing audio."
+        );
+    }
+
+    #[test]
+    fn import_audio_file_preserves_preexisting_final_artifact_on_destination_collision() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("collision-source.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let imported_at_ms = 1_700_000_000_000;
+        let meeting_id = format!("meeting-{imported_at_ms}");
+        let recording_id = format!("recording-{imported_at_ms}");
+        let final_path = root.join(imported_artifact_relative_path(&meeting_id, &recording_id));
+        let temp_path = root.join(imported_temp_artifact_relative_path(
+            &meeting_id,
+            &recording_id,
+        ));
+        fs::create_dir_all(final_path.parent().expect("final parent")).expect("final dir");
+        let original_final_bytes = b"preexisting imported wav";
+        fs::write(&final_path, original_final_bytes).expect("preexisting final artifact");
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Collision".to_string()),
+            imported_at_ms,
+        )
+        .expect_err("destination collision should reject import");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("Imported WAV destination already exists"),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(&final_path).expect("final artifact after failed import"),
+            original_final_bytes
+        );
+        assert!(!temp_path.exists());
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn delete_meeting_removes_imported_private_copy_but_preserves_original_source_file() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("original.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let original_bytes = fs::read(&source_path).expect("original bytes");
+        let mut command_state = DesktopCommandState::default();
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Delete imported".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let copied_path = root.join(format!(
+            "meetings/{meeting_id}/audio/{recording_id}/imported.wav"
+        ));
+
+        let delete_snapshot = delete_meeting_for_app_root(&root, &mut command_state, &meeting_id)
+            .expect("delete imported meeting");
+        let json = serde_json::to_value(&delete_snapshot).expect("serialize snapshot");
+
+        assert!(!copied_path.exists());
+        assert_eq!(
+            fs::read(&source_path).expect("source after delete"),
+            original_bytes
+        );
+        assert_eq!(json["deleteCommand"]["state"], "deleted");
+        let deleted_artifact = json["deleteCommand"]["deletedPrivateArtifacts"][0]
+            .as_str()
+            .expect("deleted private artifact");
+        assert!(deleted_artifact.ends_with(&format!(
+            "meetings/{meeting_id}/audio/{recording_id}/imported.wav"
+        )));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
     fn completed_audio_manifest_mapping_is_the_store_artifact_boundary() {
         let root = unique_test_root();
         let manifest = audio_manifest_for_test(
@@ -5375,6 +6065,54 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcribe_imported_wav_maps_segments_to_imported_channel() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let backend = FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+            0,
+            1_200,
+            "imported transcript",
+        )]);
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            backend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe imported meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(json["meetings"][0]["transcriptText"], "imported transcript");
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["sourceChannel"],
+            "Imported"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
     }
 
     #[test]
@@ -6403,6 +7141,43 @@ mod tests {
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&0i16.to_le_bytes());
         fs::write(path, bytes).expect("minimal wav");
+    }
+
+    fn write_truncated_data_chunk_wav(path: &Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&38u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16_000u32.to_le_bytes());
+        bytes.extend_from_slice(&32_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        fs::write(path, bytes).expect("truncated wav");
+    }
+
+    fn write_missing_odd_data_chunk_pad_wav(path: &Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&38u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16_000u32.to_le_bytes());
+        bytes.extend_from_slice(&32_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(0);
+        fs::write(path, bytes).expect("missing odd chunk pad wav");
     }
 
     fn seed_transcribed_analyzed_meeting(root: &Path) {

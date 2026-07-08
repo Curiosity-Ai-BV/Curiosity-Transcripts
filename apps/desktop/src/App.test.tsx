@@ -656,6 +656,164 @@ describe("desktop workspace shell", () => {
     expect(screen.getAllByText("meetings/design-standup/audio").length).toBeGreaterThan(0);
   });
 
+  it("imports a user-provided WAV path with the optional title and replaces the snapshot", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const returned = connectedSnapshot({
+      selectedMeetingId: "imported-call",
+      meetings: [
+        {
+          ...getMockDesktopSnapshot().meetings[0],
+          id: "imported-call",
+          title: "Imported Call",
+        },
+      ],
+      recording: {
+        ...initial.recording,
+        meeting_id: "imported-call",
+        recording_id: "recording-imported-call",
+        state: "Complete",
+        recovery_action: "Imported local WAV into private app storage.",
+        storage_location: { app_private_path: "meetings/imported-call/audio" },
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      importAudioFile: async (args) => {
+        calls.push({ method: "importAudioFile", args });
+        return returned;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.type(screen.getByLabelText("Recording title"), "Customer call");
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/customer-call.wav");
+    await user.click(screen.getByRole("button", { name: "Import WAV" }));
+
+    expect(calls).toEqual([
+      {
+        method: "importAudioFile",
+        args: {
+          sourcePath: "/Users/adrian/imports/customer-call.wav",
+          title: "Customer call",
+        },
+      },
+    ]);
+    expect(screen.getByRole("heading", { name: "Imported Call" })).toBeInTheDocument();
+    expect(screen.getAllByText("Imported local WAV into private app storage.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("meetings/imported-call/audio").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("");
+  });
+
+  it("imports a WAV as the first meeting from an empty workspace", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      meetings: [],
+      selectedMeetingId: null,
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        meeting_id: "",
+        recording_id: null,
+        state: "Idle",
+        recovery_action: "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+      },
+    });
+    const returned = connectedSnapshot({
+      selectedMeetingId: "first-import",
+      meetings: [
+        {
+          ...getMockDesktopSnapshot().meetings[0],
+          id: "first-import",
+          title: "First Import",
+        },
+      ],
+      recording: {
+        ...initial.recording,
+        meeting_id: "first-import",
+        recording_id: "recording-first-import",
+        state: "Complete",
+        recovery_action: "Imported local WAV into private app storage.",
+        storage_location: { app_private_path: "meetings/first-import/audio" },
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      importAudioFile: async (args) => {
+        calls.push({ method: "importAudioFile", args });
+        return returned;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.type(screen.getByLabelText("Recording title"), "First import");
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/first.wav");
+    await user.click(screen.getByRole("button", { name: "Import WAV" }));
+
+    expect(calls).toEqual([
+      {
+        method: "importAudioFile",
+        args: {
+          sourcePath: "/Users/adrian/imports/first.wav",
+          title: "First import",
+        },
+      },
+    ]);
+    expect(screen.getByRole("heading", { name: "First Import" })).toBeInTheDocument();
+  });
+
+  it("preserves the typed WAV path after unrelated successful commands", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      startRecording: async () => connectedSnapshot(),
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/keep.wav");
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/keep.wav");
+  });
+
+  it("preserves the typed WAV path after a failed import", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      importAudioFile: async () => {
+        throw new Error("WAV source file has an unsupported WAV header.");
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/retry.wav");
+    await user.click(screen.getByRole("button", { name: "Import WAV" }));
+
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/retry.wav");
+    expect(screen.getByRole("alert")).toHaveTextContent("WAV source file has an unsupported WAV header.");
+  });
+
   it("uses explicit command readiness instead of exact detail copy", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
@@ -1637,6 +1795,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
     desktopSnapshot: async () => snapshot,
     searchMeetings: async () => [],
     startRecording: async () => snapshot,
+    importAudioFile: async () => snapshot,
     stopRecording: async () => snapshot,
     transcribeMeeting: async () => snapshot,
     correctTranscriptSegment: async () => snapshot,

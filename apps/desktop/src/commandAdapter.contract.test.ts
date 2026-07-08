@@ -284,6 +284,7 @@ describe("typed desktop command facade", () => {
     await facade.desktopSnapshot();
     await facade.searchMeetings({ query: "retention" });
     await facade.startRecording({ title: "MVP sync" });
+    await facade.importAudioFile({ sourcePath: "/Users/adrian/imports/customer-call.wav", title: "Imported call" });
     await facade.stopRecording();
     await facade.transcribeMeeting({ meetingId: "circuit-review" });
     await facade.correctTranscriptSegment({
@@ -310,6 +311,10 @@ describe("typed desktop command facade", () => {
       {
         command: "start_microphone_recording",
         args: { title: "MVP sync" },
+      },
+      {
+        command: "import_audio_file",
+        args: { sourcePath: "/Users/adrian/imports/customer-call.wav", title: "Imported call" },
       },
       { command: "stop_microphone_recording", args: undefined },
       { command: "transcribe_meeting", args: { meetingId: "circuit-review" } },

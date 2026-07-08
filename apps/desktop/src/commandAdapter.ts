@@ -202,6 +202,7 @@ export interface DesktopCommandFacade {
   desktopSnapshot(): Promise<DesktopSnapshot>;
   searchMeetings(args: { query: string }): Promise<MeetingSearchResult[]>;
   startRecording(args?: { title?: string }): Promise<DesktopSnapshot>;
+  importAudioFile(args: { sourcePath: string; title?: string }): Promise<DesktopSnapshot>;
   stopRecording(): Promise<DesktopSnapshot>;
   transcribeMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
   correctTranscriptSegment(args: {
@@ -934,6 +935,7 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "save_analysis_settings",
   "save_whisper_model_path",
   "seed_dev_fixture",
+  "import_audio_file",
   "start_microphone_recording",
   "stop_microphone_recording",
   "transcribe_meeting",
@@ -1197,6 +1199,8 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
     searchMeetings: ({ query }) => fetchCommand<MeetingSearchResult[]>("search_meetings", { query }),
     startRecording: (args) =>
       snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
+    importAudioFile: ({ sourcePath, title }) =>
+      snapshotCommand("import_audio_file", title ? { sourcePath, title } : { sourcePath }),
     stopRecording: () => snapshotCommand("stop_microphone_recording"),
     transcribeMeeting: ({ meetingId }) => snapshotCommand("transcribe_meeting", { meetingId }),
     correctTranscriptSegment: ({ meetingId, segmentId, correctedText, editedAtMs }) =>
