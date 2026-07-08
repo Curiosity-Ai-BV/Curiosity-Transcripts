@@ -336,7 +336,11 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     !renameTitle.trim() ||
     renameTitle.trim() === selectedMeeting.title;
   const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
-  const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const selectedMeetingHasActiveDeleteBlockingJob =
+    isSelectedActiveCommandJob(currentSnapshot.transcriptionJob, selectedMeeting?.id) ||
+    isSelectedActiveCommandJob(currentSnapshot.summaryJob, selectedMeeting?.id);
+  const deleteDisabled =
+    !commandSurfaceReady || !selectedMeeting || commandBusy || selectedMeetingHasActiveDeleteBlockingJob;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const importWavPathDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const chooseWavDisabled = importWavPathDisabled;
@@ -917,6 +921,8 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     ? commandUnavailableTitle
     : commandBusy
       ? busyCommandTitle
+      : selectedMeetingHasActiveDeleteBlockingJob
+        ? "Cancel or wait for the active transcription or summary job before deleting private data."
       : selectedMeeting
         ? "Delete app-private data for the selected meeting."
         : "Select a meeting before deleting private data.";
@@ -2019,6 +2025,13 @@ function snapshotHasActiveCommandJob(snapshot: DesktopSnapshot): boolean {
 
 function isActiveCommandJob(job: DesktopSnapshot["transcriptionJob"]): boolean {
   return job?.state === "Running" || job?.state === "CancelRequested";
+}
+
+function isSelectedActiveCommandJob(
+  job: DesktopSnapshot["transcriptionJob"],
+  selectedMeetingId: string | undefined,
+): boolean {
+  return Boolean(job && selectedMeetingId && job.meetingId === selectedMeetingId && isActiveCommandJob(job));
 }
 
 function isSelectedRetryableJob(

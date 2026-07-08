@@ -8068,6 +8068,51 @@ mod tests {
     }
 
     #[test]
+    fn delete_meeting_rejects_active_processing_job_without_corrupting_state() {
+        let root = unique_test_root();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Do not delete active",
+            "active processing transcript",
+        );
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let job =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin active summary job");
+        let mut command_state = command_state.into_inner().expect("command state");
+
+        let snapshot = delete_meeting_for_app_root(&root, &mut command_state, "meeting-1")
+            .expect("active processing delete returns visible failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["deleteCommand"]["state"], "failed");
+        assert_eq!(json["deleteCommand"]["meetingId"], "meeting-1");
+        assert!(json["deleteCommand"]["message"]
+            .as_str()
+            .expect("delete message")
+            .contains("active processing job"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .any(|meeting| meeting["id"] == "meeting-1"));
+        assert!(!reopened
+            .meeting_deleted("meeting-1")
+            .expect("meeting should not be marked deleted"));
+        assert_eq!(
+            reopened
+                .processing_job(&job.id)
+                .expect("active summary job")
+                .status,
+            JobStatus::Running
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn rename_export_and_delete_commands_do_not_hold_command_mutex_during_store_work() {
         let source = include_str!("main.rs");
         let old_rename_call = concat!(

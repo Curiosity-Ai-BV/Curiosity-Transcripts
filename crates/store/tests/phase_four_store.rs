@@ -323,9 +323,9 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
             "meeting-1-job-1",
             "meeting-1",
             JobKind::Transcribe,
-            JobStatus::Running,
+            JobStatus::Succeeded,
         ))
-        .expect("insert deleted meeting job");
+        .expect("insert historical deleted meeting job");
     store.rebuild_search_index().expect("rebuild search");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
@@ -398,9 +398,9 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
             "meeting-1-job-1",
             "meeting-1",
             JobKind::Transcribe,
-            JobStatus::Running,
+            JobStatus::Failed,
         ))
-        .expect("insert deleted meeting job");
+        .expect("insert historical deleted meeting job");
     store
         .insert_processing_job(&ProcessingJob::new(
             "meeting-2-job-1",
@@ -435,6 +435,142 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
         .search_meetings("delete")
         .expect("search deleted")
         .is_empty());
+}
+
+#[test]
+fn delete_meeting_rejects_active_transcription_and_summary_jobs_without_private_cleanup() {
+    for (case, kind, cancel_requested) in [
+        ("running-transcription", JobKind::Transcribe, false),
+        ("cancel-requested-summary", JobKind::Summarize, true),
+    ] {
+        let root = test_root(case);
+        let store = migrated_store(&root);
+        seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+        let artifact_path = root.join("meetings/meeting-1/audio/imported.wav");
+        fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
+        fs::write(&artifact_path, b"private audio").expect("artifact file");
+        let manifest_path = root.join("meetings/meeting-1/manifest.json");
+        ArtifactManifest::new(
+            "meeting-1",
+            "meeting-1-session-1",
+            "meeting-1-artifact-1",
+            "meetings/meeting-1/audio/imported.wav",
+            "sha256:meeting-1",
+        )
+        .write(&manifest_path)
+        .expect("write manifest");
+        let mut job = ProcessingJob::new(
+            format!("meeting-1-{case}-job"),
+            "meeting-1",
+            kind,
+            JobStatus::Running,
+        );
+        job.cancel_requested = cancel_requested;
+        store
+            .insert_processing_job(&job)
+            .expect("insert active job");
+        store.rebuild_search_index().expect("rebuild search");
+
+        let err = store
+            .delete_meeting("meeting-1")
+            .expect_err("active jobs must block private data deletion");
+
+        assert!(
+            err.to_string().contains("active processing job"),
+            "{case}: {err}"
+        );
+        assert!(
+            !store
+                .meeting_deleted("meeting-1")
+                .expect("meeting delete intent"),
+            "{case}: meeting should not be marked deleted"
+        );
+        assert!(
+            !store
+                .artifact_tombstoned("meeting-1-artifact-1")
+                .expect("artifact tombstone"),
+            "{case}: artifact should not be tombstoned"
+        );
+        assert!(artifact_path.exists(), "{case}: artifact file remains");
+        assert!(manifest_path.exists(), "{case}: manifest remains");
+        assert_eq!(
+            store
+                .count("recording_sessions")
+                .expect("recording sessions"),
+            1,
+            "{case}: recording session remains"
+        );
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            1,
+            "{case}: processing job remains"
+        );
+        let active_job = store.processing_job(&job.id).expect("active job remains");
+        assert_eq!(active_job.status, JobStatus::Running, "{case}");
+        assert_eq!(
+            active_job.cancel_requested, cancel_requested,
+            "{case}: cancel request flag remains"
+        );
+        assert_eq!(
+            meeting_search_row_count(&root, "meeting-1"),
+            1,
+            "{case}: search row remains"
+        );
+        assert_eq!(
+            ids(&store.search_meetings("delete").expect("search deleted")),
+            vec!["meeting-1"],
+            "{case}: meeting remains searchable"
+        );
+    }
+}
+
+#[test]
+fn delete_meeting_allows_historical_transcription_and_summary_jobs() {
+    for (case, kind, status) in [
+        (
+            "succeeded-transcription",
+            JobKind::Transcribe,
+            JobStatus::Succeeded,
+        ),
+        ("failed-summary", JobKind::Summarize, JobStatus::Failed),
+        (
+            "canceled-transcription",
+            JobKind::Transcribe,
+            JobStatus::Canceled,
+        ),
+        ("retry-summary", JobKind::Summarize, JobStatus::Retry),
+        (
+            "recovery-transcription",
+            JobKind::Transcribe,
+            JobStatus::Recovery,
+        ),
+    ] {
+        let root = test_root(case);
+        let store = migrated_store(&root);
+        seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+        store
+            .insert_processing_job(&ProcessingJob::new(
+                format!("meeting-1-{case}-job"),
+                "meeting-1",
+                kind,
+                status,
+            ))
+            .expect("insert historical job");
+
+        store
+            .delete_meeting("meeting-1")
+            .unwrap_or_else(|err| panic!("{case}: historical job should not block delete: {err}"));
+
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            0,
+            "{case}: historical job is deleted with private rows"
+        );
+        assert!(
+            store.search_meetings("delete").expect("search").is_empty(),
+            "{case}: deleted meeting should not remain searchable"
+        );
+    }
 }
 
 #[test]

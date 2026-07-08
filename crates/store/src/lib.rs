@@ -2236,7 +2236,9 @@ impl Store {
         let mut report = self.delete_report_for_meeting(meeting_id)?;
 
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let result = self.mark_meeting_delete_intent_in_transaction(meeting_id);
+        let result = self
+            .ensure_no_active_delete_blocking_processing_job(meeting_id)
+            .and_then(|()| self.mark_meeting_delete_intent_in_transaction(meeting_id));
         match result {
             Ok(()) => {
                 if let Err(err) = self.conn.execute_batch("COMMIT") {
@@ -3001,6 +3003,24 @@ impl Store {
 
     fn delete_meeting_db_rows_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
         self.delete_private_meeting_rows(meeting_id)?;
+        Ok(())
+    }
+
+    fn ensure_no_active_delete_blocking_processing_job(&self, meeting_id: &str) -> StoreResult<()> {
+        if let Some(job) = self.active_transcription_job_for_meeting(meeting_id)? {
+            return Err(format!(
+                "Cannot delete private data while meeting {meeting_id} has an active processing job: {}",
+                job.id
+            )
+            .into());
+        }
+        if let Some(job) = self.active_summary_job_for_meeting(meeting_id)? {
+            return Err(format!(
+                "Cannot delete private data while meeting {meeting_id} has an active processing job: {}",
+                job.id
+            )
+            .into());
+        }
         Ok(())
     }
 

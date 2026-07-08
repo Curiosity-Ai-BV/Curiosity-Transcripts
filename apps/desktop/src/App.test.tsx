@@ -2132,6 +2132,45 @@ describe("desktop workspace shell", () => {
     expect(screen.getByText("1 private artifact removed. 1 exported file remains outside app control.")).toBeInTheDocument();
   });
 
+  it("disables private-data deletion only for the selected meeting with an active command job", () => {
+    const selectedActive = connectedSnapshot({
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Running",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+      },
+    });
+    const otherMeetingActive = connectedSnapshot({
+      summaryJob: {
+        id: "summary-design-standup-1700000002000",
+        kind: "Summary",
+        meetingId: "design-standup",
+        state: "Running",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    });
+
+    const { rerender } = render(<App snapshot={selectedActive} commandFacade={fakeCommandFacade()} />);
+
+    expect(screen.getByRole("button", { name: "Delete private data" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete private data" })).toHaveAttribute(
+      "title",
+      "Cancel or wait for the active transcription or summary job before deleting private data.",
+    );
+
+    rerender(<App snapshot={otherMeetingActive} commandFacade={fakeCommandFacade()} />);
+
+    expect(screen.getByRole("button", { name: "Delete private data" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete private data" })).toHaveAttribute(
+      "title",
+      "Delete app-private data for the selected meeting.",
+    );
+  });
+
   it("retries a failed delete through the preserved command meeting id", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
