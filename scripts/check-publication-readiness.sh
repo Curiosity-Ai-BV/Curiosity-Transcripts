@@ -51,6 +51,7 @@ check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
+check_file "scripts/check-tauri-command-surface.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
@@ -85,6 +86,9 @@ require_text docs/production-readiness-roadmap.md 'check-tauri-security\.js' 'Ta
 require_text docs/production-readiness-roadmap.md 'Current Phase 2A CSP status' 'Phase 2A CSP implementation status'
 require_text docs/production-readiness-roadmap.md 'connect-src ipc: http://ipc\.localhost' 'Phase 2A local Tauri IPC CSP boundary'
 require_text docs/production-readiness-roadmap.md 'unsafe-inline, unsafe-eval' 'Phase 2A unsafe CSP source rejection boundary'
+require_text docs/production-readiness-roadmap.md 'Current Tauri command surface status' 'Tauri command surface status'
+require_text docs/production-readiness-roadmap.md 'check-tauri-command-surface\.js' 'Tauri command surface publication gate documentation'
+require_text docs/production-readiness-roadmap.md 'seed_dev_fixture' 'debug fixture command surface boundary'
 require_text docs/production-readiness-roadmap.md 'Current Phase 2D at-rest/keychain status' 'Phase 2D at-rest/keychain status'
 require_text docs/production-readiness-roadmap.md 'docs/at-rest-data-strategy\.md' 'Phase 2D at-rest strategy reference'
 require_text docs/production-readiness-roadmap.md 'keychain-backed secret storage, migration/recovery support' 'Phase 2D implementation remains later work'
@@ -118,6 +122,7 @@ require_text docs/production-readiness-roadmap.md 'protection, and alert triage 
 require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
+require_text docs/release-candidate-checklist.md 'check-tauri-command-surface\.js' 'Tauri command surface release-candidate gate'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'macOS permissions' 'macOS permissions release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Model setup' 'model setup release-candidate smoke item'
@@ -664,6 +669,7 @@ require_text .github/dependabot.yml 'directory: "/"' 'Dependabot root cargo dire
 require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Dependabot desktop Tauri cargo directory'
 require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-command-surface\.js; then' 'Tauri command surface publication readiness gate'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
 require_text scripts/generate-supply-chain-artifacts.js 'cargo metadata --locked --format-version 1' 'root Cargo locked metadata command'
 require_text scripts/generate-supply-chain-artifacts.js 'aarch64-apple-darwin' 'arm64 macOS Cargo metadata target filter'
@@ -738,6 +744,10 @@ if ! node scripts/check-release-workflow.js; then
 fi
 
 if ! node scripts/check-tauri-security.js; then
+  failures=1
+fi
+
+if ! node scripts/check-tauri-command-surface.js; then
   failures=1
 fi
 

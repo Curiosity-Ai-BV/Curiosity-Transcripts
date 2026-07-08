@@ -8,8 +8,10 @@ Skipped smoke checks are not passes. Record the build, machine, macOS version,
 model paths, and any skipped item in the release notes.
 
 Automated release readiness must include `node scripts/check-tauri-security.js`
-through `bash scripts/check-publication-readiness.sh`; the gate fails null or
-loosened Tauri renderer CSP values before manual smoke starts.
+and `node scripts/check-tauri-command-surface.js` through
+`bash scripts/check-publication-readiness.sh`; the gate fails null or loosened
+Tauri renderer CSP values and prevents the debug/test-only `seed_dev_fixture`
+command from entering the release invoke handler before manual smoke starts.
 
 Desktop npm dependencies must pass `npm audit --audit-level=high` after
 `npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions

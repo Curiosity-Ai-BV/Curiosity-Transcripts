@@ -168,6 +168,14 @@ null, empty, unsafe-inline, unsafe-eval, wildcard, remote-origin, broad-scheme,
 missing-IPC, unexpected-directive, and `devCsp` regressions before manual release
 smoke starts.
 
+Current Tauri command surface status: release builds register a separate
+`#[cfg(not(any(test, debug_assertions)))]` invoke handler that omits the
+debug/test-only `seed_dev_fixture` command, while debug/test builds keep the
+command available for deterministic harnesses. `scripts/check-tauri-command-surface.js`
+is part of publication readiness and rejects release-handler regressions that
+would expose `seed_dev_fixture` in the production command surface or remove its
+debug/test cfg guard.
+
 Current Phase 2B status: desktop npm drift is gated by
 `npm audit --audit-level=high` in CI, and Dependabot is configured for
 `/apps/desktop` npm, root Cargo, desktop Tauri Cargo, and GitHub Actions

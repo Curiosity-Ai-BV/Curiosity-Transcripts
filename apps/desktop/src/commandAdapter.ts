@@ -1211,7 +1211,6 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "save_analysis_settings",
   "save_raw_audio_retention_policy",
   "save_whisper_model_path",
-  "seed_dev_fixture",
   "import_audio_file",
   "start_microphone_recording",
   "stop_microphone_recording",
