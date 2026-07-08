@@ -332,9 +332,13 @@ installer smoke path.
 ## GitHub Pages Homepage
 
 The static homepage under `site/` is published by `.github/workflows/pages.yml`.
-On each `main` deployment, GitHub Actions builds the Developer ID signed and
-notarized macOS DMG on a macOS 26 runner, copies it into the Pages artifact, and
-updates the stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+Publishing the moving latest DMG requires an explicit manual workflow dispatch
+from `main` after filled smoke evidence validates with
+`node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`.
+When confirmed, GitHub Actions runs the signing job in the protected
+`macos-signing` environment, builds the Developer ID signed and notarized macOS
+DMG on a macOS 26 runner, copies it into the Pages artifact, and updates the
+stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
@@ -354,8 +358,10 @@ For example, package version `0.1.18` is released from tag `v0.1.18`. A tag that
 does not match the app metadata fails before upload.
 
 The GitHub Pages workflow keeps the moving latest download at
-`downloads/Curiosity-Transcripts-latest.dmg`. Versioned distribution happens
-through GitHub Release assets. The release workflow uploads:
+`downloads/Curiosity-Transcripts-latest.dmg` when manually dispatched after the
+signed/notarized workflow path and filled smoke evidence validation. Versioned
+distribution happens through GitHub Release assets. The release workflow
+uploads:
 
 ```text
 Curiosity-Transcripts-<version>-macos-aarch64.dmg
@@ -369,7 +375,8 @@ Apple credentials.
 The first public release architecture is arm64-only macOS. The release workflow
 asserts an `arm64` runner before uploading the draft `macos-aarch64` GitHub
 Release asset, and the stable Pages DMG follows the same signed/notarized Apple
-Silicon release path.
+Silicon release path when manually published after filled smoke evidence
+validation.
 Do not advertise x64 or universal macOS builds unless the workflows, release
 assets, checklist, and public copy change together.
 

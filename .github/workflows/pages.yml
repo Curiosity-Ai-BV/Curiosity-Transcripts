@@ -1,10 +1,13 @@
 name: GitHub Pages
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      filled_smoke_evidence_validated:
+        description: "Confirm filled smoke evidence validates with: node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,6 +21,8 @@ concurrency:
 jobs:
   build-macos-dmg:
     runs-on: macos-26
+    environment:
+      name: macos-signing
     env:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -30,6 +35,18 @@ jobs:
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
+      - name: Require main branch for Pages publication
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Publishing the public latest DMG must run from refs/heads/main."
+          exit 1
+
+      - name: Confirm filled smoke evidence validation
+        if: ${{ inputs.filled_smoke_evidence_validated != true }}
+        run: |
+          echo "::error::Publishing the public latest DMG requires filled smoke evidence validated with: node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json"
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@v4
 

@@ -520,7 +520,7 @@
                 </div>
                 <div class="segment">
                   <strong>02:18</strong>
-                  <div class="line">The macOS DMG should be attached to each deployment and linked from the Pages site.</div>
+                  <div class="line">The latest DMG waits for signed/notarized checks and filled smoke evidence.</div>
                 </div>
               </div>
               <div class="summary">
@@ -531,7 +531,7 @@
                   </div>
                   <div class="mini-panel">
                     <strong>Action</strong>
-                    <span class="line">Verify the signed and notarized DMG before publishing.</span>
+                    <span class="line">Validate filled smoke evidence before publishing.</span>
                   </div>
                 </div>
               </div>
@@ -588,12 +588,13 @@
       <section id="download" class="shell section" aria-labelledby="download-title">
         <div class="download-panel">
           <div>
-            <p class="eyebrow">Automated deployment artifact</p>
+            <p class="eyebrow">Manual release artifact</p>
             <h2 id="download-title">Latest macOS DMG</h2>
             <p>
-              Each GitHub Pages deployment publishes a Developer ID signed and notarized arm64 macOS DMG to the stable download path below. The
-              workflow verifies the stapled notarization ticket and Gatekeeper
-              assessment before deployment.
+              The latest public DMG is manually published after the signed/notarized workflow and filled smoke evidence validation. That workflow
+              produces a Developer ID signed and notarized arm64 macOS DMG and
+              verifies the disk image, stapled notarization ticket, app
+              signature, and Gatekeeper assessment before publication.
             </p>
           </div>
           <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>

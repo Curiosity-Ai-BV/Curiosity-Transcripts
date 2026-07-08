@@ -76,10 +76,13 @@ Slice 0 public source-of-truth decisions:
 - Integration export surface: JSON remains the deterministic integration
   format. Markdown and SRT are user-facing transcript formats backed by
   `crates/transcription`.
-- Pages download flow: the stable Pages DMG is built as a Developer ID signed
-  and notarized artifact, then the copied latest DMG goes through the same
-  hdiutil, stapling, Gatekeeper, read-only attach, and mounted app signature
-  checks as the versioned release asset before deployment.
+- Pages download flow: publication of the moving latest DMG is manually
+  dispatched from `main` after filled smoke evidence validation. The signing job
+  uses the protected `macos-signing` environment. The stable Pages DMG is built
+  as a Developer ID signed and notarized artifact, then the copied latest DMG
+  goes through the same hdiutil, stapling, Gatekeeper, read-only attach, and
+  mounted app signature checks as the versioned release asset before
+  publication.
 - First public release architecture: arm64-only macOS DMG. The versioned
   GitHub Release asset is `macos-aarch64`; x64 and universal builds are out of
   scope until a later slice changes workflows, QA, and public copy together.
