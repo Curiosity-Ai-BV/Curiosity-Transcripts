@@ -208,7 +208,10 @@ debug/test-only `seed_dev_fixture` command, while debug/test builds keep the
 command available for deterministic harnesses. `scripts/check-tauri-command-surface.js`
 is part of publication readiness and rejects release-handler regressions that
 would expose `seed_dev_fixture` in the production command surface or remove its
-debug/test cfg guard.
+debug/test cfg guard. It also checks that every command literal used by the
+frontend desktop command facade is registered in the release invoke handler, and
+that every snapshot-returning facade command remains in the
+`DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist.
 
 Current Phase 2B status: desktop npm drift is gated by
 `npm audit --audit-level=high` in CI, and Dependabot is configured for
@@ -400,8 +403,11 @@ leakage in publication readiness. Rust tests guard exact equality against the
 generated command/view payload, and TS command adapter contract tests consume the same fixture.
 Snapshot-returning commands, setup test commands, and
 `search_meetings` results are also validated at the TypeScript command-adapter
-boundary before the desktop shell consumes them. This is a fixture-derived shape
-lock, not generated DTO ownership; full generated DTOs remain later work.
+boundary before the desktop shell consumes them. The Tauri command-surface gate
+now guards the frontend-to-release registration subset and the
+`DESKTOP_SNAPSHOT_COMMANDS` validation allowlist so facade drift fails before
+manual QA. This is a fixture-derived shape lock plus command-registration guard,
+not generated DTO ownership; full generated DTOs remain later work.
 
 Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov` with the
 exact tool provenance command

@@ -33,6 +33,44 @@ function extractCommands(source, cfgPattern, label) {
   };
 }
 
+function extractDesktopSnapshotCommands(source) {
+  const match = source.match(/const DESKTOP_SNAPSHOT_COMMANDS = new Set\(\[\s*([\s\S]*?)\s*\]\);/);
+  if (!match) {
+    return {
+      commands: [],
+      errors: ["Missing DESKTOP_SNAPSHOT_COMMANDS runtime validation allowlist"],
+    };
+  }
+
+  return {
+    commands: [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]),
+    errors: [],
+  };
+}
+
+function extractFrontendCommandLiterals(source) {
+  const facadeMatch = source.match(
+    /export function createDesktopCommandFacade\(fetchCommand: CommandFetcher\): DesktopCommandFacade \{\s*([\s\S]*?)\n\}/,
+  );
+  if (!facadeMatch) {
+    return {
+      snapshotCommands: [],
+      fetchCommands: [],
+      errors: ["Missing createDesktopCommandFacade command mapping"],
+    };
+  }
+
+  const facadeSource = facadeMatch[1];
+  const snapshotCommands = [...facadeSource.matchAll(/snapshotCommand\("([^"]+)"/g)].map((entry) => entry[1]);
+  const fetchCommands = [...facadeSource.matchAll(/fetchCommand(?:<[^>]+>)?\("([^"]+)"/g)].map((entry) => entry[1]);
+
+  return {
+    snapshotCommands,
+    fetchCommands,
+    errors: [],
+  };
+}
+
 function validateCommandSurface(source) {
   const errors = [];
   const debugHandler = extractCommands(
@@ -67,15 +105,48 @@ function validateCommandSurface(source) {
   return errors;
 }
 
-function validateFrontendCommandSurface(source) {
+function validateFrontendCommandSurface(source, releaseCommands = []) {
   const errors = [];
+  const snapshotAllowlist = extractDesktopSnapshotCommands(source);
+  const frontendCommands = extractFrontendCommandLiterals(source);
+  const releaseCommandSet = new Set(releaseCommands);
+  const snapshotAllowlistSet = new Set(snapshotAllowlist.commands);
 
   if (source.includes("seed_dev_fixture")) {
     errors.push("Production command adapter must not expose debug/test-only seed_dev_fixture");
   }
 
+  errors.push(...snapshotAllowlist.errors, ...frontendCommands.errors);
+
+  const allFacadeCommands = new Set([
+    ...frontendCommands.snapshotCommands,
+    ...frontendCommands.fetchCommands,
+  ]);
+
+  for (const command of [...allFacadeCommands].sort()) {
+    if (!releaseCommandSet.has(command)) {
+      errors.push(`Production command adapter invokes ${command}, but the release Tauri handler does not register it`);
+    }
+  }
+
+  for (const command of [...new Set(frontendCommands.snapshotCommands)].sort()) {
+    if (!snapshotAllowlistSet.has(command)) {
+      errors.push(`Snapshot-returning facade command ${command} must be listed in DESKTOP_SNAPSHOT_COMMANDS`);
+    }
+  }
+
   return errors;
 }
+
+function releaseCommands(source) {
+  return extractCommands(
+    source,
+    /#\[cfg\(not\(any\(test, debug_assertions\)\)\)\]\s*let builder = builder\.invoke_handler\(tauri::generate_handler!\[\s*([\s\S]*?)\s*\]\);/,
+    "release",
+  );
+}
+
+let registeredReleaseCommands = [];
 
 if (!fs.existsSync(mainPath)) {
   fail(mainLabel, "Missing Tauri main source");
@@ -120,6 +191,12 @@ if (!fs.existsSync(mainPath)) {
   for (const error of validateCommandSurface(source)) {
     fail(mainLabel, error);
   }
+
+  const releaseHandler = releaseCommands(source);
+  for (const error of releaseHandler.errors) {
+    fail(mainLabel, error);
+  }
+  registeredReleaseCommands = releaseHandler.commands;
 }
 
 if (!fs.existsSync(adapterPath)) {
@@ -127,12 +204,43 @@ if (!fs.existsSync(adapterPath)) {
 } else {
   const source = fs.readFileSync(adapterPath, "utf8");
   const exposedFixture = `${source}\nconst leakedDebugCommand = "seed_dev_fixture";\n`;
+  const missingReleaseRegistrationFixture = source.replace(
+    'fetchCommand<unknown>("search_meetings", { query })',
+    'fetchCommand("search_archives", { query })',
+  );
+  const missingSnapshotValidationFixture = source.replace('"save_analysis_settings",\n', "");
 
-  if (validateFrontendCommandSurface(exposedFixture).length === 0) {
+  if (validateFrontendCommandSurface(exposedFixture, registeredReleaseCommands).length === 0) {
     fail(scriptLabel, "Guardrail did not reject: frontend adapter exposes debug fixture command");
   }
 
-  for (const error of validateFrontendCommandSurface(source)) {
+  if (missingReleaseRegistrationFixture === source) {
+    fail(scriptLabel, "Guardrail fixture did not mutate source: frontend adapter invokes unregistered release command");
+  } else {
+    const errors = validateFrontendCommandSurface(missingReleaseRegistrationFixture, registeredReleaseCommands);
+    if (
+      !errors.includes(
+        "Production command adapter invokes search_archives, but the release Tauri handler does not register it",
+      )
+    ) {
+      fail(scriptLabel, "Guardrail did not reject: frontend adapter invokes unregistered release command");
+    }
+  }
+
+  if (missingSnapshotValidationFixture === source) {
+    fail(scriptLabel, "Guardrail fixture did not mutate source: snapshot command removed from validation allowlist");
+  } else {
+    const errors = validateFrontendCommandSurface(missingSnapshotValidationFixture, registeredReleaseCommands);
+    if (
+      !errors.includes(
+        "Snapshot-returning facade command save_analysis_settings must be listed in DESKTOP_SNAPSHOT_COMMANDS",
+      )
+    ) {
+      fail(scriptLabel, "Guardrail did not reject: snapshot command removed from validation allowlist");
+    }
+  }
+
+  for (const error of validateFrontendCommandSurface(source, registeredReleaseCommands)) {
     fail(adapterLabel, error);
   }
 }

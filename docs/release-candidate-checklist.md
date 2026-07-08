@@ -29,7 +29,10 @@ Automated release readiness must include `node scripts/check-tauri-security.js`
 and `node scripts/check-tauri-command-surface.js` through
 `bash scripts/check-publication-readiness.sh`; the gate fails null or loosened
 Tauri renderer CSP values and prevents the debug/test-only `seed_dev_fixture`
-command from entering the release invoke handler before manual smoke starts.
+command from entering the release invoke handler before manual smoke starts. The
+command-surface gate must also keep frontend facade command literals registered
+in the release invoke handler and keep snapshot-returning facade commands in the
+`DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist.
 It must also run `node scripts/check-plain-secret-storage.js` to guard persisted
 settings, app service DTOs, and desktop command/view DTO/contract shape against
 plain API key, OAuth/access/refresh/calendar token, encryption key, hosted
@@ -151,7 +154,10 @@ or complete privacy/deletion/recovery coverage.
   `apps/desktop/contracts/desktop-command-view-contract.schema.json` are present
   in the build source. Run `node scripts/check-desktop-command-view-contract.js`
   plus the Rust/TS contract checks before manual smoke starts. Treat this as a
-  fixture-derived shape lock, not generated DTO ownership.
+  fixture-derived shape lock, not generated DTO ownership. Run
+  `node scripts/check-tauri-command-surface.js` so frontend facade commands stay
+  registered in the release invoke handler and snapshot-returning commands stay
+  covered by runtime snapshot validation.
 - Delete: delete the meeting and verify app-private transcript, analysis,
   manifests, meeting-scoped private DB rows, `processing_jobs`, and
   `meeting_search` rows are removed. Verify app-private audio artifacts are
