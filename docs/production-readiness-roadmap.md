@@ -147,6 +147,14 @@ local or hosted processing state, export status, and delete or remaining export
 status. Retention controls, encryption/key management, and keychain-backed secrets
 remain later Phase 2 work unless implemented in separate slices.
 
+Current Phase 2D at-rest/keychain status: `docs/at-rest-data-strategy.md`
+documents the v1 decision to rely on app-private storage plus OS/user-account
+file protections instead of app-level encryption-at-rest. It also defines the
+future OS keychain boundary for provider keys, OAuth tokens, calendar tokens,
+hosted provider secrets, and encryption keys. Actual encryption-at-rest,
+keychain-backed secret storage, migration/recovery support, and richer retention
+controls remain later work unless implemented in separate slices.
+
 Success criteria:
 
 - A release candidate has no obvious desktop renderer hardening gap.

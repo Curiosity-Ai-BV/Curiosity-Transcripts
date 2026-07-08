@@ -53,6 +53,11 @@ output are still future hardening gates unless a later slice adds them.
   app-private audio path, raw-audio retention, local or hosted processing state,
   export status, and delete or remaining-export status. Retention controls,
   encryption-at-rest, and keychain secrets remain future checks until implemented.
+- At-rest disclosure: verify the release notes disclose that app-level
+  encryption-at-rest is not implemented in v1, app-private storage relies on
+  OS/user-account file protections, app delete controls app-private meeting data,
+  and user-owned source files plus exported files can remain outside app delete
+  control.
 - Export: use the desktop export action for JSON, Markdown, and SRT, and verify
   each exported file path and format-specific status is reported. Treat JSON as
   the deterministic integration format.

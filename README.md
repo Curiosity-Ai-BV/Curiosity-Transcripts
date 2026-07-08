@@ -112,8 +112,11 @@ Implemented MVP flows:
 Remaining gaps:
 
 - First-run model download/management UI for Whisper and Ollama.
-- Richer privacy controls for retention, encryption/key management, keychain
-  secrets, storage location, provider disclosure, and remaining exported files.
+- Richer privacy controls for retention, storage location, provider disclosure,
+  and remaining exported files.
+- App-level encryption-at-rest and keychain-backed secret storage are not
+  implemented in v1. See `docs/at-rest-data-strategy.md` for the current
+  app-private storage decision and future keychain boundary.
 - Real-hardware release confidence for default, no-Whisper, and
   ScreenCaptureKit system-audio builds.
 - Calendar integration, starting with Apple Calendar context before cloud
@@ -185,8 +188,9 @@ Engineering hardening before broader contributors:
 - Maintain and extend the existing CI gate for root Rust, desktop Rust, desktop
   npm, release readiness, Pages/release workflow checks, and fail-loud smoke
   commands as new surfaces are added.
-- Keep secrets, OAuth tokens, provider keys, and future encryption keys in the
-  OS keychain rather than SQLite or plain settings files.
+- Keep future secrets, OAuth tokens, provider keys, and encryption keys in the
+  OS keychain rather than SQLite or plain settings files. This is a future
+  implementation boundary, not current v1 support.
 
 ## Workspace Layout
 
@@ -490,6 +494,12 @@ Local analysis presets currently include Ollama model candidates:
 Hosted or networked analysis is gated. OpenAI-compatible hosted providers
 require explicit key selection and explicit transcript data disclosure
 confirmation before any provider call is made.
+
+For at-rest storage, v1 uses app-private SQLite and local artifact files and
+relies on OS/user-account file protections. App-level encryption-at-rest and
+keychain-backed provider secret storage are not implemented yet. The documented
+boundary for current local data, user-owned exports/source files, and future
+keychain use lives in `docs/at-rest-data-strategy.md`.
 
 `deepseek-v3.2:cloud` and DeepSeek V3.2 Speciale are not local defaults. They
 are network/hosted options and must stay behind the hosted disclosure and

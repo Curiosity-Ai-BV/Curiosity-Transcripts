@@ -26,6 +26,7 @@ for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md;
   check_file "$file"
 done
 check_file "site/index.html"
+check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
@@ -52,8 +53,13 @@ require_text README.md 'Imported local WAV workflow' 'implemented imported WAV w
 require_text README.md 'Transcript segment correction' 'implemented transcript correction workflow claim'
 require_text README.md 'desktop-command-view-contract\.fixture\.json' 'checked-in desktop command/view contract fixture documentation'
 require_text README.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link'
+require_text README.md 'docs/at-rest-data-strategy\.md' 'at-rest data strategy link'
+require_text README.md 'App-level encryption-at-rest and keychain-backed secret storage are not' 'current encryption/keychain non-implementation disclosure'
 require_text README.md 'arm64-only' 'first public release architecture documentation'
 require_text docs/production-readiness-roadmap.md 'check-tauri-security\.js' 'Tauri renderer CSP release gate documentation'
+require_text docs/production-readiness-roadmap.md 'Current Phase 2D at-rest/keychain status' 'Phase 2D at-rest/keychain status'
+require_text docs/production-readiness-roadmap.md 'docs/at-rest-data-strategy\.md' 'Phase 2D at-rest strategy reference'
+require_text docs/production-readiness-roadmap.md 'keychain-backed secret storage, migration/recovery support' 'Phase 2D implementation remains later work'
 require_text docs/production-readiness-roadmap.md 'First public release architecture: arm64-only macOS DMG' 'first public release architecture decision'
 require_text docs/production-readiness-roadmap.md 'Current Phase 3B/3C/3D status: transcription and summary job start, cancel,' 'current durable transcription, summary, and feature-matrix status'
 require_text docs/production-readiness-roadmap.md 'CI now gates no-Whisper desktop tests and the' 'no-Whisper desktop CI feature-matrix status'
@@ -80,7 +86,17 @@ require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\
 require_text docs/release-candidate-checklist.md 'Delete' 'delete release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Uninstall and private-data handling' 'uninstall/private-data release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'JSON, Markdown, and SRT' 'current release-candidate export formats'
+require_text docs/release-candidate-checklist.md 'At-rest disclosure' 'at-rest disclosure release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'encryption-at-rest is not implemented in v1' 'release notes at-rest encryption disclosure'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
+require_text docs/at-rest-data-strategy.md 'app-private local storage' 'v1 app-private storage decision'
+require_text docs/at-rest-data-strategy.md 'encryption-at-rest is not implemented yet' 'v1 encryption-at-rest non-implementation'
+require_text docs/at-rest-data-strategy.md 'SQLite database' 'SQLite at-rest data scope'
+require_text docs/at-rest-data-strategy.md 'private meeting audio artifacts' 'private audio artifact at-rest data scope'
+require_text docs/at-rest-data-strategy.md 'provider API keys, OAuth tokens, calendar' 'not-stored secret classes'
+require_text docs/at-rest-data-strategy.md 'keychain or equivalent secure storage' 'future OS keychain boundary'
+require_text docs/at-rest-data-strategy.md 'must not be stored in SQLite, app settings, plain JSON files' 'future secrets must not use plain storage'
+require_text docs/at-rest-data-strategy.md 'migration, recovery, delete, backup/restore' 'future encryption migration and recovery boundary'
 
 require_text Cargo.toml '^license = "Apache-2\.0"$' 'workspace Apache-2.0 license metadata'
 
