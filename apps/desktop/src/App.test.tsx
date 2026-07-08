@@ -21,8 +21,15 @@ import {
   searchMeetings,
 } from "./commandAdapter";
 
+const dialogOpen = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: dialogOpen,
+}));
+
 afterEach(() => {
   cleanup();
+  dialogOpen.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -837,6 +844,205 @@ describe("desktop workspace shell", () => {
     expect(screen.getAllByText("Imported local WAV into private app storage.").length).toBeGreaterThan(0);
     expect(screen.getAllByText("meetings/imported-call/audio").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("WAV source path")).toHaveValue("");
+  });
+
+  it("chooses a WAV path with the native picker and imports the selected path", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      importAudioFile: async (args) => {
+        calls.push({ method: "importAudioFile", args });
+        return connectedSnapshot();
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={commandFacade}
+        filePicker={{
+          chooseImportWavPath: async () => "/Users/adrian/imports/chosen.wav",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Choose WAV" }));
+
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/chosen.wav");
+
+    await user.click(screen.getByRole("button", { name: "Import WAV" }));
+
+    expect(calls).toEqual([
+      {
+        method: "importAudioFile",
+        args: {
+          sourcePath: "/Users/adrian/imports/chosen.wav",
+        },
+      },
+    ]);
+  });
+
+  it("uses a scoped single-file WAV native picker by default", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    dialogOpen.mockResolvedValue("/Users/adrian/imports/default-picker.wav");
+
+    render(<App snapshot={initial} commandFacade={fakeCommandFacade()} />);
+
+    await user.click(screen.getByRole("button", { name: "Choose WAV" }));
+
+    expect(dialogOpen).toHaveBeenCalledWith({
+      title: "Choose WAV audio file",
+      multiple: false,
+      directory: false,
+      fileAccessMode: "scoped",
+      filters: [
+        {
+          name: "WAV audio",
+          extensions: ["wav"],
+        },
+      ],
+    });
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/default-picker.wav");
+  });
+
+  it("preserves a typed WAV path when the native picker is canceled", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{
+          chooseImportWavPath: async () => null,
+        }}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/typed.wav");
+    await user.click(screen.getByRole("button", { name: "Choose WAV" }));
+
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/typed.wav");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("preserves a typed WAV path and reports native picker errors", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{
+          chooseImportWavPath: async () => {
+            throw new Error("native dialog failed");
+          },
+        }}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("WAV source path"), "/Users/adrian/imports/typed.wav");
+    await user.click(screen.getByRole("button", { name: "Choose WAV" }));
+
+    expect(screen.getByLabelText("WAV source path")).toHaveValue("/Users/adrian/imports/typed.wav");
+    expect(screen.getByRole("alert")).toHaveTextContent("native dialog failed");
+  });
+
+  it("disables native WAV picking when commands are unavailable, recording is active, or another command is busy", async () => {
+    const user = userEvent.setup();
+    const unavailable = connectedSnapshot({
+      commandSurface: {
+        ready: false,
+        detail: "Desktop command surface is unavailable.",
+      },
+    });
+    const activeRecording = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Recording",
+        permission_state: "Ready",
+      },
+    });
+    const initial = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    let finishCommand!: () => void;
+    const returnedAfterStart = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        state: "Complete",
+        recovery_action: "Previous local desktop WAV artifacts are saved.",
+      },
+    });
+    const pendingSnapshot = new Promise<ReturnType<typeof connectedSnapshot>>((resolve) => {
+      finishCommand = () => resolve(returnedAfterStart);
+    });
+    const commandFacade = fakeCommandFacade({
+      startRecording: async () => pendingSnapshot,
+    });
+
+    const { rerender } = render(
+      <App
+        snapshot={unavailable}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{ chooseImportWavPath: async () => "/Users/adrian/imports/chosen.wav" }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Choose WAV" })).toBeDisabled();
+
+    rerender(
+      <App
+        snapshot={activeRecording}
+        commandFacade={fakeCommandFacade()}
+        filePicker={{ chooseImportWavPath: async () => "/Users/adrian/imports/chosen.wav" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Choose WAV" })).toBeDisabled();
+
+    rerender(
+      <App
+        snapshot={initial}
+        commandFacade={commandFacade}
+        filePicker={{ chooseImportWavPath: async () => "/Users/adrian/imports/chosen.wav" }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+    expect(screen.getByRole("button", { name: "Choose WAV" })).toBeDisabled();
+
+    finishCommand();
+    expect(await screen.findByRole("button", { name: "Choose WAV" })).toBeEnabled();
   });
 
   it("imports a WAV as the first meeting from an empty workspace", async () => {

@@ -45,6 +45,7 @@ use url::Url;
 
 fn main() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DesktopCommandState::default()))
         .on_window_event(cancel_active_recording_on_window_close);
     #[cfg(any(test, debug_assertions))]

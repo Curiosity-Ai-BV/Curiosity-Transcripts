@@ -272,11 +272,13 @@ Deliverables:
   command surface and existing store/transcription/export seams. The command
   copies a validated user-provided WAV path into app-private meeting storage,
   persists a completed imported recording artifact with the private relative path
-  and final copied-file SHA-256, and leaves MP3/M4A, transcoding, drag/drop,
-  batch import, metadata extraction, and native file picking out of scope.
+  and final copied-file SHA-256. The desktop UI keeps the typed source path
+  visible for transparency and adds native single-file `.wav` picking that feeds
+  the same import command. MP3/M4A, transcoding, drag/drop, batch import, and
+  metadata extraction remain out of scope.
 
-Later work: native file picking, richer import metadata, broader import formats,
-and more complete correction review workflows.
+Later work: richer import metadata, broader import formats, drag/drop, batch
+import, and more complete correction review workflows.
 
 Success criteria:
 

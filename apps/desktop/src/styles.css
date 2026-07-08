@@ -562,6 +562,13 @@ h3 {
   gap: 10px;
 }
 
+.import-wav-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
 .recording-title-field,
 .rename-title-field,
 .settings-field {
@@ -979,6 +986,10 @@ h3 {
   }
 
   .recording-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .import-wav-control {
     grid-template-columns: 1fr;
   }
 

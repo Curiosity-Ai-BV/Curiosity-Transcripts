@@ -2,6 +2,7 @@ import {
   CheckCircle,
   DownloadSimple,
   FileText,
+  FolderOpen,
   MagnifyingGlass,
   Microphone,
   Moon,
@@ -12,6 +13,7 @@ import {
   WarningDiamond,
   Waveform,
 } from "@phosphor-icons/react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 
 import packageInfo from "../package.json";
@@ -44,10 +46,16 @@ const ACTIVE_JOB_POLL_INTERVAL_MS = 250;
 interface AppProps {
   snapshot?: DesktopSnapshot;
   commandFacade?: DesktopCommandFacade;
+  filePicker?: ImportWavFilePicker;
+}
+
+interface ImportWavFilePicker {
+  chooseImportWavPath(): Promise<string | null>;
 }
 
 type PendingCommand =
   | "start"
+  | "choose-wav"
   | "import"
   | "stop"
   | "transcribe"
@@ -66,6 +74,31 @@ type PendingCommand =
   | null;
 
 type ThemeMode = "dark" | "light";
+
+const defaultImportWavFilePicker: ImportWavFilePicker = {
+  chooseImportWavPath: chooseNativeImportWavPath,
+};
+
+async function chooseNativeImportWavPath(): Promise<string | null> {
+  const selected: string | string[] | null = await open({
+    title: "Choose WAV audio file",
+    multiple: false,
+    directory: false,
+    fileAccessMode: "scoped",
+    filters: [
+      {
+        name: "WAV audio",
+        extensions: ["wav"],
+      },
+    ],
+  });
+
+  if (Array.isArray(selected)) {
+    return typeof selected[0] === "string" ? selected[0] : null;
+  }
+
+  return selected;
+}
 
 interface SettingsFormState {
   whisperModelPath: string;
@@ -91,7 +124,7 @@ interface SettingsFeedback {
       };
 }
 
-export default function App({ snapshot, commandFacade }: AppProps) {
+export default function App({ snapshot, commandFacade, filePicker = defaultImportWavFilePicker }: AppProps) {
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
@@ -256,6 +289,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const importWavPathDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const chooseWavDisabled = importWavPathDisabled;
   const importDisabled = importWavPathDisabled || !importWavPath.trim();
   const correctionDisabled =
     !commandSurfaceReady ||
@@ -375,6 +409,25 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       "import",
       (commands) => commands.importAudioFile(title ? { sourcePath, title } : { sourcePath }),
     );
+  }
+
+  async function chooseImportWavFile() {
+    if (!commandSurfaceReady || isRecordingActive || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("choose-wav");
+    setCommandError(null);
+    try {
+      const sourcePath = await filePicker.chooseImportWavPath();
+      if (sourcePath) {
+        setImportWavPath(sourcePath);
+      }
+    } catch (error) {
+      setCommandError(commandErrorMessage(error));
+    } finally {
+      setPendingCommand(null);
+    }
   }
 
   function stopRecording() {
@@ -661,6 +714,13 @@ export default function App({ snapshot, commandFacade }: AppProps) {
         : importWavPath.trim()
           ? "Import the WAV file into private app storage."
           : "Enter a local WAV source path before importing.";
+  const chooseWavButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop the active recording before choosing audio."
+        : "Choose a local WAV source file.";
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -731,16 +791,28 @@ export default function App({ snapshot, commandFacade }: AppProps) {
             disabled={recordingTitleDisabled}
           />
         </label>
-        <label className="recording-title-field" htmlFor="import-wav-path">
-          <span>WAV source path</span>
-          <input
-            id="import-wav-path"
-            value={importWavPath}
-            onChange={(event) => setImportWavPath(event.target.value)}
-            placeholder="/path/to/audio.wav"
-            disabled={importWavPathDisabled}
-          />
-        </label>
+        <div className="import-wav-control">
+          <label className="recording-title-field" htmlFor="import-wav-path">
+            <span>WAV source path</span>
+            <input
+              id="import-wav-path"
+              value={importWavPath}
+              onChange={(event) => setImportWavPath(event.target.value)}
+              placeholder="/path/to/audio.wav"
+              disabled={importWavPathDisabled}
+            />
+          </label>
+          <button
+            type="button"
+            className="button"
+            disabled={chooseWavDisabled}
+            title={chooseWavButtonTitle}
+            onClick={chooseImportWavFile}
+          >
+            <FolderOpen size={16} weight="regular" />
+            {pendingCommand === "choose-wav" ? "Choosing WAV" : "Choose WAV"}
+          </button>
+        </div>
         <div className="recording-buttons">
           <button
             type="button"
