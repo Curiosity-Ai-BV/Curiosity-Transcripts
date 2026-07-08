@@ -161,6 +161,27 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.modelSetupOptions.ollama.candidates");
   });
 
+  it("guards manual Whisper setup options against unsupported extensions", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const extraExtensionSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        whisper: {
+          ...backendSnapshot.modelSetupOptions.whisper,
+          acceptedExtensions: [...backendSnapshot.modelSetupOptions.whisper.acceptedExtensions, "txt"],
+        },
+      },
+    };
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => extraExtensionSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.whisper.acceptedExtensions");
+  });
+
   it("guards unsupported Ollama availability in snapshots", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -1011,6 +1032,7 @@ describe("desktop snapshot DTO contract", () => {
 describe("typed desktop command facade", () => {
   it.each([
     ["test_whisper_model_path.valid_readable_file", "testWhisperModelPath", { path: "<app-root>/fixture-whisper.bin" }],
+    ["test_whisper_model_path.unsupported_extension", "testWhisperModelPath", { path: "<app-root>/notes.txt" }],
     ["test_whisper_model_path.missing_path", "testWhisperModelPath", { path: "" }],
     [
       "test_ollama_connection.available_configured_model",
@@ -1032,6 +1054,19 @@ describe("typed desktop command facade", () => {
     const facade = createDesktopCommandFacade(async () => fixtureCase as never);
 
     await expect(facade[method](args as never)).resolves.toEqual(fixtureCase);
+  });
+
+  it("accepts invalid unsupported Whisper path tests without readable file metadata", async () => {
+    const fixtureCase = rustContractFixture.cases["test_whisper_model_path.unsupported_extension"];
+    const facade = createDesktopCommandFacade(async () => fixtureCase as never);
+
+    const result = await facade.testWhisperModelPath({ path: "<app-root>/notes.txt" });
+
+    expect(result.state).toBe("Invalid");
+    expect(result.message).toContain(".bin");
+    expect(result.message).toContain(".gguf");
+    expect(result).not.toHaveProperty("fileSizeBytes");
+    expect(result).not.toHaveProperty("sha256");
   });
 
   it("maps typed facade methods through production command names and args", async () => {

@@ -1472,12 +1472,14 @@ function validateModelSetupOptions(value: unknown, pathLabel: string): void {
   ).map((extension, index) =>
     requireNonEmptyString(extension, `${pathLabel}.whisper.acceptedExtensions[${index}]`),
   );
-  for (const required of ["bin", "gguf"]) {
-    if (!acceptedExtensions.includes(required)) {
-      throw new Error(
-        `desktop_snapshot contract drift: expected ${pathLabel}.whisper.acceptedExtensions to include ${required}`,
-      );
-    }
+  const supportedWhisperExtensions = ["bin", "gguf"];
+  if (
+    acceptedExtensions.length !== supportedWhisperExtensions.length ||
+    acceptedExtensions.some((extension, index) => extension !== supportedWhisperExtensions[index])
+  ) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected ${pathLabel}.whisper.acceptedExtensions to equal bin, gguf`,
+    );
   }
 
   const ollama = requireContractRecord(options.ollama, `${pathLabel}.ollama`);

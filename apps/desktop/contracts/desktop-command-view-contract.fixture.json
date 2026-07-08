@@ -440,6 +440,11 @@
       "setupGuidance": "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
       "state": "Invalid"
     },
+    "test_whisper_model_path.unsupported_extension": {
+      "message": "Whisper model path must use a supported .bin or .gguf file.",
+      "setupGuidance": "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+      "state": "Invalid"
+    },
     "test_whisper_model_path.valid_readable_file": {
       "fileSizeBytes": 16,
       "message": "Whisper model path is readable; compatibility is not verified by this test.",

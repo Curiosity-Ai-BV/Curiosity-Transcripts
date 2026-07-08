@@ -16,6 +16,7 @@
     "test_ollama_connection.cloud_model_rejected",
     "test_ollama_connection.missing_local_model",
     "test_whisper_model_path.missing_path",
+    "test_whisper_model_path.unsupported_extension",
     "test_whisper_model_path.valid_readable_file"
   ],
   "cases": [
@@ -31,7 +32,9 @@
         { "path": ["model", "kind"], "type": "string", "enum": ["missing"] },
         { "path": ["modelSetupOptions", "whisper", "mode"], "type": "string", "enum": ["ManualFile"] },
         { "path": ["modelSetupOptions", "whisper", "downloadsManaged"], "type": "boolean", "exact": false },
-        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions"], "type": "array", "minItems": 2 },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions"], "type": "array", "minItems": 2, "maxItems": 2 },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions", 0], "type": "string", "enum": ["bin"] },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions", 1], "type": "string", "enum": ["gguf"] },
         { "path": ["modelSetupOptions", "ollama", "mode"], "type": "string", "enum": ["ManualOllama"] },
         { "path": ["modelSetupOptions", "ollama", "automaticPulls"], "type": "boolean", "exact": false },
         { "path": ["modelSetupOptions", "ollama", "candidates"], "type": "array", "minItems": 2, "maxItems": 2 },
@@ -163,6 +166,14 @@
         { "path": ["state"], "type": "string", "enum": ["Invalid"] },
         { "path": ["message"], "type": "nonEmptyString" },
         { "path": ["setupGuidance"], "type": "nonEmptyString" }
+      ]
+    },
+    {
+      "name": "test_whisper_model_path.unsupported_extension",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Invalid"] },
+        { "path": ["message"], "type": "nonEmptyString", "pattern": "\\.bin.*\\.gguf" },
+        { "path": ["setupGuidance"], "type": "nonEmptyString", "pattern": "\\.bin.*\\.gguf" }
       ]
     },
     {

@@ -3876,6 +3876,8 @@ fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
     let path = PathBuf::from(configured_path.trim());
     let kind = if configured_path.trim().is_empty() || !path.is_file() {
         "missing"
+    } else if !is_supported_whisper_model_file_path(&path) {
+        "untested"
     } else if whisper_path_test_evidence_proves_current_readiness(
         &configured_path,
         &settings.whisper_path_test_evidence,
@@ -3925,7 +3927,10 @@ fn model_setup_options() -> ModelSetupOptionsView {
             save_label: "Save Whisper".to_string(),
             test_label: "Test path".to_string(),
             downloads_managed: false,
-            accepted_extensions: vec!["bin".to_string(), "gguf".to_string()],
+            accepted_extensions: SUPPORTED_WHISPER_MODEL_EXTENSIONS
+                .iter()
+                .map(|extension| (*extension).to_string())
+                .collect(),
         },
         ollama: OllamaModelSetupOptionsView {
             mode: "ManualOllama".to_string(),
@@ -4453,6 +4458,12 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
             "Choose a readable local Whisper model file, not a directory, then use Test path.",
         );
     }
+    if !is_supported_whisper_model_file_path(&path) {
+        return unreadable(
+            "Whisper model path must use a supported .bin or .gguf file.".to_string(),
+            "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then use Test path.",
+        );
+    }
     if let Err(error) = std::fs::File::open(&path) {
         return unreadable(
             format!("Whisper model path is not readable: {error}"),
@@ -4680,10 +4691,14 @@ fn whisper_path_test_evidence_matches_current_file(
     configured_path: &str,
     evidence: &WhisperPathTestEvidence,
 ) -> bool {
+    let path = PathBuf::from(configured_path.trim());
+    if !is_supported_whisper_model_file_path(&path) {
+        return false;
+    }
     let Some(expected_size) = evidence.file_size_bytes else {
         return false;
     };
-    std::fs::metadata(configured_path.trim())
+    std::fs::metadata(&path)
         .map(|metadata| metadata.is_file() && metadata.len() == expected_size)
         .unwrap_or(false)
 }
@@ -4764,6 +4779,12 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
             "Choose a readable local Whisper model file, not a directory.",
         );
     }
+    if !is_supported_whisper_model_file_path(&path) {
+        return WhisperModelPathTestView::invalid(
+            "Whisper model path must use a supported .bin or .gguf file.",
+            "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+        );
+    }
     match sha256_for_readable_file(&path) {
         Ok(sha256) => WhisperModelPathTestView {
             state: "Valid".to_string(),
@@ -4780,6 +4801,19 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
             "Check file permissions and choose a readable local Whisper model file.",
         ),
     }
+}
+
+const SUPPORTED_WHISPER_MODEL_EXTENSIONS: [&str; 2] = ["bin", "gguf"];
+
+fn is_supported_whisper_model_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            SUPPORTED_WHISPER_MODEL_EXTENSIONS
+                .iter()
+                .any(|supported_extension| extension.eq_ignore_ascii_case(supported_extension))
+        })
+        .unwrap_or(false)
 }
 
 fn sha256_for_readable_file(path: &Path) -> Result<String, std::io::Error> {
@@ -6818,11 +6852,120 @@ mod tests {
     }
 
     #[test]
+    fn test_whisper_model_path_accepts_readable_gguf_file_without_loading_model() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.gguf");
+        fs::write(&model_path, b"not a real gguf model").expect("model file");
+
+        let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
+
+        assert_eq!(result.state, "Valid");
+        assert!(result.file_size_bytes.is_some());
+        assert!(result.sha256.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn test_whisper_model_path_rejects_missing_path_with_guidance() {
         let result = test_whisper_model_path_value("");
 
         assert_eq!(result.state, "Invalid");
         assert!(result.setup_guidance.contains("local Whisper model path"));
+    }
+
+    #[test]
+    fn test_whisper_model_path_rejects_unsupported_readable_files_without_readiness_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        for file_name in ["notes.txt", "extensionless"] {
+            let unsupported_path = root.join(file_name);
+            fs::write(
+                &unsupported_path,
+                b"readable but not a supported model file",
+            )
+            .expect("unsupported readable file");
+            let unsupported_path = unsupported_path.to_string_lossy().to_string();
+
+            save_whisper_model_path_for_app_root(&root, unsupported_path.clone())
+                .expect("save whisper path");
+            let result = test_whisper_model_path_for_app_root(
+                &root,
+                unsupported_path.clone(),
+                1_700_000_001_000,
+            )
+            .expect("test unsupported whisper path");
+
+            assert_eq!(result.state, "Invalid");
+            assert!(result.message.contains(".bin") && result.message.contains(".gguf"));
+            assert!(
+                result.setup_guidance.contains(".bin") && result.setup_guidance.contains(".gguf")
+            );
+
+            let settings = app_settings_for_app_root(&root).expect("settings");
+            assert_ne!(
+                settings
+                    .whisper_path_test_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.state.as_str()),
+                Some("Valid")
+            );
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            assert_ne!(json["model"]["kind"], "ready");
+            assert_ne!(
+                json["setupGuidance"]["whisper"]["lastPathTest"]["state"],
+                "Valid"
+            );
+        }
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_ignores_legacy_valid_evidence_for_unsupported_whisper_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let unsupported_path = root.join("notes.txt");
+        let unsupported_bytes = b"legacy readable file evidence";
+        fs::write(&unsupported_path, unsupported_bytes).expect("unsupported readable file");
+        let unsupported_path = unsupported_path.to_string_lossy().to_string();
+        save_whisper_model_path_for_app_root(&root, unsupported_path.clone())
+            .expect("save whisper path");
+        open_store(&root)
+            .expect("store")
+            .save_whisper_path_test_evidence(&WhisperPathTestEvidence {
+                tested_path: unsupported_path,
+                tested_at_ms: 1_700_000_001_000,
+                state: "Valid".to_string(),
+                file_size_bytes: Some(unsupported_bytes.len() as u64),
+                sha256: Some(format!("{:x}", Sha256::digest(unsupported_bytes))),
+                failure_detail: None,
+            })
+            .expect("persist legacy valid evidence");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_ne!(json["model"]["kind"], "ready");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -10971,6 +11114,16 @@ mod tests {
             model_path.to_string_lossy().as_ref(),
         ))
         .expect("serialize readable whisper path test");
+        let unsupported_model_path = whisper_root.join("notes.txt");
+        fs::write(
+            &unsupported_model_path,
+            b"readable but not a supported model file",
+        )
+        .expect("fixture unsupported whisper path");
+        let unsupported_whisper = serde_json::to_value(test_whisper_model_path_value(
+            unsupported_model_path.to_string_lossy().as_ref(),
+        ))
+        .expect("serialize unsupported whisper path test");
         fs::remove_dir_all(&whisper_root).expect("cleanup whisper fixture root");
 
         let available_ollama = serde_json::to_value(test_ollama_connection_value(
@@ -11002,6 +11155,7 @@ mod tests {
                 "desktop_snapshot.transcribed_analyzed_meeting": meeting_snapshot,
                 "desktop_snapshot.with_setup_evidence": evidence_snapshot,
                 "test_whisper_model_path.valid_readable_file": readable_whisper,
+                "test_whisper_model_path.unsupported_extension": unsupported_whisper,
                 "test_whisper_model_path.missing_path": serde_json::to_value(test_whisper_model_path_value(""))
                     .expect("serialize missing whisper path test"),
                 "test_ollama_connection.available_configured_model": available_ollama,
