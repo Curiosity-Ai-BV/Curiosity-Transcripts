@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "owner": "apps/desktop/src-tauri/src/main.rs",
+  "cases": {
+    "desktop_snapshot.empty": {
+      "analysisCommand": null,
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [],
+      "model": {
+        "configuredPath": "",
+        "kind": "missing"
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": null,
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "whisperModelPath": ""
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "desktop_snapshot.transcribed_analyzed_meeting": {
+      "analysisCommand": null,
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [
+        {
+          "analysis": {
+            "createdAtMs": 3000,
+            "disclosureConfirmed": false,
+            "disclosureRequired": false,
+            "modelName": "qwen3:30b",
+            "networkUsed": false,
+            "promptTemplateVersion": "summary-v1",
+            "provider": "ollama",
+            "summary": "Local summary"
+          },
+          "deleteState": {
+            "state": "idle"
+          },
+          "duration": "In progress",
+          "exportState": {
+            "state": "idle"
+          },
+          "id": "meeting-1",
+          "privacy": {
+            "localOnly": true,
+            "rawAudioRetention": "Retain",
+            "storageLabel": "Private storage",
+            "storagePath": "meetings/meeting-1/audio"
+          },
+          "segments": [
+            {
+              "endMs": 1200,
+              "id": "segment-1",
+              "modelRunId": "run-1",
+              "originalText": null,
+              "sourceChannel": "Microphone",
+              "startMs": 0,
+              "text": "We decided to keep transcripts local.",
+              "transcriptVersionId": "version-1"
+            }
+          ],
+          "startedAt": "1000 ms",
+          "status": "Created",
+          "title": "Planning",
+          "transcriptState": "Ready",
+          "transcriptText": "We decided to keep transcripts local."
+        }
+      ],
+      "model": {
+        "configuredPath": "",
+        "kind": "missing"
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": "meeting-1",
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "whisperModelPath": ""
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "test_whisper_model_path.valid_readable_file": {
+      "fileSizeBytes": 16,
+      "message": "Whisper model path is readable; compatibility is not verified by this test.",
+      "setupGuidance": "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility.",
+      "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
+      "state": "Valid"
+    },
+    "test_whisper_model_path.missing_path": {
+      "message": "No Whisper model path is configured.",
+      "setupGuidance": "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
+      "state": "Invalid"
+    },
+    "test_ollama_connection.available_configured_model": {
+      "installedLocalModels": [
+        "gemma4:31b",
+        "qwen3.6:27b"
+      ],
+      "message": "Ollama is reachable and qwen3.6:27b is installed.",
+      "pullCommand": null,
+      "selectedLocalModelTag": "qwen3.6:27b",
+      "setupGuidance": "",
+      "state": "Available"
+    },
+    "test_ollama_connection.missing_local_model": {
+      "installedLocalModels": [
+        "gemma4:31b"
+      ],
+      "message": "Ollama is reachable, but qwen3.6:27b is not installed.",
+      "pullCommand": "ollama pull qwen3.6:27b",
+      "selectedLocalModelTag": "qwen3.6:27b",
+      "setupGuidance": "Install the selected model with `ollama pull qwen3.6:27b`, then retry. Installed local models: gemma4:31b.",
+      "state": "Unavailable"
+    },
+    "test_ollama_connection.cloud_model_rejected": {
+      "installedLocalModels": null,
+      "message": "hosted or cloud model tags cannot use the local Ollama privacy path.",
+      "pullCommand": null,
+      "selectedLocalModelTag": null,
+      "setupGuidance": "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
+      "state": "Unavailable"
+    }
+  }
+}

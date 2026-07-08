@@ -4307,6 +4307,49 @@ mod tests {
     }
 
     #[test]
+    fn desktop_command_view_contract_fixture_matches_rust_serialization() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _whisper_env = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../contracts/desktop-command-view-contract.fixture.json");
+        let fixture_text = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "read desktop command/view contract fixture at {}: {error}",
+                fixture_path.display()
+            )
+        });
+        let expected: serde_json::Value =
+            serde_json::from_str(&fixture_text).expect("parse desktop command/view fixture");
+        let actual = desktop_command_view_contract_fixture();
+
+        assert_eq!(
+            actual, expected,
+            "Rust desktop command/view serialization no longer matches {}. Update the fixture intentionally when DTOs change.",
+            fixture_path.display()
+        );
+    }
+
+    #[test]
+    fn whisper_env_restore_guard_restores_value_during_unwind() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _restore_original = EnvVarRestoreGuard::capture("CURIOSITY_WHISPER_MODEL");
+        std::env::set_var("CURIOSITY_WHISPER_MODEL", "before-guard");
+
+        let result = std::panic::catch_unwind(|| {
+            let _restore = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+            assert!(std::env::var("CURIOSITY_WHISPER_MODEL").is_err());
+            panic!("force env restore during unwind");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::env::var("CURIOSITY_WHISPER_MODEL").as_deref(),
+            Ok("before-guard")
+        );
+    }
+
+    #[test]
     fn get_settings_returns_default_local_analysis_settings() {
         let root = unique_test_root();
 
@@ -7766,6 +7809,104 @@ mod tests {
         }
     }
 
+    fn desktop_command_view_contract_fixture() -> serde_json::Value {
+        let empty_root = unique_test_root();
+        let mut empty_snapshot = serialize_desktop_snapshot_case(&empty_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut empty_snapshot, &empty_root);
+        fs::remove_dir_all(&empty_root).expect("cleanup empty fixture root");
+
+        let meeting_root = unique_test_root();
+        seed_transcribed_analyzed_meeting(&meeting_root);
+        let mut meeting_snapshot = serialize_desktop_snapshot_case(&meeting_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut meeting_snapshot, &meeting_root);
+        fs::remove_dir_all(&meeting_root).expect("cleanup meeting fixture root");
+
+        let whisper_root = unique_test_root();
+        fs::create_dir_all(&whisper_root).expect("whisper fixture root");
+        let model_path = whisper_root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("fixture whisper model");
+        let readable_whisper = serde_json::to_value(test_whisper_model_path_value(
+            model_path.to_string_lossy().as_ref(),
+        ))
+        .expect("serialize readable whisper path test");
+        fs::remove_dir_all(&whisper_root).expect("cleanup whisper fixture root");
+
+        let available_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "qwen3.6:27b",
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"qwen3.6:27b"},{"name":"gemma4:31b"}]}"#,
+            ),
+        ))
+        .expect("serialize available ollama test");
+        let missing_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "qwen3.6:27b",
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
+        ))
+        .expect("serialize missing ollama test");
+        let cloud_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "deepseek-v3.2:cloud",
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#),
+        ))
+        .expect("serialize cloud ollama test");
+
+        serde_json::json!({
+            "version": 1,
+            "owner": "apps/desktop/src-tauri/src/main.rs",
+            "cases": {
+                "desktop_snapshot.empty": empty_snapshot,
+                "desktop_snapshot.transcribed_analyzed_meeting": meeting_snapshot,
+                "test_whisper_model_path.valid_readable_file": readable_whisper,
+                "test_whisper_model_path.missing_path": serde_json::to_value(test_whisper_model_path_value(""))
+                    .expect("serialize missing whisper path test"),
+                "test_ollama_connection.available_configured_model": available_ollama,
+                "test_ollama_connection.missing_local_model": missing_ollama,
+                "test_ollama_connection.cloud_model_rejected": cloud_ollama,
+            }
+        })
+    }
+
+    fn serialize_desktop_snapshot_case(
+        root: &Path,
+        build: impl FnOnce(&Path) -> Result<DesktopSnapshot, String>,
+    ) -> serde_json::Value {
+        serde_json::to_value(build(root).expect("desktop snapshot fixture case"))
+            .expect("serialize desktop snapshot fixture case")
+    }
+
+    fn canonicalize_app_root_paths(value: &mut serde_json::Value, app_root: &Path) {
+        let app_root = app_root.to_string_lossy().to_string();
+        canonicalize_app_root_path_text(value, &app_root);
+    }
+
+    fn canonicalize_app_root_path_text(value: &mut serde_json::Value, app_root: &str) {
+        match value {
+            serde_json::Value::String(text) => {
+                if text.contains(app_root) {
+                    *text = text.replace(app_root, "<app-root>");
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    canonicalize_app_root_path_text(item, app_root);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values_mut() {
+                    canonicalize_app_root_path_text(item, app_root);
+                }
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+    }
+
     fn unique_test_root() -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -7780,6 +7921,36 @@ mod tests {
             std::env::set_var("CURIOSITY_WHISPER_MODEL", previous);
         } else {
             std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        }
+    }
+
+    struct EnvVarRestoreGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarRestoreGuard {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var(key).ok(),
+            }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let guard = Self::capture(key);
+            std::env::remove_var(key);
+            guard
+        }
+    }
+
+    impl Drop for EnvVarRestoreGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import desktopCommandViewContract from "../contracts/desktop-command-view-contract.fixture.json";
 import {
   CommandFetcher,
   createDesktopCommandFacade,
@@ -7,6 +8,14 @@ import {
   getMockDesktopSnapshot,
   loadDesktopSnapshot,
 } from "./commandAdapter";
+
+type DesktopCommandViewContractFixture = {
+  version: number;
+  owner: string;
+  cases: Record<string, unknown>;
+};
+
+const rustContractFixture = desktopCommandViewContract as DesktopCommandViewContractFixture;
 
 const tauriInvoke = vi.hoisted(() => vi.fn());
 
@@ -20,6 +29,24 @@ afterEach(() => {
 });
 
 describe("desktop snapshot DTO contract", () => {
+  it.each(["desktop_snapshot.empty", "desktop_snapshot.transcribed_analyzed_meeting"])(
+    "accepts the Rust-serialized %s fixture",
+    async (caseName) => {
+      const fixtureCase = rustContractFixture.cases[caseName];
+      const fetchCommand: CommandFetcher = async (command) => {
+        expect(command).toBe("desktop_snapshot");
+        return fixtureCase as never;
+      };
+
+      await expect(
+        loadDesktopSnapshot({
+          fetchCommand,
+          previewFallback: false,
+        }),
+      ).resolves.toEqual(fixtureCase);
+    },
+  );
+
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -249,6 +276,31 @@ describe("desktop snapshot DTO contract", () => {
 });
 
 describe("typed desktop command facade", () => {
+  it.each([
+    ["test_whisper_model_path.valid_readable_file", "testWhisperModelPath", { path: "<app-root>/fixture-whisper.bin" }],
+    ["test_whisper_model_path.missing_path", "testWhisperModelPath", { path: "" }],
+    [
+      "test_ollama_connection.available_configured_model",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
+    ],
+    [
+      "test_ollama_connection.missing_local_model",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
+    ],
+    [
+      "test_ollama_connection.cloud_model_rejected",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "deepseek-v3.2:cloud" },
+    ],
+  ] as const)("accepts the Rust-serialized %s fixture through the facade", async (caseName, method, args) => {
+    const fixtureCase = rustContractFixture.cases[caseName];
+    const facade = createDesktopCommandFacade(async () => fixtureCase as never);
+
+    await expect(facade[method](args as never)).resolves.toEqual(fixtureCase);
+  });
+
   it("maps typed facade methods through production command names and args", async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const snapshot = getMockDesktopSnapshot();
