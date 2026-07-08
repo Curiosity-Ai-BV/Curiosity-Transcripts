@@ -18,6 +18,7 @@ const requiredWorkflowText = [
   "contents: write",
   "'v*'",
   "node scripts/check-release-workflow.js",
+  "bash scripts/check-publication-readiness.sh",
   "APPLE_CERTIFICATE_P12_BASE64",
   "APPLE_API_KEY_ID",
   "./scripts/configure-apple-signing-ci.sh",
@@ -141,6 +142,16 @@ function readTomlSectionValue(text, sectionName, key) {
   return undefined;
 }
 
+function exactRunStepLine(text, command) {
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() === `run: ${command}`) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 const workflow = readRequired(workflowPath, ".github/workflows/release.yml");
 const readme = readRequired(readmePath, "README.md");
 const buildScript = readRequired(buildScriptPath, "scripts/build-macos-dmg.sh");
@@ -151,6 +162,15 @@ for (const text of requiredWorkflowText) {
   if (!workflow.includes(text)) {
     fail(".github/workflows/release.yml", `Missing required release workflow content: ${text}`);
   }
+}
+
+const publicationReadinessStepLine = exactRunStepLine(workflow, "bash scripts/check-publication-readiness.sh");
+const buildDmgStepLine = exactRunStepLine(workflow, "./scripts/build-macos-dmg.sh");
+if (publicationReadinessStepLine === -1 || buildDmgStepLine === -1 || publicationReadinessStepLine > buildDmgStepLine) {
+  fail(
+    ".github/workflows/release.yml",
+    "Publication readiness must run before building the public release DMG",
+  );
 }
 
 const workflowLines = workflow.split(/\r?\n/);
@@ -218,7 +238,7 @@ if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) {
   fail("apps/desktop/package.json", "Desktop package version must be SemVer without a leading v");
 }
 
-if (process.env.GITHUB_REF_NAME) {
+if (process.env.GITHUB_REF_TYPE === "tag" || process.env.GITHUB_REF?.startsWith("refs/tags/")) {
   const expectedTag = `v${pkg.version}`;
   if (process.env.GITHUB_REF_NAME !== expectedTag) {
     fail(

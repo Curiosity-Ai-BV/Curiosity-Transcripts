@@ -40,6 +40,9 @@ jobs:
       - name: Check release version sources
         run: node scripts/check-release-workflow.js
 
+      - name: Check publication readiness
+        run: bash scripts/check-publication-readiness.sh
+
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal

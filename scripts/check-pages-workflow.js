@@ -6,6 +6,7 @@ const workflowPath = path.join(root, ".github", "workflows", "pages.yml");
 
 const requiredText = [
   "macos-26",
+  "bash scripts/check-publication-readiness.sh",
   "APPLE_CERTIFICATE_P12_BASE64",
   "APPLE_API_KEY_ID",
   "./scripts/configure-apple-signing-ci.sh",
@@ -39,6 +40,16 @@ const requiredText = [
 
 let ok = true;
 
+function exactRunStepLine(text, command) {
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() === `run: ${command}`) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 if (!fs.existsSync(workflowPath)) {
   console.error("::error file=.github/workflows/pages.yml::Missing GitHub Pages deployment workflow");
   process.exit(1);
@@ -51,6 +62,15 @@ for (const text of requiredText) {
     console.error(`::error file=.github/workflows/pages.yml::Missing required Pages workflow content: ${text}`);
     ok = false;
   }
+}
+
+const publicationReadinessStepLine = exactRunStepLine(yaml, "bash scripts/check-publication-readiness.sh");
+const buildDmgStepLine = exactRunStepLine(yaml, "./scripts/build-macos-dmg.sh");
+if (publicationReadinessStepLine === -1 || buildDmgStepLine === -1 || publicationReadinessStepLine > buildDmgStepLine) {
+  console.error(
+    "::error file=.github/workflows/pages.yml::Publication readiness must run before building the public Pages DMG",
+  );
+  ok = false;
 }
 
 if (/ubuntu-latest[\s\S]*build-macos-dmg\.sh/.test(yaml)) {
