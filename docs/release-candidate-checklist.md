@@ -42,7 +42,9 @@ output are still future hardening gates unless a later slice adds them.
   artifact is stored under app-private meeting storage, then delete the meeting
   and confirm the original source file remains untouched.
 - Transcription: transcribe the recorded meeting with the configured local
-  Whisper model and verify channel-tagged transcript segments appear.
+  Whisper model and verify channel-tagged transcript segments appear. During
+  one transcription and one summary run, quit and relaunch the app to verify
+  durable job recovery shows a truthful state.
 - Correction: edit one transcript segment, save it, relaunch, and verify the
   corrected text plus original-text indication are still visible.
 - Summary: generate a local Ollama summary after transcription and verify
@@ -54,6 +56,10 @@ output are still future hardening gates unless a later slice adds them.
 - Export: use the desktop export action for JSON, Markdown, and SRT, and verify
   each exported file path and format-specific status is reported. Treat JSON as
   the deterministic integration format.
+- Contract fixture: confirm
+  `apps/desktop/contracts/desktop-command-view-contract.fixture.json` is present
+  in the build source and covered by the Rust/TS contract checks before manual
+  smoke starts.
 - Delete: delete the meeting and verify app-private transcript, analysis, and
   audio artifacts are removed or explicitly reported as skipped.
 - Uninstall and private-data handling: uninstall the app, inspect the documented

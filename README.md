@@ -89,23 +89,33 @@ Implemented MVP flows:
   model path. Meetings with both mic and system WAV artifacts are transcribed as
   one persisted transcript run with channel-tagged segments.
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
-  processing jobs, transcript versions, edits, exports, search indexes, and
-  analysis results.
-- Deterministic fixture transcription plus lower-level transcript export helpers
-  for Markdown, JSON, and SRT.
+  transcription and summary processing jobs, transcript versions, edits, exports,
+  search indexes, and analysis results.
+- Deterministic fixture transcription plus transcript export helpers for
+  Markdown, JSON, and SRT.
 - Organizer APIs for meeting detail, list, rename, search, transcript export, and
   delete flows.
 - Structured summary generation with citations, decisions, action items,
   questions, local Ollama wiring, and privacy-gated provider paths.
 - Desktop command wiring for transcript search, JSON/Markdown/SRT export, delete, and
   summary generation after a transcript is ready.
+- Imported local WAV workflow through the desktop command, UI, store, and
+  transcription seams.
+- Transcript segment correction through the desktop detail view, command layer,
+  edit-history storage seam, and export/search refresh path.
+- Checked-in desktop command/view contract fixture at
+  `apps/desktop/contracts/desktop-command-view-contract.fixture.json`, guarded by
+  Rust exact-equality and TS command adapter contract tests.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
 Remaining gaps:
 
 - First-run model download/management UI for Whisper and Ollama.
-- Imported-audio workflow and transcript correction UI.
+- Richer privacy controls for retention, encryption/key management, keychain
+  secrets, storage location, provider disclosure, and remaining exported files.
+- Feature-matrix and real-hardware release confidence for default, no-Whisper,
+  and ScreenCaptureKit system-audio builds.
 - Calendar integration, starting with Apple Calendar context before cloud
   calendar connectors.
 - Developer ID signed and notarized macOS DMG workflows exist; Apple signing
@@ -135,11 +145,11 @@ Near-term product hardening:
 - Add first-run model setup for Whisper and Ollama, including model availability
   states, hashes, and clear recovery guidance when a model is missing or
   incompatible.
-- Add imported-audio support and a transcript correction UI that preserves the
-  original timing, source channel, transcript version, and export history.
 - Finish per-meeting privacy controls for raw-audio retention, local-only versus
   hosted-provider use, storage location, and remaining exported files after
   deletion.
+- Add feature-matrix verification and broader real-hardware release confidence
+  for the supported desktop build variants.
 - Keep the macOS installer path reproducible with ad-hoc signed local builds,
   then keep browser-distributed releases Developer ID signed and notarized.
 

@@ -19,9 +19,9 @@ Date: 2026-07-07
 
 The app is past a paper MVP. The repository already has a working Rust workspace,
 a Tauri/Vite desktop app, local recording commands, local Whisper transcription,
-SQLite persistence, search, JSON export, private-data delete, local Ollama
-summary generation, contract validation, fail-loud smoke paths, and signed DMG
-workflow scaffolding.
+SQLite persistence, search, JSON/Markdown/SRT export, private-data delete, local
+Ollama summary generation, contract validation, fail-loud smoke paths, and
+signed DMG workflow scaffolding.
 
 Important existing strengths:
 
@@ -41,9 +41,9 @@ Important existing strengths:
   Gatekeeper checks before upload.
 
 The app is not production ready yet. The main blockers are first-run model
-setup, production privacy/security hardening, durable long-running jobs,
-feature completion for import/correction/export, release confidence on real
-hardware, and source-of-truth cleanup.
+setup, production privacy/security hardening, release confidence on real
+hardware, feature-matrix verification, signing credentials/process docs, and
+deeper maintainability work.
 
 Slice 0 public source-of-truth decisions:
 
@@ -143,9 +143,9 @@ later Phase 2C hardening unless implemented in a separate slice.
 
 Current Phase 2C visibility status: the desktop detail view exposes the existing
 per-meeting privacy data state: private audio storage path, raw-audio retention,
-local or hosted processing state, JSON export status, and delete or remaining
-export status. Retention controls, encryption/key management, and keychain-backed
-secrets remain later Phase 2 work unless implemented in separate slices.
+local or hosted processing state, export status, and delete or remaining export
+status. Retention controls, encryption/key management, and keychain-backed secrets
+remain later Phase 2 work unless implemented in separate slices.
 
 Success criteria:
 
@@ -161,9 +161,9 @@ user.
 
 Deliverables:
 
-- Current Phase 3B status: transcription job start, cancel, finish, and restart
-  recovery now persist through `processing_jobs`; summary jobs and full retry UX
-  remain later work.
+- Current Phase 3B/3C status: transcription and summary job start, cancel,
+  finish, and restart recovery now persist through `processing_jobs`; retry UX
+  and feature-matrix verification remain later work.
 - Move transcription and summary job ownership from in-memory Tauri state into
   durable `processing_jobs` records.
 - Reconcile running/cancel-requested jobs on startup and mark them recovered,
@@ -189,31 +189,22 @@ Goal: make the core transcript loop useful after the first successful recording.
 
 Deliverables:
 
-- Add imported-audio workflow through the existing store/transcription seams.
-- Add transcript correction UI over the existing edit/version storage so users
-  can correct text while preserving timing, channel, model run, and version
-  history.
-- Productize Markdown and SRT export if they remain part of the public promise:
-  Tauri commands, UI format selection, export state, tests, and docs.
-- Keep JSON export as the deterministic integration format.
-- Add focused tests that prove corrections refresh search/export output and do
-  not mutate original evidence silently.
+- Current Phase 4A status: transcript segment correction is wired through the
+  existing store edit-history seam, desktop command surface, TS contract, and a
+  minimal one-segment inline editor.
+- Current Phase 4B status: Markdown and SRT are productized beside JSON through
+  the app command layer, generic Tauri `export_meeting` command, format-aware
+  desktop UI/state, focused Rust/Tauri/TS/React tests, and docs. JSON remains the
+  deterministic integration format.
+- Current Phase 4C status: local `.wav` import is wired through the desktop
+  command surface and existing store/transcription/export seams. The command
+  copies a validated user-provided WAV path into app-private meeting storage,
+  persists a completed imported recording artifact with the private relative path
+  and final copied-file SHA-256, and leaves MP3/M4A, transcoding, drag/drop,
+  batch import, metadata extraction, and native file picking out of scope.
 
-Current Phase 4A status: transcript segment correction is wired through the
-existing store edit-history seam, desktop command surface, TS contract, and a
-minimal one-segment inline editor.
-
-Current Phase 4B status: Markdown and SRT are productized beside JSON through
-the app command layer, generic Tauri `export_meeting` command, format-aware
-desktop UI/state, focused Rust/Tauri/TS/React tests, and docs. JSON remains the
-deterministic integration format.
-
-Current Phase 4C status: local `.wav` import is wired through the desktop
-command surface and existing store/transcription/export seams. The command
-copies a validated user-provided WAV path into app-private meeting storage,
-persists a completed imported recording artifact with the private relative path
-and final copied-file SHA-256, and leaves MP3/M4A, transcoding, drag/drop,
-batch import, metadata extraction, and native file picking out of scope.
+Later work: native file picking, richer import metadata, broader import formats,
+and more complete correction review workflows.
 
 Success criteria:
 
@@ -237,6 +228,13 @@ Deliverables:
 - Add coverage reporting for critical Rust/frontend seams. Avoid chasing a
   vanity percentage; gate the paths that protect privacy, deletion, recovery,
   contracts, provider disclosure, and release metadata.
+
+Current Phase 5A status: the Rust-produced desktop command/view contract fixture
+is checked in at `apps/desktop/contracts/desktop-command-view-contract.fixture.json`.
+Rust tests guard exact equality against the generated command/view payload, and
+TS command adapter contract tests consume the same fixture.
+
+Later work: generated DTOs, module splitting, and coverage reporting.
 
 Success criteria:
 
@@ -276,8 +274,8 @@ Candidates:
 - Cross-meeting questions, sentiment/tone, and follow-up drafting with source
   citations and uncertainty.
 
-Do not pull these forward if first-run setup, privacy controls, durable jobs,
-or transcript correction are still incomplete.
+Do not pull these forward if first-run setup, privacy controls, feature-matrix
+release confidence, or contract/maintainability hardening are still incomplete.
 
 ## Release Candidate Gate
 

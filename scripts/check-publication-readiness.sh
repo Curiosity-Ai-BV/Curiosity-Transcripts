@@ -27,6 +27,7 @@ for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md;
 done
 check_file "site/index.html"
 check_file "docs/release-candidate-checklist.md"
+check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/pages.yml"
 check_file ".github/workflows/release.yml"
@@ -47,10 +48,19 @@ require_text README.md 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pag
 require_text README.md 'Versioning Rules' 'versioning and GitHub Release documentation'
 require_text README.md 'desktop app exposes JSON, Markdown, and SRT export' 'current desktop export format claim'
 require_text README.md 'JSON remains the deterministic integration format' 'deterministic JSON integration export claim'
+require_text README.md 'Imported local WAV workflow' 'implemented imported WAV workflow claim'
+require_text README.md 'Transcript segment correction' 'implemented transcript correction workflow claim'
+require_text README.md 'desktop-command-view-contract\.fixture\.json' 'checked-in desktop command/view contract fixture documentation'
 require_text README.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link'
 require_text README.md 'arm64-only' 'first public release architecture documentation'
 require_text docs/production-readiness-roadmap.md 'check-tauri-security\.js' 'Tauri renderer CSP release gate documentation'
 require_text docs/production-readiness-roadmap.md 'First public release architecture: arm64-only macOS DMG' 'first public release architecture decision'
+require_text docs/production-readiness-roadmap.md 'Current Phase 3B/3C status: transcription and summary job start, cancel,' 'current durable transcription and summary job lifecycle status'
+require_text docs/production-readiness-roadmap.md 'processing_jobs.*retry UX' 'durable job retry UX remains later work'
+require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Phase 5A command/view contract fixture status'
+require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
+require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
+require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
@@ -62,6 +72,8 @@ require_text docs/release-candidate-checklist.md 'Import WAV' 'imported WAV rele
 require_text docs/release-candidate-checklist.md 'Transcription' 'transcription release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Summary' 'summary release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Export' 'export release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'durable job recovery' 'durable job recovery release-candidate smoke item'
+require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.fixture\.json' 'command/view contract fixture release-candidate expectation'
 require_text docs/release-candidate-checklist.md 'Delete' 'delete release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'Uninstall and private-data handling' 'uninstall/private-data release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'JSON, Markdown, and SRT' 'current release-candidate export formats'
