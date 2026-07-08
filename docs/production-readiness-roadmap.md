@@ -74,8 +74,9 @@ Slice 0 public source-of-truth decisions:
   format. Markdown and SRT are user-facing transcript formats backed by
   `crates/transcription`.
 - Pages download flow: the stable Pages DMG is built as a Developer ID signed
-  and notarized artifact, then stapling and Gatekeeper checks run before
-  deployment.
+  and notarized artifact, then the copied latest DMG goes through the same
+  hdiutil, stapling, Gatekeeper, read-only attach, and mounted app signature
+  checks as the versioned release asset before deployment.
 - First public release architecture: arm64-only macOS DMG. The versioned
   GitHub Release asset is `macos-aarch64`; x64 and universal builds are out of
   scope until a later slice changes workflows, QA, and public copy together.

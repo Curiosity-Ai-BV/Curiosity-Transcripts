@@ -53,15 +53,44 @@ jobs:
 
       - name: Stage latest DMG artifact
         run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+
+          runner_arch="$(uname -m)"
+          if [ "$runner_arch" != "arm64" ]; then
+            echo "::error::Pages workflow names the DMG macos-aarch64 but the runner architecture is $runner_arch"
+            exit 1
+          fi
+
           mkdir -p pages-download
-          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
-          if [ -z "$dmg_path" ]; then
-            echo "::error::No DMG was produced"
+          dmg_path="apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_${version}_aarch64.dmg"
+          if [ ! -f "$dmg_path" ]; then
+            echo "::error::Expected DMG was not produced: $dmg_path"
             exit 1
           fi
           cp "$dmg_path" pages-download/Curiosity-Transcripts-latest.dmg
+
+          hdiutil verify pages-download/Curiosity-Transcripts-latest.dmg
           xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg
           spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg
+          mount_dir="$(mktemp -d)"
+          cleanup_mount() {
+            if [ -n "${mount_dir:-}" ] && [ -d "$mount_dir" ]; then
+              hdiutil detach "$mount_dir" || true
+              rm -rf "$mount_dir"
+            fi
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach pages-download/Curiosity-Transcripts-latest.dmg -readonly -nobrowse -mountpoint "$mount_dir"
+          if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
+            echo "::error::Pages latest DMG is missing Curiosity Transcripts.app"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
+          hdiutil detach "$mount_dir"
+          rm -rf "$mount_dir"
+          mount_dir=""
+          trap - EXIT
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
