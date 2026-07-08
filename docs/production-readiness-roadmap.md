@@ -328,8 +328,8 @@ Deliverables:
 - Current Phase 3B/3C/3D status: transcription and summary job start, cancel,
   finish, and restart recovery now persist through `processing_jobs`; recovered
   and retryable jobs now surface retry UX in the desktop shell. CI now gates
-  no-Whisper desktop tests and the ScreenCaptureKit system-audio feature compile
-  path on macOS.
+  no-Whisper desktop tests plus both no-default-features and release
+  default-feature ScreenCaptureKit system-audio compile paths on macOS.
 - Move transcription and summary job ownership from in-memory Tauri state into
   durable `processing_jobs` records.
 - Reconcile running/cancel-requested jobs on startup and mark them recovered,
@@ -339,8 +339,9 @@ Deliverables:
 - Keep cancellation semantics deterministic: canceled jobs must not persist
   completed backend output after the cancel boundary.
 - Keep feature-matrix verification in CI for default desktop builds,
-  no-Whisper builds, and ScreenCaptureKit system-audio compile checks on macOS.
-  Real-hardware smoke and release confidence remain manual/later work.
+  no-Whisper builds, and both no-default-features and release default-feature
+  ScreenCaptureKit system-audio compile checks on macOS. Real-hardware smoke
+  and release confidence remain manual/later work.
 
 Success criteria:
 

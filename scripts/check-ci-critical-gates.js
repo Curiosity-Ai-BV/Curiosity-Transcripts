@@ -33,6 +33,7 @@ const criticalSteps = [
   ["checks", "Upload coverage artifacts"],
   ["checks", "Build desktop frontend"],
   ["macos-system-audio-check", "Check desktop Rust backend with ScreenCaptureKit system audio"],
+  ["macos-system-audio-check", "Check release desktop Rust backend with ScreenCaptureKit system audio"],
 ];
 
 function parseSteps(text) {

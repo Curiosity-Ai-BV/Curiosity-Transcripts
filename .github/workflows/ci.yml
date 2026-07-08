@@ -199,3 +199,6 @@ jobs:
 
       - name: Check desktop Rust backend with ScreenCaptureKit system audio
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features --features system-audio-screencapturekit
+
+      - name: Check release desktop Rust backend with ScreenCaptureKit system audio
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --features system-audio-screencapturekit
