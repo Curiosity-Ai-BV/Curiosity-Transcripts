@@ -408,6 +408,7 @@ describe("typed desktop command facade", () => {
     await facade.cancelSummary({ jobId: "summary-circuit-review-1700000001000" });
     await facade.saveWhisperModelPath({ whisperModelPath: "/models/base.en.bin" });
     await facade.saveAnalysisSettings({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" });
+    await facade.saveRawAudioRetentionPolicy({ rawAudioRetentionPolicy: "DeleteAfterTranscription" });
     const whisperPathTest = await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
@@ -448,6 +449,10 @@ describe("typed desktop command facade", () => {
         command: "save_analysis_settings",
         args: { ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" },
       },
+      {
+        command: "save_raw_audio_retention_policy",
+        args: { rawAudioRetentionPolicy: "DeleteAfterTranscription" },
+      },
       { command: "test_whisper_model_path", args: { path: "/models/base.en.bin" } },
       {
         command: "test_ollama_connection",
@@ -458,6 +463,52 @@ describe("typed desktop command facade", () => {
       fileSizeBytes: 16,
       sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
     });
+  });
+
+  it("accepts legacy NeverSave raw-audio retention values from recording and privacy DTO snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand: async <T,>(): Promise<T> =>
+        ({
+          ...backendSnapshot,
+          recording: {
+            ...backendSnapshot.recording,
+            raw_audio_retention: "NeverSave",
+          },
+          meetings: backendSnapshot.meetings.map((meeting, index) =>
+            index === 0
+              ? {
+                  ...meeting,
+                  privacy: {
+                    ...meeting.privacy,
+                    rawAudioRetention: "NeverSave",
+                  },
+                }
+              : meeting,
+          ),
+        }) as T,
+      previewFallback: false,
+    });
+
+    expect(snapshot.recording.raw_audio_retention).toBe("NeverSave");
+    expect(snapshot.meetings[0].privacy.rawAudioRetention).toBe("NeverSave");
+  });
+
+  it("rejects unsupported NeverSave raw-audio retention values from settings snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async <T,>(): Promise<T> =>
+          ({
+            ...backendSnapshot,
+            settings: {
+              ...backendSnapshot.settings,
+              rawAudioRetentionPolicy: "NeverSave",
+            },
+          }) as T,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.settings.rawAudioRetentionPolicy");
   });
 
   it("validates snapshot-returning facade commands before exposing them to App", async () => {

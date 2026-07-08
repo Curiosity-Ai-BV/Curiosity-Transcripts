@@ -41,6 +41,7 @@
         "exportDirectory": null,
         "ollamaBaseUrl": "http://127.0.0.1:11434",
         "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
         "whisperModelPath": ""
       },
       "setupGuidance": {
@@ -147,6 +148,7 @@
         "exportDirectory": null,
         "ollamaBaseUrl": "http://127.0.0.1:11434",
         "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
         "whisperModelPath": ""
       },
       "setupGuidance": {

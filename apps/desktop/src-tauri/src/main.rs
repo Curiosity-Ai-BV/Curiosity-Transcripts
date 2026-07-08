@@ -25,8 +25,8 @@ use curiosity_audio::{
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, ModelRun,
-    ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
-    TranscriptVersion,
+    ProcessingJob, RawAudioRetentionPolicy as DomainRawAudioRetentionPolicy, RecordingSession,
+    RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
 };
 use curiosity_store::{
     AppSettings, CompletedAudioArtifact, PendingDeleteFinalizationReport, RecoverableArtifact,
@@ -60,6 +60,7 @@ fn main() {
         get_settings,
         save_whisper_model_path,
         save_analysis_settings,
+        save_raw_audio_retention_policy,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -86,6 +87,7 @@ fn main() {
         get_settings,
         save_whisper_model_path,
         save_analysis_settings,
+        save_raw_audio_retention_policy,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -421,6 +423,24 @@ fn save_analysis_settings(
         .app_data_dir()
         .map_err(|error| format!("resolve app data directory: {error}"))?;
     save_analysis_settings_for_app_root(&app_root, ollama_base_url, ollama_model)?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
+fn save_raw_audio_retention_policy(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    raw_audio_retention_policy: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    save_raw_audio_retention_policy_for_app_root(&app_root, raw_audio_retention_policy)?;
     let snapshot_state = {
         let command_state = state.lock().map_err(|error| error.to_string())?;
         command_state.snapshot_state()
@@ -780,6 +800,11 @@ fn desktop_snapshot_for_app_root_with_state(
         let analysis = store
             .current_analysis_result(&summary.meeting_id)
             .map_err(|error| error.to_string())?;
+        let raw_audio_retention = store
+            .latest_recording_session_raw_audio_retention_policy_for_meeting(&summary.meeting_id)
+            .map_err(|error| error.to_string())?
+            .map(raw_audio_retention_policy_view)
+            .unwrap_or(RawAudioRetentionPolicy::Retain);
         let transcript_text = detail
             .transcript_segments
             .iter()
@@ -813,7 +838,7 @@ fn desktop_snapshot_for_app_root_with_state(
             privacy: MeetingPrivacy {
                 storage_label: "Private storage".to_string(),
                 storage_path: format!("meetings/{}/audio", summary.meeting_id),
-                raw_audio_retention: RawAudioRetentionPolicy::Retain,
+                raw_audio_retention,
                 local_only: analysis
                     .as_ref()
                     .map(|analysis| !analysis.network_used)
@@ -904,6 +929,9 @@ fn open_store_for_app_root(
     let finalized_deletes = if repair_startup {
         store.repair_startup().map_err(|error| error.to_string())?;
         store
+            .finalize_pending_raw_audio_retention_cleanup()
+            .map_err(|error| error.to_string())?;
+        store
             .finalize_pending_delete_intents()
             .map_err(|error| error.to_string())?
     } else {
@@ -942,6 +970,17 @@ fn save_analysis_settings_for_app_root(
     let ollama_model = canonical_local_ollama_model_tag(&ollama_model);
     store
         .save_analysis_settings(&ollama_base_url, &ollama_model)
+        .map(app_settings_view)
+        .map_err(|error| error.to_string())
+}
+
+fn save_raw_audio_retention_policy_for_app_root(
+    app_root: &Path,
+    raw_audio_retention_policy: String,
+) -> Result<AppSettingsView, String> {
+    let store = open_store(app_root)?;
+    store
+        .save_raw_audio_retention_policy(&raw_audio_retention_policy)
         .map(app_settings_view)
         .map_err(|error| error.to_string())
 }
@@ -1543,6 +1582,7 @@ impl DesktopCommandState {
                     meeting_id: recording.meeting_id.clone(),
                     recording_id: recording.recording_id.clone(),
                     captures_system_audio: recording.streams.contains(&StreamKind::SystemAudio),
+                    raw_audio_retention_policy: recording.raw_audio_retention_policy,
                 }
             }),
             last_recording: self.last_recording.clone(),
@@ -1667,6 +1707,7 @@ struct ActiveDesktopRecordingSnapshot {
     meeting_id: String,
     recording_id: String,
     captures_system_audio: bool,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1802,6 +1843,7 @@ struct ActiveDesktopRecording {
     meeting_id: String,
     recording_id: String,
     streams: Vec<StreamKind>,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
@@ -2002,6 +2044,11 @@ fn import_audio_file_recording_for_app_root(
         .parent()
         .ok_or_else(|| "Imported WAV destination path is invalid.".to_string())?
         .to_path_buf();
+    let store = open_store(app_root)?;
+    let raw_audio_retention_policy = store
+        .app_settings()
+        .map_err(|error| error.to_string())?
+        .raw_audio_retention_policy;
     let mut finalized_destination = false;
 
     let import_result = (|| {
@@ -2029,7 +2076,8 @@ fn import_audio_file_recording_for_app_root(
             RecordingSource::Imported,
             imported_at_ms,
             sample_rate_hz,
-        );
+        )
+        .with_raw_audio_retention_policy(raw_audio_retention_policy);
         meeting
             .start_recording(&session)
             .map_err(|error| error.to_string())?;
@@ -2040,7 +2088,6 @@ fn import_audio_file_recording_for_app_root(
             &relative_path,
             &sha256,
         );
-        let store = open_store(app_root)?;
         store
             .insert_recording_start_with_artifacts(
                 &meeting,
@@ -2081,12 +2128,13 @@ fn import_audio_file_recording_for_app_root(
         return Err(error);
     }
 
-    Ok(recording_dto(
+    Ok(recording_dto_with_retention(
         &meeting_id,
         Some(recording_id),
         CommandRecordingState::Complete,
         AppPermissionState::Ready,
         microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy_view(raw_audio_retention_policy),
         "Imported local WAV into private app storage.",
     ))
 }
@@ -2246,6 +2294,10 @@ fn start_microphone_recording_for_app_root(
     }
 
     let store = open_store(app_root).map_err(MicrophoneStartFailure::persistence)?;
+    let raw_audio_retention_policy = store
+        .app_settings()
+        .map_err(|error| MicrophoneStartFailure::persistence(error.to_string()))?
+        .raw_audio_retention_policy;
     let meeting_id = format!("meeting-{started_at_ms}");
     let recording_id = format!("recording-{started_at_ms}");
     let title = title
@@ -2265,7 +2317,8 @@ fn start_microphone_recording_for_app_root(
         required_recording_source_for_streams(&streams),
         started_at_ms,
         sample_rate_hz,
-    );
+    )
+    .with_raw_audio_retention_policy(raw_audio_retention_policy);
     if let Err(error) = meeting.start_recording(&session) {
         return Err(metadata_persistence_failure(
             error.to_string(),
@@ -2306,18 +2359,20 @@ fn start_microphone_recording_for_app_root(
         ));
     }
 
-    let recording = recording_dto(
+    let recording = recording_dto_with_retention(
         &meeting_id,
         Some(recording_id.clone()),
         CommandRecordingState::Recording,
         AppPermissionState::Ready,
         microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy_view(raw_audio_retention_policy),
         "Recording locally to private app storage",
     );
     command_state.active_recording = Some(ActiveDesktopRecording {
         meeting_id,
         recording_id,
         streams,
+        raw_audio_retention_policy: raw_audio_retention_policy_view(raw_audio_retention_policy),
         recorder,
     });
     command_state.last_recording = Some(recording);
@@ -2422,6 +2477,7 @@ fn stop_active_microphone_recording(
 ) -> CommandRecordingDto {
     let meeting_id = active.meeting_id.clone();
     let recording_id = active.recording_id.clone();
+    let raw_audio_retention_policy = active.raw_audio_retention_policy;
     match complete_active_microphone_recording(app_root, active, ended_at_ms) {
         Ok(recording) => recording,
         Err(message) => {
@@ -2438,12 +2494,13 @@ fn stop_active_microphone_recording(
                     Some(ended_at_ms),
                 );
             }
-            recording_dto(
+            recording_dto_with_retention(
                 &meeting_id,
                 Some(recording_id),
                 CommandRecordingState::Interrupted,
                 recording_stop_permission_state(&message),
                 microphone_storage_path(&meeting_id),
+                raw_audio_retention_policy,
                 &format!("Recording could not be finalized: {message}"),
             )
         }
@@ -2458,6 +2515,7 @@ fn cancel_active_microphone_recording(
 ) -> CommandRecordingDto {
     let meeting_id = active.meeting_id.clone();
     let recording_id = active.recording_id.clone();
+    let raw_audio_retention_policy = active.raw_audio_retention_policy;
     let stop_error = active.recorder.stop(ended_at_ms).err();
     let message = match stop_error {
         Some(error) => format!("{reason}; recorder shutdown reported: {error}"),
@@ -2478,12 +2536,13 @@ fn cancel_active_microphone_recording(
         .join("manifest.json");
     let _ = std::fs::remove_file(manifest_path);
 
-    recording_dto(
+    recording_dto_with_retention(
         &meeting_id,
         Some(recording_id),
         CommandRecordingState::Interrupted,
         AppPermissionState::Ready,
         microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy,
         &format!("Recording canceled before completion: {message}"),
     )
 }
@@ -2542,12 +2601,13 @@ fn complete_active_microphone_recording(
         "Finalized local microphone WAV artifact."
     };
 
-    Ok(recording_dto(
+    Ok(recording_dto_with_retention(
         &active.meeting_id,
         Some(active.recording_id),
         CommandRecordingState::Complete,
         AppPermissionState::Ready,
         microphone_storage_path(&active.meeting_id),
+        active.raw_audio_retention_policy,
         recovery_action,
     ))
 }
@@ -2714,6 +2774,7 @@ fn processing_job_from_command_job(job: &CommandJobView) -> ProcessingJob {
     processing_job
 }
 
+#[cfg(test)]
 fn transcription_idempotency_key(meeting_id: &str) -> String {
     command_job_idempotency_key(CommandJobKind::Transcription, meeting_id)
 }
@@ -3017,11 +3078,16 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
                 return Ok(None);
             }
             match persist_transcription_document(&store, meeting_id, document, created_at_ms) {
-                Ok(()) => Ok(Some(TranscriptionCommandView {
-                    meeting_id: meeting_id.to_string(),
-                    state: TranscriptionCommandState::Complete,
-                    failure: None,
-                })),
+                Ok(()) => {
+                    cleanup_raw_audio_retention_after_transcription(
+                        &store, meeting_id, &artifacts,
+                    )?;
+                    Ok(Some(TranscriptionCommandView {
+                        meeting_id: meeting_id.to_string(),
+                        state: TranscriptionCommandState::Complete,
+                        failure: None,
+                    }))
+                }
                 Err(error) => Ok(Some(transcription_failed(
                     meeting_id,
                     "transcript_persist_failed",
@@ -3038,6 +3104,32 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
             }
         }
     }
+}
+
+fn cleanup_raw_audio_retention_after_transcription(
+    store: &Store,
+    meeting_id: &str,
+    artifacts: &[curiosity_store::TranscriptionAudioArtifact],
+) -> Result<(), String> {
+    let artifact_ids = artifacts
+        .iter()
+        .map(|artifact| artifact.artifact_id.as_str())
+        .collect::<Vec<_>>();
+    let report = store
+        .cleanup_raw_audio_artifacts_after_transcription(meeting_id, &artifact_ids)
+        .map_err(|error| format!("Raw audio retention cleanup failed: {error}"))?;
+    if !report.skipped_private_artifacts.is_empty() {
+        let skipped = report
+            .skipped_private_artifacts
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Raw audio retention cleanup failed: skipped unsafe or user-owned artifact path(s): {skipped}"
+        ));
+    }
+    Ok(())
 }
 
 fn persist_transcription_document(
@@ -3163,12 +3255,13 @@ fn recording_snapshot(
     command_state: &DesktopCommandSnapshotState,
 ) -> CommandRecordingDto {
     if let Some(active) = &command_state.active_recording {
-        return recording_dto(
+        return recording_dto_with_retention(
             &active.meeting_id,
             Some(active.recording_id.clone()),
             CommandRecordingState::Recording,
             AppPermissionState::Ready,
             microphone_storage_path(&active.meeting_id),
+            active.raw_audio_retention_policy,
             "Recording locally to private app storage",
         );
     }
@@ -3277,6 +3370,26 @@ fn recording_dto(
     storage_path: String,
     recovery_action: &str,
 ) -> CommandRecordingDto {
+    recording_dto_with_retention(
+        meeting_id,
+        recording_id,
+        state,
+        permission_state,
+        storage_path,
+        RawAudioRetentionPolicy::Retain,
+        recovery_action,
+    )
+}
+
+fn recording_dto_with_retention(
+    meeting_id: &str,
+    recording_id: Option<String>,
+    state: CommandRecordingState,
+    permission_state: AppPermissionState,
+    storage_path: String,
+    raw_audio_retention: RawAudioRetentionPolicy,
+    recovery_action: &str,
+) -> CommandRecordingDto {
     CommandRecordingDto {
         meeting_id: meeting_id.to_string(),
         recording_id,
@@ -3285,7 +3398,7 @@ fn recording_dto(
         storage_location: StorageLocationDto {
             app_private_path: storage_path,
         },
-        raw_audio_retention: RawAudioRetentionPolicy::Retain,
+        raw_audio_retention,
         recoverable: false,
         recovery_action: recovery_action.to_string(),
     }
@@ -3534,6 +3647,20 @@ fn app_settings_view(settings: AppSettings) -> AppSettingsView {
         ollama_base_url: settings.ollama_base_url,
         ollama_model: settings.ollama_model,
         export_directory: settings.export_directory,
+        raw_audio_retention_policy: raw_audio_retention_policy_view(
+            settings.raw_audio_retention_policy,
+        ),
+    }
+}
+
+fn raw_audio_retention_policy_view(
+    policy: DomainRawAudioRetentionPolicy,
+) -> RawAudioRetentionPolicy {
+    match policy {
+        DomainRawAudioRetentionPolicy::Retain => RawAudioRetentionPolicy::Retain,
+        DomainRawAudioRetentionPolicy::DeleteAfterTranscription => {
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        }
     }
 }
 
@@ -4088,6 +4215,7 @@ struct AppSettingsView {
     ollama_base_url: String,
     ollama_model: String,
     export_directory: Option<String>,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -4425,11 +4553,14 @@ mod tests {
     };
     use curiosity_domain::{
         AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,
-        RecordingSession, RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
+        RawAudioRetentionPolicy as DomainRawAudioRetentionPolicy, RecordingSession,
+        RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
     };
     use curiosity_transcription::{FakeWhisperBackend, WhisperBackendSegment};
     use sha2::{Digest, Sha256};
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4528,6 +4659,10 @@ mod tests {
         assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11434");
         assert_eq!(settings.ollama_model, "qwen3.6:27b");
         assert_eq!(settings.export_directory, None);
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::Retain
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -4544,11 +4679,46 @@ mod tests {
             "gemma4:31b".to_string(),
         )
         .expect("save analysis");
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save retention");
         let settings = get_settings_for_app_root(&root).expect("settings");
 
         assert_eq!(settings.whisper_model_path, "/models/ggml-base.en.bin");
         assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11435");
         assert_eq!(settings.ollama_model, "gemma4:31b");
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_raw_audio_retention_setting_persists_supported_policy_and_rejects_never_save() {
+        let root = unique_test_root();
+
+        let settings = save_raw_audio_retention_policy_for_app_root(
+            &root,
+            "DeleteAfterTranscription".to_string(),
+        )
+        .expect("save delete-after retention");
+        let error = save_raw_audio_retention_policy_for_app_root(&root, "NeverSave".to_string())
+            .expect_err("NeverSave remains unsupported");
+        let reopened = get_settings_for_app_root(&root).expect("settings after rejected save");
+
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert!(
+            error.contains("unsupported raw audio retention policy"),
+            "unsupported policy should fail loudly: {error}"
+        );
+        assert_eq!(
+            reopened.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -5619,6 +5789,47 @@ mod tests {
     }
 
     #[test]
+    fn desktop_snapshot_finalizes_pending_raw_audio_retention_cleanup() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        store
+            .tombstone_audio_artifact(&artifact.artifact_id)
+            .expect("simulate committed tombstone before file removal");
+
+        desktop_snapshot_for_app_root(&root).expect("snapshot finalizes pending raw cleanup");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(!artifact_path.exists());
+        assert!(reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("artifact row remains tombstoned"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
     fn desktop_snapshot_with_active_recording_does_not_recover_deleted_meeting_summary_job() {
         let root = unique_test_root();
         let store = open_store(&root).expect("open store");
@@ -5645,6 +5856,7 @@ mod tests {
                 meeting_id: "active-meeting".to_string(),
                 recording_id: "active-recording".to_string(),
                 captures_system_audio: false,
+                raw_audio_retention_policy: RawAudioRetentionPolicy::Retain,
             }),
             ..Default::default()
         };
@@ -5923,6 +6135,44 @@ mod tests {
     }
 
     #[test]
+    fn start_microphone_recording_captures_current_raw_audio_retention_setting() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save retention");
+
+        let snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Recorded locally".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(
+            snapshot.recording.raw_audio_retention,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(
+            store
+                .recording_session_raw_audio_retention_policy(&recording_id)
+                .expect("session policy"),
+            DomainRawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn import_audio_file_persists_private_completed_imported_wav_artifact() {
         let root = unique_test_root();
         let source_root = unique_test_root();
@@ -5987,6 +6237,60 @@ mod tests {
         );
         assert_eq!(artifact.sha256, source_sha256);
         assert!(!artifact.sha256.starts_with("sha256:pending"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_captures_retention_setting_without_retroactive_changes() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("customer-call.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Customer call".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        save_raw_audio_retention_policy_for_app_root(&root, "Retain".to_string())
+            .expect("save later retain setting");
+        let reopened_snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &command_state.snapshot_state())
+                .expect("snapshot after settings change");
+        let json = serde_json::to_value(&reopened_snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(
+            snapshot.recording.raw_audio_retention,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(
+            store
+                .recording_session_raw_audio_retention_policy(&recording_id)
+                .expect("session policy"),
+            DomainRawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(json["meetings"][0]["id"], meeting_id);
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert_eq!(json["settings"]["rawAudioRetentionPolicy"], "Retain");
 
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(source_root).expect("source cleanup");
@@ -6662,6 +6966,291 @@ mod tests {
     }
 
     #[test]
+    fn transcribe_delete_after_recording_removes_raw_audio_after_persisting_transcript() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "delete after transcript",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect("transcribe imported meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(
+            json["meetings"][0]["transcriptText"],
+            "delete after transcript"
+        );
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert!(!artifact_path.exists());
+        assert!(reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("artifact tombstoned"));
+        assert!(reopened
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query retained artifacts")
+            .is_none());
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript remains")
+                .len(),
+            1
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn transcribe_delete_after_mixed_recording_removes_all_raw_audio_after_persisting_transcript() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Delete after full call".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+            .expect("stop mixed recording");
+        let artifacts = {
+            let store = open_store(&root).expect("open store");
+            store
+                .completed_wav_artifacts_for_transcription(&meeting_id)
+                .expect("query mixed artifacts")
+        };
+        let artifact_paths = artifacts
+            .iter()
+            .map(|artifact| {
+                (
+                    artifact.artifact_id.clone(),
+                    artifact.kind.clone(),
+                    root.join(&artifact.path),
+                )
+            })
+            .collect::<Vec<_>>();
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            PathAwareWhisperBackend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe mixed delete-after meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+        let transcript_segments = reopened
+            .transcript_segments(&meeting_id)
+            .expect("transcript remains");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert_eq!(
+            artifact_paths
+                .iter()
+                .map(|(_, kind, _)| kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RawMic", "RawSystem"]
+        );
+        for (artifact_id, _kind, path) in &artifact_paths {
+            assert!(
+                !path.exists(),
+                "delete-after cleanup should remove selected raw artifact file: {}",
+                path.display()
+            );
+            assert!(reopened
+                .artifact_tombstoned(artifact_id)
+                .expect("artifact tombstoned"));
+        }
+        assert!(reopened
+            .completed_wav_artifacts_for_transcription(&meeting_id)
+            .expect("query retained artifacts")
+            .is_empty());
+        assert_eq!(transcript_segments.len(), 2);
+        assert_eq!(
+            transcript_segments
+                .iter()
+                .map(|segment| segment.source_channel)
+                .collect::<Vec<_>>(),
+            vec![SourceChannel::Microphone, SourceChannel::System]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_after_cleanup_failure_after_transcript_persistence_returns_error() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        let artifact_parent = artifact_path.parent().expect("artifact parent");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o555))
+            .expect("make artifact parent read-only");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let error = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "persisted before cleanup failure",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect_err("cleanup failure should not be marked as command success");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o755))
+            .expect("restore artifact parent permissions");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(
+            error.contains("Raw audio retention cleanup failed"),
+            "cleanup failure should be surfaced clearly: {error}"
+        );
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed cleanup leaves artifact row retained"));
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript persisted before cleanup")
+                .len(),
+            1
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn failed_delete_after_transcription_keeps_raw_audio_retained() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            root.join("missing-model.bin"),
+            "missing-model.bin",
+            FakeWhisperBackend::default(),
+            1_700_000_001_000,
+        )
+        .expect("transcription failure is represented in snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed transcription keeps artifact"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
     fn transcribe_imported_wav_maps_segments_to_imported_channel() {
         let root = unique_test_root();
         let source_root = unique_test_root();
@@ -7133,6 +7722,145 @@ mod tests {
                 .expect("query transcript segments")
                 .is_empty(),
             "a canceled transcription must not persist completed backend output"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn canceled_delete_after_transcription_job_keeps_raw_audio_retained() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .expect("completed artifact");
+        let artifact_path = root.join(&artifact.path);
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        cancel_transcription_job_for_app_root(&root, &command_state, &started.id)
+            .expect("request transcription cancel");
+
+        let snapshot = finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "canceled transcript",
+            )]),
+            1_700_000_001_500,
+        )
+        .expect("finish canceled transcription job");
+        let json = serde_json::to_value(&snapshot).expect("serialize finish");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcriptionJob"]["state"], "Canceled");
+        assert!(json["transcription"].is_null());
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("canceled transcription keeps artifact"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_after_cleanup_failure_marks_durable_transcription_job_failed() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .expect("completed artifact");
+        let artifact_path = root.join(&artifact.path);
+        let artifact_parent = artifact_path.parent().expect("artifact parent");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o555))
+            .expect("make artifact parent read-only");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let job_id = started.id.clone();
+
+        let finish_result = finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "persisted before durable cleanup failure",
+            )]),
+            1_700_000_001_500,
+        );
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o755))
+            .expect("restore artifact parent permissions");
+        let error = finish_result.expect_err("cleanup failure should fail the durable job finish");
+        let reopened = open_store(&root).expect("reopen store");
+        let durable_job = reopened
+            .processing_job(&job_id)
+            .expect("durable failed transcription job");
+
+        assert!(
+            error.contains("Raw audio retention cleanup failed"),
+            "cleanup failure should be returned to the worker: {error}"
+        );
+        assert_eq!(durable_job.status, curiosity_domain::JobStatus::Failed);
+        assert_eq!(durable_job.finished_at_ms, Some(1_700_000_001_500));
+        assert!(
+            durable_job
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Raw audio retention cleanup failed"),
+            "durable job should persist the cleanup error: {:?}",
+            durable_job.last_error
+        );
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed cleanup leaves artifact row retained"));
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript persisted before cleanup")
+                .len(),
+            1
         );
 
         fs::remove_dir_all(root).expect("cleanup");

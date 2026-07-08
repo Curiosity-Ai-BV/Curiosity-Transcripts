@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, RecordingSession,
-    RecordingSource, RecordingStatus,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus,
+    RawAudioRetentionPolicy, RecordingSession, RecordingSource, RecordingStatus,
 };
 use curiosity_store::{
     ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
@@ -86,7 +86,7 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 3);
+    assert_eq!(store.schema_version().expect("schema version"), 4);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(audio_artifacts)")
@@ -98,6 +98,86 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     assert!(columns.contains(&"write_status".to_string()));
     assert!(columns.contains(&"recovery_status".to_string()));
     assert!(columns.contains(&"tombstoned".to_string()));
+}
+
+#[test]
+fn migrate_adds_recording_session_retention_policy_default_for_legacy_rows() {
+    let root = test_root("legacy-session-retention-migrate");
+    let db_path = root.join("app.db");
+    {
+        let conn = Connection::open(&db_path).expect("legacy db");
+        conn.execute_batch(
+            "
+            CREATE TABLE recording_sessions (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                ended_at_ms INTEGER,
+                sample_rate_hz INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                recovery_note TEXT
+            );
+            INSERT INTO recording_sessions (
+                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status, recovery_note
+            ) VALUES (
+                'session-legacy', 'meeting-legacy', 'Imported', 1000, 2000, 48000, 'Complete', NULL
+            );
+            PRAGMA user_version = 3;
+            ",
+        )
+        .expect("legacy schema");
+    }
+
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate legacy schema");
+
+    assert_eq!(store.schema_version().expect("schema version"), 4);
+    let conn = Connection::open(&db_path).expect("read migrated db");
+    let columns = conn
+        .prepare("PRAGMA table_info(recording_sessions)")
+        .expect("table info")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("column names");
+    assert!(columns.contains(&"raw_audio_retention_policy".to_string()));
+    let policy: String = conn
+        .query_row(
+            "SELECT raw_audio_retention_policy FROM recording_sessions WHERE id = 'session-legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("legacy row policy");
+    assert_eq!(policy, "Retain");
+}
+
+#[test]
+fn recording_session_retention_policy_round_trips() {
+    let root = test_root("session-retention-round-trip");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    let meeting = Meeting::new_manual("meeting-1", "Planning", 1_000);
+    store.insert_meeting(&meeting).expect("insert meeting");
+    let session = RecordingSession::start(
+        "session-1",
+        "meeting-1",
+        RecordingSource::Imported,
+        1_000,
+        48_000,
+    )
+    .with_raw_audio_retention_policy(RawAudioRetentionPolicy::DeleteAfterTranscription);
+
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+
+    assert_eq!(
+        store
+            .recording_session_raw_audio_retention_policy("session-1")
+            .expect("retention policy"),
+        RawAudioRetentionPolicy::DeleteAfterTranscription
+    );
 }
 
 #[test]

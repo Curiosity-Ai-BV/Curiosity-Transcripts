@@ -14,8 +14,12 @@ export type AppPermissionState =
   | "MicrophoneUnavailable"
   | "SystemAudioUnavailable";
 export type RawAudioRetentionPolicy = "Retain" | "DeleteAfterTranscription" | "NeverSave";
+export type PersistedRawAudioRetentionPolicy = Exclude<RawAudioRetentionPolicy, "NeverSave">;
 export type Tone = "ready" | "active" | "warn" | "blocked" | "muted";
 export type ExportFormat = "json" | "markdown" | "srt";
+
+const RAW_AUDIO_RETENTION_POLICIES = ["Retain", "DeleteAfterTranscription", "NeverSave"] as const;
+const PERSISTED_RAW_AUDIO_RETENTION_POLICIES = ["Retain", "DeleteAfterTranscription"] as const;
 
 export interface CommandRecordingDto {
   meeting_id: string;
@@ -75,6 +79,7 @@ export interface AppSettings {
   ollamaBaseUrl: string;
   ollamaModel: string;
   exportDirectory: string | null;
+  rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy;
 }
 
 interface WhisperModelPathTestBase {
@@ -247,6 +252,7 @@ export interface DesktopCommandFacade {
   cancelSummary(args: { jobId: string }): Promise<DesktopSnapshot>;
   saveWhisperModelPath(args: { whisperModelPath: string }): Promise<DesktopSnapshot>;
   saveAnalysisSettings(args: { ollamaBaseUrl: string; ollamaModel: string }): Promise<DesktopSnapshot>;
+  saveRawAudioRetentionPolicy(args: { rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy }): Promise<DesktopSnapshot>;
   testWhisperModelPath(args: { path: string }): Promise<WhisperModelPathTestResult>;
   testOllamaConnection(args: { baseUrl: string; model: string }): Promise<OllamaConnectionTestResult>;
 }
@@ -302,7 +308,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
     requireString(privacy.storagePath, `${meetingPath}.privacy.storagePath`);
     requireEnum(
       privacy.rawAudioRetention,
-      ["Retain", "DeleteAfterTranscription", "NeverSave"],
+      RAW_AUDIO_RETENTION_POLICIES,
       `${meetingPath}.privacy.rawAudioRetention`,
     );
     requireBoolean(privacy.localOnly, `${meetingPath}.privacy.localOnly`);
@@ -345,7 +351,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   requireString(storageLocation.app_private_path, "desktop_snapshot.recording.storage_location.app_private_path");
   requireEnum(
     recording.raw_audio_retention,
-    ["Retain", "DeleteAfterTranscription", "NeverSave"],
+    RAW_AUDIO_RETENTION_POLICIES,
     "desktop_snapshot.recording.raw_audio_retention",
   );
   requireBoolean(recording.recoverable, "desktop_snapshot.recording.recoverable");
@@ -362,6 +368,11 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   requireString(settings.ollamaBaseUrl, "desktop_snapshot.settings.ollamaBaseUrl");
   requireString(settings.ollamaModel, "desktop_snapshot.settings.ollamaModel");
   requireNullableString(settings.exportDirectory, "desktop_snapshot.settings.exportDirectory");
+  requireEnum(
+    settings.rawAudioRetentionPolicy,
+    PERSISTED_RAW_AUDIO_RETENTION_POLICIES,
+    "desktop_snapshot.settings.rawAudioRetentionPolicy",
+  );
 
   const capture = requireContractRecord(root.capture, "desktop_snapshot.capture");
   requireEnum(
@@ -824,6 +835,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "qwen3.6:27b",
       exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain",
     },
     capture:
       variant === "state-matrix"
@@ -891,6 +903,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "qwen3.6:27b",
       exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain",
     },
     capture: {
       microphone: "MicrophoneUnavailable",
@@ -981,6 +994,7 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["settings", "ollamaBaseUrl"],
   ["settings", "ollamaModel"],
   ["settings", "exportDirectory"],
+  ["settings", "rawAudioRetentionPolicy"],
   ["capture", "microphone"],
   ["capture", "systemAudio"],
   ["transcription"],
@@ -1030,6 +1044,7 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "cancel_summary",
   "rename_meeting",
   "save_analysis_settings",
+  "save_raw_audio_retention_policy",
   "save_whisper_model_path",
   "seed_dev_fixture",
   "import_audio_file",
@@ -1285,7 +1300,7 @@ function retentionDetail(policy: RawAudioRetentionPolicy): string {
     return "Raw audio will be deleted after transcription.";
   }
   if (policy === "NeverSave") {
-    return "Raw audio is not saved for this meeting.";
+    return "Raw audio was not saved for this meeting.";
   }
   return "Raw audio retained in private app storage.";
 }
@@ -1339,6 +1354,8 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("save_whisper_model_path", { whisperModelPath }),
     saveAnalysisSettings: ({ ollamaBaseUrl, ollamaModel }) =>
       snapshotCommand("save_analysis_settings", { ollamaBaseUrl, ollamaModel }),
+    saveRawAudioRetentionPolicy: ({ rawAudioRetentionPolicy }) =>
+      snapshotCommand("save_raw_audio_retention_policy", { rawAudioRetentionPolicy }),
     testWhisperModelPath: async ({ path }) => {
       const result = await fetchCommand<unknown>("test_whisper_model_path", { path });
       assertWhisperModelPathTestContract(result);

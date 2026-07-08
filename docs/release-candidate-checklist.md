@@ -52,9 +52,13 @@ output are still future hardening gates unless a later slice adds them.
 - Summary: generate a local Ollama summary after transcription and verify
   summary, decisions, questions, action items, and citations are visible.
 - Privacy data state: for a selected meeting, verify the detail row shows the
-  app-private audio path, raw-audio retention, local or hosted processing state,
-  export status, and delete or remaining-export status. Retention controls,
-  encryption-at-rest, and keychain secrets remain future checks until implemented.
+  app-private audio path, captured raw-audio retention, local or hosted
+  processing state, export status, and delete or remaining-export status. Verify
+  Settings can save `Retain` and `DeleteAfterTranscription` as defaults for
+  future recordings/imports, and that a successful delete-after transcription
+  removes safe app-private raw WAV artifacts while preserving transcript,
+  summary/search/export rows, meetings, and user-owned source files. `NeverSave`
+  capture is unsupported and should not appear in the UI.
 - At-rest disclosure: verify the release notes disclose that app-level
   encryption-at-rest is not implemented in v1, app-private storage relies on
   OS/user-account file protections, app delete controls app-private meeting data,
@@ -70,8 +74,8 @@ output are still future hardening gates unless a later slice adds them.
 - Delete: delete the meeting and verify app-private transcript, analysis,
   manifests, meeting-scoped private DB rows, `processing_jobs`, and
   `meeting_search` rows are removed. Verify app-private audio artifacts are
-  removed or explicitly reported as skipped. If cleanup is interrupted after the
-  delete intent is recorded, relaunch and verify startup finalizes pending
+  removed or explicitly reported as skipped. If cleanup is interrupted after a
+  recorded delete intent or raw-audio tombstone, relaunch and verify startup finalizes pending
   app-private cleanup; user-owned exports remain outside app deletion control.
 - Uninstall and private-data handling: uninstall the app, inspect the documented
   app-private data location, and verify user-owned exported files remain

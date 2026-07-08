@@ -537,7 +537,7 @@ fn fresh_migration_creates_processing_job_metadata_columns() {
     let store = Store::open(&db_path, root).expect("open store");
     store.migrate().expect("migrate");
 
-    assert_eq!(store.schema_version().expect("schema version"), 3);
+    assert_eq!(store.schema_version().expect("schema version"), 4);
 
     let conn = Connection::open(&db_path).expect("read db");
     let columns = processing_job_columns(&conn);
@@ -577,7 +577,7 @@ fn migration_preserves_legacy_processing_jobs_with_default_metadata() {
     let store = Store::open(&db_path, root).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 3);
+    assert_eq!(store.schema_version().expect("schema version"), 4);
     let job = store
         .processing_job("job-legacy")
         .expect("legacy processing job");

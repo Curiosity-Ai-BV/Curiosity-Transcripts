@@ -31,6 +31,7 @@ import {
   mapRawAudioRetention,
   mapRecordingState,
   mapTranscriptionState,
+  PersistedRawAudioRetentionPolicy,
   searchMeetings,
   Tone,
 } from "./commandAdapter";
@@ -61,6 +62,7 @@ type PendingCommand =
   | "test-ollama"
   | "save-whisper"
   | "save-analysis"
+  | "save-retention"
   | null;
 
 type ThemeMode = "dark" | "light";
@@ -69,6 +71,7 @@ interface SettingsFormState {
   whisperModelPath: string;
   ollamaBaseUrl: string;
   ollamaModel: string;
+  rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy;
 }
 
 interface SettingsFeedback {
@@ -582,6 +585,11 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     setSettingsFeedback(null);
   }
 
+  function updateRawAudioRetentionPolicy(value: PersistedRawAudioRetentionPolicy) {
+    setSettingsForm((current) => ({ ...current, rawAudioRetentionPolicy: value }));
+    setSettingsFeedback(null);
+  }
+
   function saveWhisperModelPath() {
     void runSettingsSnapshotCommand(
       "save-whisper",
@@ -600,6 +608,17 @@ export default function App({ snapshot, commandFacade }: AppProps) {
           ollamaModel: settingsForm.ollamaModel,
         }),
       "Analysis settings saved.",
+    );
+  }
+
+  function saveRawAudioRetentionPolicy() {
+    void runSettingsSnapshotCommand(
+      "save-retention",
+      (commands) =>
+        commands.saveRawAudioRetentionPolicy({
+          rawAudioRetentionPolicy: settingsForm.rawAudioRetentionPolicy,
+        }),
+      "Raw-audio retention saved.",
     );
   }
 
@@ -1235,6 +1254,31 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                   {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
                 </button>
               </div>
+              <label className="settings-field" htmlFor="raw-audio-retention">
+                <span>Raw audio retention</span>
+                <select
+                  id="raw-audio-retention"
+                  value={settingsForm.rawAudioRetentionPolicy}
+                  onChange={(event) =>
+                    updateRawAudioRetentionPolicy(event.target.value as PersistedRawAudioRetentionPolicy)
+                  }
+                  disabled={settingsInputDisabled}
+                >
+                  <option value="Retain">Retain</option>
+                  <option value="DeleteAfterTranscription">Delete after transcription</option>
+                </select>
+              </label>
+              <div className="settings-buttons">
+                <button
+                  type="button"
+                  className="button"
+                  disabled={settingsActionDisabled}
+                  title={commandSurfaceReady ? "Save default raw-audio retention." : commandUnavailableTitle}
+                  onClick={saveRawAudioRetentionPolicy}
+                >
+                  {pendingCommand === "save-retention" ? "Saving retention" : "Save retention"}
+                </button>
+              </div>
               {settingsFeedback ? (
                 <div className={`settings-feedback ${settingsFeedback.tone}`} role="status">
                   <span>{settingsFeedback.message}</span>
@@ -1345,6 +1389,7 @@ function settingsFormFromSnapshot(snapshot: DesktopSnapshot): SettingsFormState 
     whisperModelPath: snapshot.settings.whisperModelPath,
     ollamaBaseUrl: snapshot.settings.ollamaBaseUrl,
     ollamaModel: snapshot.settings.ollamaModel,
+    rawAudioRetentionPolicy: snapshot.settings.rawAudioRetentionPolicy,
   };
 }
 

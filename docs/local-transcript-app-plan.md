@@ -251,7 +251,7 @@ Storage rules:
 - SQLite stores normalized metadata, transcript segments, provider settings, calendar mappings, and job state.
 - Private application storage keeps raw audio and manifests by default.
 - The Documents vault stores user-owned Markdown/JSON/SRT files only when the user exports or enables vault mode.
-- Raw audio retention is a per-meeting visible setting: retain, delete after transcription, or never save for imported transcript-only flows.
+- Settings stores a raw audio retention default for future recordings/imports, and selected meetings show the captured session policy; no-save capture remains unsupported until a later slice implements it.
 - Atomic write rules: write to temp path, fsync where practical, then rename and update manifest.
 - Startup repair must reconcile SQLite rows, manifests, and artifact files after crashes.
 - API keys and encryption keys live in the OS keychain, not in SQLite.

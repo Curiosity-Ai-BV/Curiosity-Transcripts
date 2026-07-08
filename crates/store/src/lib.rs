@@ -13,8 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingAnalysis, MeetingStatus,
-    ModelRun, ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
-    TranscriptSegment, TranscriptState, TranscriptVersion,
+    ModelRun, ProcessingJob, RawAudioRetentionPolicy, RecordingSession, RecordingSource,
+    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -26,12 +26,13 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
 const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
 const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
 const SETTING_OLLAMA_MODEL: &str = "ollama_model";
 const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
+const SETTING_RAW_AUDIO_RETENTION_POLICY: &str = "raw_audio_retention_policy";
 
 /// Typed store failure for storage, path safety, recovery, and invariant errors.
 #[derive(Debug)]
@@ -152,6 +153,7 @@ pub struct AppSettings {
     pub ollama_base_url: String,
     pub ollama_model: String,
     pub export_directory: Option<String>,
+    pub raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,6 +186,33 @@ pub struct CompletedAudioArtifact {
     pub artifact_id: String,
     pub sha256: String,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawAudioRetentionCleanupCandidate {
+    artifact_id: String,
+    path: String,
+    retention_policy: RawAudioRetentionPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawAudioRetentionCleanupPlan {
+    artifact_id: String,
+    path: PathBuf,
+    existed_at_preflight: bool,
+}
+
+type ProcessingJobRow = (
+    String,
+    String,
+    String,
+    String,
+    u32,
+    Option<String>,
+    Option<u64>,
+    Option<u64>,
+    bool,
+    Option<String>,
+);
 
 impl Store {
     pub fn open(db_path: impl AsRef<Path>, app_root: impl Into<PathBuf>) -> StoreResult<Self> {
@@ -232,7 +261,8 @@ impl Store {
                 ended_at_ms INTEGER,
                 sample_rate_hz INTEGER NOT NULL,
                 status TEXT NOT NULL,
-                recovery_note TEXT
+                recovery_note TEXT,
+                raw_audio_retention_policy TEXT NOT NULL DEFAULT 'Retain'
             );
 
             CREATE TABLE IF NOT EXISTS audio_artifacts (
@@ -349,6 +379,11 @@ impl Store {
             "tombstoned",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        self.ensure_column(
+            "recording_sessions",
+            "raw_audio_retention_policy",
+            "TEXT NOT NULL DEFAULT 'Retain'",
+        )?;
         self.ensure_column("processing_jobs", "started_at_ms", "INTEGER")?;
         self.ensure_column("processing_jobs", "finished_at_ms", "INTEGER")?;
         self.ensure_column(
@@ -411,8 +446,9 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO recording_sessions (
-                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status, recovery_note
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status,
+                recovery_note, raw_audio_retention_policy
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ",
             params![
                 session.id,
@@ -422,7 +458,8 @@ impl Store {
                 session.ended_at_ms,
                 session.sample_rate_hz,
                 enum_name(session.status),
-                session.recovery_note
+                session.recovery_note,
+                enum_name(session.raw_audio_retention_policy)
             ],
         )?;
         Ok(())
@@ -763,6 +800,12 @@ impl Store {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string()),
             export_directory,
+            raw_audio_retention_policy: parse_raw_audio_retention_policy(
+                self.setting_value(SETTING_RAW_AUDIO_RETENTION_POLICY)?
+                    .filter(|value| !value.trim().is_empty())
+                    .as_deref()
+                    .unwrap_or("Retain"),
+            )?,
         })
     }
 
@@ -797,6 +840,12 @@ impl Store {
                 Err(err)
             }
         }
+    }
+
+    pub fn save_raw_audio_retention_policy(&self, policy: &str) -> StoreResult<AppSettings> {
+        let policy = parse_raw_audio_retention_policy(policy.trim())?;
+        self.upsert_setting(SETTING_RAW_AUDIO_RETENTION_POLICY, enum_name(policy))?;
+        self.app_settings()
     }
 
     pub fn count(&self, table: &str) -> StoreResult<u64> {
@@ -1102,6 +1151,310 @@ impl Store {
         )?)
     }
 
+    pub fn recording_session_raw_audio_retention_policy(
+        &self,
+        recording_id: &str,
+    ) -> StoreResult<RawAudioRetentionPolicy> {
+        let policy = self.conn.query_row(
+            "SELECT raw_audio_retention_policy FROM recording_sessions WHERE id = ?1",
+            params![recording_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        parse_raw_audio_retention_policy(&policy)
+    }
+
+    pub fn latest_recording_session_raw_audio_retention_policy_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<RawAudioRetentionPolicy>> {
+        let policy = self
+            .conn
+            .query_row(
+                "
+                SELECT raw_audio_retention_policy
+                FROM recording_sessions
+                WHERE meeting_id = ?1
+                ORDER BY started_at_ms DESC, id DESC
+                LIMIT 1
+                ",
+                params![meeting_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        policy
+            .map(|policy| parse_raw_audio_retention_policy(&policy))
+            .transpose()
+    }
+
+    pub fn cleanup_raw_audio_artifacts_after_transcription<S: AsRef<str>>(
+        &self,
+        meeting_id: &str,
+        artifact_ids: &[S],
+    ) -> StoreResult<RawAudioRetentionCleanupReport> {
+        let mut plans = Vec::new();
+        let mut preflight_failures = Vec::new();
+
+        for artifact_id in artifact_ids {
+            let artifact_id = artifact_id.as_ref();
+            let Some(candidate) =
+                self.raw_audio_retention_cleanup_candidate(meeting_id, artifact_id)?
+            else {
+                continue;
+            };
+            if candidate.retention_policy != RawAudioRetentionPolicy::DeleteAfterTranscription {
+                continue;
+            }
+            let Some(path) = self.private_app_path(&candidate.path) else {
+                preflight_failures.push(format!(
+                    "{}: {}",
+                    candidate.artifact_id,
+                    self.reported_path(&candidate.path).display()
+                ));
+                continue;
+            };
+            if path.exists() {
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "Raw audio retention cleanup preflight failed: {}: cannot inspect {}: {error}",
+                        candidate.artifact_id,
+                        path.display()
+                    )
+                })?;
+                if !metadata.is_file() {
+                    preflight_failures.push(format!(
+                        "{}: {} is not a file",
+                        candidate.artifact_id,
+                        path.display()
+                    ));
+                    continue;
+                }
+                if let Some(parent) = path.parent() {
+                    let parent_metadata = fs::metadata(parent).map_err(|error| {
+                        format!(
+                            "Raw audio retention cleanup preflight failed: {}: cannot inspect parent {}: {error}",
+                            candidate.artifact_id,
+                            parent.display()
+                        )
+                    })?;
+                    if !parent_metadata.is_dir() || parent_metadata.permissions().readonly() {
+                        preflight_failures.push(format!(
+                            "{}: parent {} is not writable",
+                            candidate.artifact_id,
+                            parent.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let existed_at_preflight = path.exists();
+            plans.push(RawAudioRetentionCleanupPlan {
+                artifact_id: candidate.artifact_id,
+                path,
+                existed_at_preflight,
+            });
+        }
+
+        if !preflight_failures.is_empty() {
+            preflight_failures.sort();
+            return Err(format!(
+                "Raw audio retention cleanup preflight failed: {}",
+                preflight_failures.join(", ")
+            )
+            .into());
+        }
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let tombstone_result = (|| -> StoreResult<()> {
+            for plan in &plans {
+                self.tombstone_audio_artifact(&plan.artifact_id)?;
+            }
+            Ok(())
+        })();
+        match tombstone_result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+
+        let mut report = RawAudioRetentionCleanupReport::default();
+        for plan in &plans {
+            if plan.existed_at_preflight {
+                match fs::remove_file(&plan.path) {
+                    Ok(()) => report.deleted_private_artifacts.push(plan.path.clone()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        report.missing_private_artifacts.push(plan.path.clone());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                report.missing_private_artifacts.push(plan.path.clone());
+            }
+        }
+        report.deleted_private_artifacts.sort();
+        report.missing_private_artifacts.sort();
+        report.skipped_private_artifacts.sort();
+        Ok(report)
+    }
+
+    fn raw_audio_retention_cleanup_candidate(
+        &self,
+        meeting_id: &str,
+        artifact_id: &str,
+    ) -> StoreResult<Option<RawAudioRetentionCleanupCandidate>> {
+        let row = self
+            .conn
+            .query_row(
+                "
+                SELECT
+                    audio_artifacts.id,
+                    audio_artifacts.path,
+                    recording_sessions.raw_audio_retention_policy
+                FROM audio_artifacts
+                JOIN recording_sessions
+                  ON recording_sessions.id = audio_artifacts.recording_session_id
+                WHERE audio_artifacts.id = ?1
+                  AND recording_sessions.meeting_id = ?2
+                  AND audio_artifacts.retained = 1
+                  AND audio_artifacts.tombstoned = 0
+                  AND audio_artifacts.write_status = 'Complete'
+                  AND recording_sessions.status IN ('Complete', 'Recovered')
+                  AND lower(audio_artifacts.path) LIKE '%.wav'
+                ",
+                params![artifact_id, meeting_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(artifact_id, path, policy)| {
+            Ok(RawAudioRetentionCleanupCandidate {
+                artifact_id,
+                path,
+                retention_policy: parse_raw_audio_retention_policy(&policy)?,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn finalize_pending_raw_audio_retention_cleanup(
+        &self,
+    ) -> StoreResult<RawAudioRetentionCleanupReport> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT audio_artifacts.id,
+                   audio_artifacts.path
+            FROM audio_artifacts
+            JOIN recording_sessions
+              ON recording_sessions.id = audio_artifacts.recording_session_id
+            JOIN meetings
+              ON meetings.id = recording_sessions.meeting_id
+            WHERE audio_artifacts.retained = 0
+              AND audio_artifacts.tombstoned = 1
+              AND audio_artifacts.write_status = 'Complete'
+              AND recording_sessions.raw_audio_retention_policy = 'DeleteAfterTranscription'
+              AND recording_sessions.status IN ('Complete', 'Recovered')
+              AND meetings.status != 'Deleted'
+              AND meetings.deleted_at_ms IS NULL
+              AND lower(audio_artifacts.path) LIKE '%.wav'
+            ORDER BY audio_artifacts.id ASC
+            ",
+        )?;
+        let pending_artifacts = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut plans = Vec::new();
+        let mut preflight_failures = Vec::new();
+        for (artifact_id, artifact_path) in pending_artifacts {
+            let Some(path) = self.private_app_path(&artifact_path) else {
+                preflight_failures.push(format!(
+                    "{}: {}",
+                    artifact_id,
+                    self.reported_path(&artifact_path).display()
+                ));
+                continue;
+            };
+            if path.exists() {
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "Pending raw audio retention cleanup failed: {artifact_id}: cannot inspect {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !metadata.is_file() {
+                    preflight_failures.push(format!(
+                        "{}: {} is not a file",
+                        artifact_id,
+                        path.display()
+                    ));
+                    continue;
+                }
+                if let Some(parent) = path.parent() {
+                    let parent_metadata = fs::metadata(parent).map_err(|error| {
+                        format!(
+                            "Pending raw audio retention cleanup failed: {artifact_id}: cannot inspect parent {}: {error}",
+                            parent.display()
+                        )
+                    })?;
+                    if !parent_metadata.is_dir() || parent_metadata.permissions().readonly() {
+                        preflight_failures.push(format!(
+                            "{}: parent {} is not writable",
+                            artifact_id,
+                            parent.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let existed_at_preflight = path.exists();
+            plans.push(RawAudioRetentionCleanupPlan {
+                artifact_id,
+                path,
+                existed_at_preflight,
+            });
+        }
+
+        if !preflight_failures.is_empty() {
+            preflight_failures.sort();
+            return Err(format!(
+                "Pending raw audio retention cleanup failed: {}",
+                preflight_failures.join(", ")
+            )
+            .into());
+        }
+
+        let mut report = RawAudioRetentionCleanupReport::default();
+        for plan in &plans {
+            if plan.existed_at_preflight {
+                match fs::remove_file(&plan.path) {
+                    Ok(()) => report.deleted_private_artifacts.push(plan.path.clone()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        report.missing_private_artifacts.push(plan.path.clone());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                report.missing_private_artifacts.push(plan.path.clone());
+            }
+        }
+        report.deleted_private_artifacts.sort();
+        report.missing_private_artifacts.sort();
+        report.skipped_private_artifacts.sort();
+        Ok(report)
+    }
+
     pub fn repair_startup(&self) -> StoreResult<RepairReport> {
         let mut report = RepairReport::default();
         for manifest_path in manifest_paths(&self.app_root)? {
@@ -1327,18 +1680,7 @@ impl Store {
             finished_at_ms,
             cancel_requested,
             idempotency_key,
-        ): (
-            String,
-            String,
-            String,
-            String,
-            u32,
-            Option<String>,
-            Option<u64>,
-            Option<u64>,
-            bool,
-            Option<String>,
-        ) = match self
+        ): ProcessingJobRow = match self
             .conn
             .query_row(sql, params, |row| {
                 Ok((
@@ -2735,6 +3077,13 @@ pub struct DeleteReport {
     pub exported_files_outside_app_control: Vec<PathBuf>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RawAudioRetentionCleanupReport {
+    pub deleted_private_artifacts: Vec<PathBuf>,
+    pub missing_private_artifacts: Vec<PathBuf>,
+    pub skipped_private_artifacts: Vec<PathBuf>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingDeleteFinalizationReport {
     pub meeting_id: String,
@@ -2961,6 +3310,15 @@ impl StoreEnum for RecordingStatus {
             RecordingStatus::Recovered => "Recovered",
             RecordingStatus::Complete => "Complete",
             RecordingStatus::Failed => "Failed",
+        }
+    }
+}
+
+impl StoreEnum for RawAudioRetentionPolicy {
+    fn as_store_str(&self) -> &'static str {
+        match self {
+            RawAudioRetentionPolicy::Retain => "Retain",
+            RawAudioRetentionPolicy::DeleteAfterTranscription => "DeleteAfterTranscription",
         }
     }
 }
@@ -3290,6 +3648,14 @@ fn parse_job_status(status: &str) -> StoreResult<JobStatus> {
         "Retry" => Ok(JobStatus::Retry),
         "Recovery" => Ok(JobStatus::Recovery),
         other => Err(format!("unknown job status: {other}").into()),
+    }
+}
+
+fn parse_raw_audio_retention_policy(policy: &str) -> StoreResult<RawAudioRetentionPolicy> {
+    match policy {
+        "Retain" => Ok(RawAudioRetentionPolicy::Retain),
+        "DeleteAfterTranscription" => Ok(RawAudioRetentionPolicy::DeleteAfterTranscription),
+        other => Err(format!("unsupported raw audio retention policy: {other}").into()),
     }
 }
 

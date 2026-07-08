@@ -128,8 +128,10 @@ Deliverables:
   transcript renderer, guarded by `scripts/check-tauri-security.js` in
   publication readiness.
 - Finish per-meeting privacy controls for raw-audio retention:
-  retain, delete after transcription, never save where supported, storage
-  location, provider/network use, and remaining exported files after deletion.
+  retain and delete after transcription are implemented for future
+  recordings/imports; never-save capture remains unsupported and out of UI/docs
+  until a later slice implements it. Continue to show storage location,
+  provider/network use, and remaining exported files after deletion.
 - Add an explicit at-rest data strategy. If encryption-at-rest is not in v1,
   document the decision and scope clearly; if it is in v1, introduce it behind
   a tested storage/key-management seam.
@@ -147,19 +149,25 @@ Current Phase 2B status: desktop npm drift is gated by
 updates. CodeQL, cargo audit or cargo deny, SBOM, and license output remain
 later Phase 2C hardening unless implemented in a separate slice.
 
-Current Phase 2C visibility status: the desktop detail view exposes the existing
-per-meeting privacy data state: private audio storage path, raw-audio retention,
-local or hosted processing state, export status, and delete or remaining export
-status. Retention controls, encryption/key management, and keychain-backed secrets
-remain later Phase 2 work unless implemented in separate slices.
+Current Phase 2C visibility/retention status: the desktop detail view exposes
+per-meeting privacy data state: private audio storage path, captured raw-audio
+retention, local or hosted processing state, export status, and delete or
+remaining export status. Settings now persist a default raw-audio retention
+policy for future recordings/imports. Supported policies are `Retain` and
+`DeleteAfterTranscription`; successful transcription under delete-after removes
+safe app-private raw WAV artifacts and tombstones those artifact rows. `NeverSave`
+capture is not implemented or exposed. Startup/reopen retries committed
+delete-after raw-audio cleanup intents if file removal was interrupted after
+tombstoning. Encryption/key management and keychain-backed secrets remain later
+Phase 2 work unless implemented in separate slices.
 
 Current Phase 2D at-rest/keychain status: `docs/at-rest-data-strategy.md`
 documents the v1 decision to rely on app-private storage plus OS/user-account
 file protections instead of app-level encryption-at-rest. It also defines the
 future OS keychain boundary for provider keys, OAuth tokens, calendar tokens,
 hosted provider secrets, and encryption keys. Actual encryption-at-rest,
-keychain-backed secret storage, migration/recovery support, and richer retention
-controls remain later work unless implemented in separate slices.
+keychain-backed secret storage, migration/recovery support, and no-save capture
+remain later work unless implemented in separate slices.
 
 Current Phase 2E delete cleanup status: startup/reopen now finalizes pending
 delete intents for deleted or deleted-at meetings. Cleanup removes app-private

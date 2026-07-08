@@ -391,6 +391,7 @@ h3 {
 .rename-title-field input,
 .export-format-field select,
 .settings-field input,
+.settings-field select,
 .segment-editor-field textarea {
   width: 100%;
   min-width: 0;
@@ -422,6 +423,7 @@ h3 {
 .rename-title-field input:focus,
 .export-format-field select:focus,
 .settings-field input:focus,
+.settings-field select:focus,
 .segment-editor-field textarea:focus,
 .button:focus-visible,
 .meeting-row:focus-visible,
@@ -434,6 +436,7 @@ h3 {
 .rename-title-field input:disabled,
 .export-format-field select:disabled,
 .settings-field input:disabled,
+.settings-field select:disabled,
 .segment-editor-field textarea:disabled {
   color: var(--muted);
   background: var(--control-disabled);

@@ -324,6 +324,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11435",
         ollamaModel: "gemma4:31b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     render(
@@ -353,6 +354,7 @@ describe("desktop workspace shell", () => {
           ollamaBaseUrl: "http://127.0.0.1:11434",
           ollamaModel: "qwen3.6:27b",
           exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
         },
       }),
       setupGuidance: {
@@ -399,6 +401,7 @@ describe("desktop workspace shell", () => {
           ollamaBaseUrl: "http://127.0.0.1:11434",
           ollamaModel: "qwen3.6:27b",
           exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
         },
       }),
       setupGuidance: {
@@ -1219,6 +1222,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const saved = connectedSnapshot({
@@ -1231,6 +1235,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const commandFacade = fakeCommandFacade({
@@ -1285,6 +1290,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const returned = connectedSnapshot({
@@ -1293,6 +1299,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11435",
         ollamaModel: "gemma4:31b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const commandFacade = fakeCommandFacade({
@@ -1322,6 +1329,50 @@ describe("desktop workspace shell", () => {
     expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
   });
 
+  it("saves the default raw-audio retention policy through the desktop command", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const returned = connectedSnapshot({
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "DeleteAfterTranscription",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      saveRawAudioRetentionPolicy: async (args) => {
+        calls.push({ method: "saveRawAudioRetentionPolicy", args });
+        return returned;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    expect(screen.queryByRole("option", { name: "Never save" })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Raw audio retention"), "DeleteAfterTranscription");
+    await user.click(screen.getByRole("button", { name: "Save retention" }));
+
+    expect(calls).toEqual([
+      {
+        method: "saveRawAudioRetentionPolicy",
+        args: { rawAudioRetentionPolicy: "DeleteAfterTranscription" },
+      },
+    ]);
+    expect(screen.getByLabelText("Raw audio retention")).toHaveValue("DeleteAfterTranscription");
+    expect(screen.getByText("Raw-audio retention saved.")).toBeInTheDocument();
+  });
+
   it("tests configured Ollama reachability from settings", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
@@ -1331,6 +1382,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const commandFacade = fakeCommandFacade({
@@ -1372,6 +1424,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const commandFacade = fakeCommandFacade({
@@ -1403,6 +1456,7 @@ describe("desktop workspace shell", () => {
         ollamaBaseUrl: "http://127.0.0.1:11434",
         ollamaModel: "qwen3.6:27b",
         exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
       },
     });
     const commandFacade = fakeCommandFacade({
@@ -1898,6 +1952,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
     cancelSummary: async () => snapshot,
     saveWhisperModelPath: async () => snapshot,
     saveAnalysisSettings: async () => snapshot,
+    saveRawAudioRetentionPolicy: async () => snapshot,
     testWhisperModelPath: async () => ({
       state: "Valid",
       message: "Whisper model path is readable.",
