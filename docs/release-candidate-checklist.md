@@ -105,9 +105,11 @@ splitting, or complete privacy/deletion/recovery coverage.
   each exported file path and format-specific status is reported. Treat JSON as
   the deterministic integration format.
 - Contract fixture: confirm
-  `apps/desktop/contracts/desktop-command-view-contract.fixture.json` is present
-  in the build source and covered by the Rust/TS contract checks before manual
-  smoke starts.
+  `apps/desktop/contracts/desktop-command-view-contract.fixture.json` and
+  `apps/desktop/contracts/desktop-command-view-contract.schema.json` are present
+  in the build source. Run `node scripts/check-desktop-command-view-contract.js`
+  plus the Rust/TS contract checks before manual smoke starts. Treat this as a
+  fixture-derived shape lock, not generated DTO ownership.
 - Delete: delete the meeting and verify app-private transcript, analysis,
   manifests, meeting-scoped private DB rows, `processing_jobs`, and
   `meeting_search` rows are removed. Verify app-private audio artifacts are

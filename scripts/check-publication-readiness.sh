@@ -53,6 +53,7 @@ check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
+check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
 check_file ".github/workflows/pages.yml"
@@ -104,8 +105,10 @@ require_text docs/production-readiness-roadmap.md 'Real-hardware smoke and relea
 require_text docs/production-readiness-roadmap.md 'retryable jobs now surface retry UX' 'durable job retry UX implementation status'
 require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Phase 5A command/view contract fixture status'
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
+require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.schema\.json' 'Phase 5A checked-in contract shape artifact path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
+require_text docs/production-readiness-roadmap.md 'fixture-derived shape lock' 'Phase 5A fixture-derived schema boundary'
 require_text docs/production-readiness-roadmap.md '`search_meetings` results are also validated' 'Phase 5A search result command contract boundary'
 require_text docs/production-readiness-roadmap.md 'Current Phase 5B coverage artifact status' 'Phase 5B coverage artifact status'
 require_text docs/production-readiness-roadmap.md 'release-artifacts/coverage' 'Phase 5B coverage artifact output path'
@@ -134,6 +137,8 @@ require_text docs/release-candidate-checklist.md 'Summary' 'summary release-cand
 require_text docs/release-candidate-checklist.md 'Export' 'export release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'durable job recovery' 'durable job recovery release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.fixture\.json' 'command/view contract fixture release-candidate expectation'
+require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.schema\.json' 'command/view contract shape release-candidate expectation'
+require_text docs/release-candidate-checklist.md 'node scripts/check-desktop-command-view-contract\.js' 'command/view contract shape checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'node scripts/check-coverage-artifacts\.js' 'coverage artifact checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact release-candidate output path'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
@@ -670,6 +675,8 @@ require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Depe
 require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-command-surface\.js; then' 'Tauri command surface publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
+require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
 require_text scripts/generate-supply-chain-artifacts.js 'cargo metadata --locked --format-version 1' 'root Cargo locked metadata command'
 require_text scripts/generate-supply-chain-artifacts.js 'aarch64-apple-darwin' 'arm64 macOS Cargo metadata target filter'
@@ -748,6 +755,10 @@ if ! node scripts/check-tauri-security.js; then
 fi
 
 if ! node scripts/check-tauri-command-surface.js; then
+  failures=1
+fi
+
+if ! node scripts/check-desktop-command-view-contract.js; then
   failures=1
 fi
 

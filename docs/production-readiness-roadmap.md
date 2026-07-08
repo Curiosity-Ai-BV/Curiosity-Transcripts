@@ -338,11 +338,16 @@ Deliverables:
 
 Current Phase 5A status: the Rust-produced desktop command/view contract fixture
 is checked in at `apps/desktop/contracts/desktop-command-view-contract.fixture.json`.
-Rust tests guard exact equality against the generated command/view payload, and
-TS command adapter contract tests consume the same fixture. Snapshot-returning
-commands, setup test commands, and `search_meetings` results are also validated
-at the TypeScript command-adapter boundary before the desktop shell consumes
-them.
+The fixture-derived shape lock is checked in at
+`apps/desktop/contracts/desktop-command-view-contract.schema.json`, and
+`scripts/check-desktop-command-view-contract.js` guards exact fixture case names,
+critical nested fields, primitive types, enum values, and debug-only command
+leakage in publication readiness. Rust tests guard exact equality against the
+generated command/view payload, and TS command adapter contract tests consume the same fixture.
+Snapshot-returning commands, setup test commands, and
+`search_meetings` results are also validated at the TypeScript command-adapter
+boundary before the desktop shell consumes them. This is a fixture-derived shape
+lock, not generated DTO ownership; full generated DTOs remain later work.
 
 Current Phase 5B coverage artifact status: CI installs `cargo-llvm-cov`, writes
 Rust LCOV reports to `release-artifacts/coverage/rust`, runs frontend Vitest V8
