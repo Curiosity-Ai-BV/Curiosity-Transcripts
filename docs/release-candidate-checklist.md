@@ -27,9 +27,14 @@ application SBOM, npm lockfile license metadata report, and deterministic Cargo
 license metadata reports filtered to `aarch64-apple-darwin` for both Rust
 dependency graphs. The script normalizes npm SBOM timestamp and serial-number
 fields so repeated runs are stable. Treat this as a metadata/reporting check,
-not a legal license allowlist. Secret scanning remains later Phase 2 work, and
-`cargo deny`, Rust CycloneDX tooling, `cargo-about`, and license allowlists are
-not part of this gate.
+not a legal license allowlist. Secret scanning runs through `.github/workflows/secret-scanning.yml`
+with the official Gitleaks CLI container `ghcr.io/gitleaks/gitleaks:v8.30.0`,
+full git history, redacted output, and default fail-on-detection behavior. The
+workflow uses the CLI container instead of the Gitleaks Action so organization CI
+does not depend on a `GITLEAKS_LICENSE` secret. GitHub secret scanning, branch
+protection, and alert triage policy remain release governance work unless
+configured separately. `cargo deny`, Rust CycloneDX tooling, `cargo-about`, and
+license allowlists are not part of this gate.
 
 ## Manual Smoke Items
 

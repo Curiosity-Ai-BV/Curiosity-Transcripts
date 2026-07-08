@@ -176,9 +176,18 @@ release target. The script normalizes npm SBOM timestamp and serial-number
 fields so repeated runs are stable. It fails if npm lockfile packages lack
 license or license-file metadata, or if any Cargo package in the filtered graphs
 lacks both `license` and `license_file`. This is a metadata/reporting gate, not
-a legal license allowlist. Secret scanning expectations remain later Phase 2
-hardening unless implemented in a separate slice. `cargo deny`, Rust CycloneDX
-tooling, `cargo-about`, and license allowlists are not part of the current gate.
+a legal license allowlist. `cargo deny`, Rust CycloneDX tooling, `cargo-about`,
+and license allowlists are not part of the current gate.
+
+Current secret scanning status: `.github/workflows/secret-scanning.yml` runs the
+official Gitleaks CLI container `ghcr.io/gitleaks/gitleaks:v8.30.0` on push,
+pull request, workflow dispatch, and a weekly schedule. It checks out full git
+history with `fetch-depth: 0` and runs a redacted `gitleaks detect` scan that
+keeps Gitleaks default fail-on-detection behavior. This uses the CLI container
+instead of the Gitleaks Action because organization repositories require a
+`GITLEAKS_LICENSE` secret for that action. GitHub secret scanning, branch
+protection, and alert triage policy remain release governance work unless
+configured separately.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes
 per-meeting privacy data state: private audio storage path, captured raw-audio

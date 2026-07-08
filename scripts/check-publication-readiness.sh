@@ -34,6 +34,7 @@ check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
 check_file ".github/workflows/pages.yml"
 check_file ".github/workflows/release.yml"
+check_file ".github/workflows/secret-scanning.yml"
 
 require_text LICENSE 'Apache License' 'Apache-2.0 license text'
 require_text NOTICE 'Curiosity Transcripts' 'Curiosity Transcripts attribution notice'
@@ -81,7 +82,10 @@ require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning 
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
 require_text docs/production-readiness-roadmap.md 'legal license allowlist' 'non-allowlist supply-chain boundary'
-require_text docs/production-readiness-roadmap.md 'later Phase 2' 'remaining secret scanning scope'
+require_text docs/production-readiness-roadmap.md 'Current secret scanning status' 'current secret scanning status'
+require_text docs/production-readiness-roadmap.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0' 'pinned Gitleaks CLI container documentation'
+require_text docs/production-readiness-roadmap.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license boundary'
+require_text docs/production-readiness-roadmap.md 'protection, and alert triage policy' 'secret scanning governance boundary'
 require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
@@ -108,7 +112,10 @@ require_text docs/release-candidate-checklist.md 'branch-protection or alert tri
 require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-chain-artifacts\.js' 'supply-chain artifact release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/supply-chain' 'supply-chain artifact output path'
 require_text docs/release-candidate-checklist.md 'metadata/reporting check' 'supply-chain metadata/reporting boundary'
-require_text docs/release-candidate-checklist.md 'Secret scanning remains' 'remaining secret scanning release-candidate scope'
+require_text docs/release-candidate-checklist.md 'Secret scanning runs through `.github/workflows/secret-scanning\.yml`' 'secret scanning release-candidate workflow'
+require_text docs/release-candidate-checklist.md 'ghcr\.io/gitleaks/gitleaks:v8\.30\.0' 'pinned Gitleaks release-candidate workflow'
+require_text docs/release-candidate-checklist.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license release-candidate boundary'
+require_text docs/release-candidate-checklist.md 'protection, and alert triage policy' 'secret scanning governance release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
 require_text docs/at-rest-data-strategy.md 'app-private local storage' 'v1 app-private storage decision'
 require_text docs/at-rest-data-strategy.md 'encryption-at-rest is not implemented yet' 'v1 encryption-at-rest non-implementation'
@@ -402,6 +409,59 @@ if (text !== expected) {
   fail(
     "CodeQL workflow must match the approved Rust and JavaScript/TypeScript advanced setup; update this readiness guard with any intentional workflow change",
   );
+}
+
+process.exit(ok ? 0 : 1);
+NODE
+then
+  failures=1
+fi
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/secret-scanning.yml";
+const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+const expected = `name: Secret Scanning
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 4 * * 3"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks secret scan
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.0 detect --source=/repo --redact --verbose --no-banner
+`;
+let ok = true;
+
+function fail(message) {
+  console.error(`::error file=${file}::${message}`);
+  ok = false;
+}
+
+if (text !== expected) {
+  fail(
+    "Secret scanning workflow must use the approved pinned Gitleaks CLI container scan with full history, redaction, and default fail-on-detection behavior; update this readiness guard with any intentional workflow change",
+  );
+}
+
+if (/--exit-code\s+0/.test(text) || /continue-on-error:\s*true/.test(text)) {
+  fail("Secret scanning must fail on detected leaks");
 }
 
 process.exit(ok ? 0 : 1);
