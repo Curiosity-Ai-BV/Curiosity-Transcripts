@@ -117,19 +117,32 @@ jobs:
             echo "Manual smoke status:"
             echo "- Skipped smoke checks are not passes. Record the build, machine, macOS version, model paths, and any skipped microphone, ScreenCaptureKit, Whisper, Ollama, offline, export, delete, or uninstall item before treating this release as ready."
             echo "- Start from docs/release-candidate-smoke-evidence.template.json, then validate filled manual evidence with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json. This workflow does not validate filled manual evidence automatically."
+            echo "- This workflow leaves this GitHub Release as a draft until filled manual smoke evidence validates with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json."
+            echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'
             echo
             echo "Privacy and storage disclosure:"
             echo "- App-level encryption-at-rest is not implemented in v1. App-private local data relies on OS and user-account file protections; user-owned source files and exports can remain outside the app delete boundary."
           } > "$release_notes"
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
+          release_view_error="$(mktemp)"
+          if release_is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>"$release_view_error")"; then
+            if [ "$release_is_draft" != "true" ]; then
+              echo "::error::GitHub Release $RELEASE_TAG already exists and is published; refusing to edit notes or upload assets."
+              exit 1
+            fi
+
+            gh release edit "$RELEASE_TAG" --draft \
+              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
+              --notes-file "$release_notes"
+          elif grep -Eiq "not found|HTTP 404" "$release_view_error"; then
+            gh release create "$RELEASE_TAG" --draft \
               --title "Curiosity Transcripts ${RELEASE_VERSION}" \
               --notes-file "$release_notes"
           else
-            gh release create "$RELEASE_TAG" \
-              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
-              --notes-file "$release_notes"
+            echo "::error::Unable to inspect GitHub Release $RELEASE_TAG draft status; refusing to create, edit, or upload assets."
+            cat "$release_view_error" >&2
+            exit 1
           fi
 
+          rm -f "$release_view_error"
           gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber

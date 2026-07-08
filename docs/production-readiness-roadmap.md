@@ -61,6 +61,9 @@ validate filled manual smoke evidence.
 Generated GitHub Release notes now point maintainers to that template and
 path-based validator command, but the release workflow does not validate filled
 evidence automatically.
+Tag workflows leave GitHub Releases as drafts until filled manual smoke evidence
+validates with `node scripts/check-release-smoke-evidence.js
+path/to/filled-evidence.json` and a maintainer manually publishes the draft.
 Real clean-user install, macOS permission, Whisper/Ollama setup, recording,
 transcription, summary, export, delete, relaunch, uninstall, signing, model, and
 hardware smoke remain manual and not yet completed.

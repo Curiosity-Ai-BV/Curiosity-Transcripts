@@ -7,6 +7,11 @@ builds are out of scope until workflows, QA, and public copy change together.
 Skipped smoke checks are not passes. Record the build, machine, macOS version,
 model paths, and any skipped item in the release notes.
 
+Tag workflows create or update draft GitHub Releases. Keep the release as a
+draft until filled manual smoke evidence validates with
+`node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`;
+after that passes, a maintainer must publish the draft manually.
+
 Use `docs/release-candidate-smoke-evidence.template.json` as the starting point
 for manual smoke evidence. Validate the checked-in template with no path:
 `node scripts/check-release-smoke-evidence.js`. Validate a filled manual

@@ -725,6 +725,13 @@ require_text .github/workflows/pages.yml 'hdiutil attach pages-download/Curiosit
 require_text .github/workflows/pages.yml 'codesign --verify --deep --strict --verbose=2 "\$mount_dir/Curiosity Transcripts\.app"' 'Pages mounted app codesign verification before upload'
 require_text .github/workflows/pages.yml 'spctl -a -vvv -t exec "\$mount_dir/Curiosity Transcripts\.app"' 'Pages mounted app Gatekeeper execution assessment before upload'
 require_text .github/workflows/release.yml 'gh release upload' 'versioned GitHub Release asset upload'
+require_text .github/workflows/release.yml 'gh release edit "\$RELEASE_TAG" --draft \\' 'draft GitHub Release update before filled smoke evidence validation'
+require_text .github/workflows/release.yml 'gh release create "\$RELEASE_TAG" --draft \\' 'draft GitHub Release creation before filled smoke evidence validation'
+require_text .github/workflows/release.yml 'release_view_error="\$\(mktemp\)"' 'release draft-status error capture before mutating an existing release'
+require_text .github/workflows/release.yml 'gh release view "\$RELEASE_TAG" --json isDraft --jq \.isDraft' 'existing GitHub Release draft-status query'
+require_text .github/workflows/release.yml 'if \[ "\$release_is_draft" != "true" \]; then' 'existing non-draft release refusal branch'
+require_text .github/workflows/release.yml 'already exists and is published; refusing to edit notes or upload assets' 'published GitHub Release mutation refusal'
+require_text .github/workflows/release.yml 'Unable to inspect GitHub Release \$RELEASE_TAG draft status; refusing to create, edit, or upload assets' 'release draft-status inspection failure refusal'
 require_text .github/workflows/release.yml 'runner_arch="\$\(uname -m\)"' 'release runner architecture assertion before aarch64 asset naming'
 require_text .github/workflows/release.yml 'if \[ "\$runner_arch" != "arm64" \]; then' 'arm64 runner assertion before aarch64 asset naming'
 require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-macos-aarch64\.dmg' 'versioned macOS DMG release asset name'
@@ -738,8 +745,43 @@ require_text .github/workflows/release.yml 'Skipped smoke checks are not passes'
 require_text .github/workflows/release.yml 'docs/release-candidate-smoke-evidence\.template\.json' 'release notes smoke evidence template pointer'
 require_text .github/workflows/release.yml 'node scripts/check-release-smoke-evidence\.js path/to/filled-evidence\.json' 'release notes filled smoke evidence validator command'
 require_text .github/workflows/release.yml 'This workflow does not validate filled manual evidence automatically' 'release notes filled smoke evidence manual-validation boundary'
+require_text .github/workflows/release.yml 'leaves this GitHub Release as a draft until filled manual smoke evidence validates' 'release notes draft-until-smoke-evidence boundary'
+require_text .github/workflows/release.yml 'gh release edit "\$RELEASE_TAG" --draft=false' 'release notes explicit manual publish command'
+require_text .github/workflows/release.yml 'Publishing requires an explicit manual release action' 'release notes explicit manual publish boundary'
 require_text .github/workflows/release.yml 'App-level encryption-at-rest is not implemented in v1' 'release notes encryption-at-rest disclosure'
 require_text .github/workflows/release.yml 'user-owned source files and exports can remain outside the app delete boundary' 'release notes source/export boundary disclosure'
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/release.yml";
+const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+
+for (let index = 0; index < lines.length; index += 1) {
+  const trimmed = lines[index].trim();
+  const allowedReleaseNoteLine =
+    trimmed === `echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'`;
+  if (!trimmed.includes("gh release") || allowedReleaseNoteLine) {
+    continue;
+  }
+
+  const commandLines = [trimmed];
+  let cursor = index;
+  while (commandLines[commandLines.length - 1].endsWith("\\") && cursor + 1 < lines.length) {
+    cursor += 1;
+    commandLines.push(lines[cursor].trim());
+  }
+
+  if (commandLines.join(" ").includes("--draft=false")) {
+    console.error(
+      `::error file=${file},line=${index + 1}::Workflow must not execute gh release --draft=false; keep publishing manual after filled smoke evidence passes`,
+    );
+    process.exit(1);
+  }
+}
+NODE
+then
+  failures=1
+fi
 require_text site/index.html 'https://curiosityai\.nl' 'CuriosityAI maker link'
 require_text site/index.html 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable homepage DMG download link'
 

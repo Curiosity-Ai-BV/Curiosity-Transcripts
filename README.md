@@ -367,13 +367,16 @@ Release DMGs are Developer ID signed and notarized before upload. Local
 Apple credentials.
 
 The first public release architecture is arm64-only macOS. The release workflow
-asserts an `arm64` runner before publishing the `macos-aarch64` asset, and the
-stable Pages DMG follows the same signed/notarized Apple Silicon release path.
+asserts an `arm64` runner before uploading the draft `macos-aarch64` GitHub
+Release asset, and the stable Pages DMG follows the same signed/notarized Apple
+Silicon release path.
 Do not advertise x64 or universal macOS builds unless the workflows, release
 assets, checklist, and public copy change together.
 
 Before treating a build as a release candidate, run the deterministic gates and
-the manual smoke checklist in `docs/release-candidate-checklist.md`.
+the manual smoke checklist in `docs/release-candidate-checklist.md`. Tag
+workflows leave GitHub Releases as drafts until filled smoke evidence validates
+and a maintainer manually publishes the release.
 
 ## License And Attribution
 
