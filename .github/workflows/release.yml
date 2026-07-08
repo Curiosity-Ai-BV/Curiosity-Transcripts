@@ -106,8 +106,19 @@ jobs:
           {
             echo "Curiosity Transcripts ${RELEASE_VERSION}"
             echo
-            echo "Developer ID signed and notarized macOS DMG."
-            echo "The workflow verifies the disk image, stapled notarization ticket, app bundle signature, and Gatekeeper assessment before upload."
+            echo "Release scope:"
+            echo "- arm64-only macOS DMG for the first public release target."
+            echo "- Developer ID signed and notarized macOS DMG."
+            echo "- SHA-256 checksum asset uploaded beside the DMG: $(basename "$CHECKSUM_PATH")."
+            echo
+            echo "Automated verification:"
+            echo "- The workflow verifies the disk image, stapled notarization ticket, app bundle signature, and Gatekeeper assessment before upload."
+            echo
+            echo "Manual smoke status:"
+            echo "- Skipped smoke checks are not passes. Record the build, machine, macOS version, model paths, and any skipped microphone, ScreenCaptureKit, Whisper, Ollama, offline, export, delete, or uninstall item before treating this release as ready."
+            echo
+            echo "Privacy and storage disclosure:"
+            echo "- App-level encryption-at-rest is not implemented in v1. App-private local data relies on OS and user-account file protections; user-owned source files and exports can remain outside the app delete boundary."
           } > "$release_notes"
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

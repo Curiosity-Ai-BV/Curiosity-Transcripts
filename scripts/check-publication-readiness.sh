@@ -682,6 +682,13 @@ require_text .github/workflows/release.yml 'if \[ "\$runner_arch" != "arm64" \];
 require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-macos-aarch64\.dmg' 'versioned macOS DMG release asset name'
 require_text .github/workflows/release.yml 'hdiutil verify "\$release_asset"' 'release asset hdiutil verification before upload'
 require_text .github/workflows/release.yml 'hdiutil attach "\$release_asset" -readonly -nobrowse' 'release asset read-only attach verification before upload'
+require_text .github/workflows/release.yml 'Release scope:' 'release notes scope section'
+require_text .github/workflows/release.yml 'arm64-only macOS DMG' 'release notes arm64-only scope disclosure'
+require_text .github/workflows/release.yml 'SHA-256 checksum asset uploaded beside the DMG' 'release notes checksum asset disclosure'
+require_text .github/workflows/release.yml 'Manual smoke status:' 'release notes manual smoke status section'
+require_text .github/workflows/release.yml 'Skipped smoke checks are not passes' 'release notes skipped smoke disclosure'
+require_text .github/workflows/release.yml 'App-level encryption-at-rest is not implemented in v1' 'release notes encryption-at-rest disclosure'
+require_text .github/workflows/release.yml 'user-owned source files and exports can remain outside the app delete boundary' 'release notes source/export boundary disclosure'
 require_text site/index.html 'https://curiosityai\.nl' 'CuriosityAI maker link'
 require_text site/index.html 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable homepage DMG download link'
 
