@@ -89,11 +89,13 @@ credentials or Apple ID notarization credentials are present.
 ## GitHub Release Signing Secrets
 
 The GitHub Release and Pages workflows require Apple signing secrets before they
-publish a public DMG. Store the Pages workflow Apple secrets in the protected
-`macos-signing` environment, restricted to `main`, so manual dispatches from
-other refs cannot reach the signing path. The Pages `latest` DMG publication
-also requires manual workflow dispatch confirmation that filled smoke evidence
-validates with
+publish a public DMG. Store the Release and Pages workflow Apple secrets in the
+protected `macos-signing` environment. Local code cannot enforce GitHub
+environment rules; repository settings must allow the intended Pages `main`
+dispatch and release tag path, for example protected `v*` tags, and block
+unintended refs before they can reach the signing path. The Pages `latest` DMG
+publication also requires manual workflow dispatch confirmation that filled
+smoke evidence validates with
 `node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`.
 Configure these secrets:
 

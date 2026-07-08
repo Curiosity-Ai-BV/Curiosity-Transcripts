@@ -104,6 +104,13 @@ const requiredDmgDocsText = [
   "APPLE_API_KEY_ID",
   "bash scripts/check-publication-readiness.sh",
   "Developer ID signed and notarized",
+  "Release and Pages workflow Apple secrets",
+  "Local code cannot enforce GitHub",
+  "environment rules; repository settings must allow",
+  "Pages `main`",
+  "dispatch and release tag path",
+  "protected `v*` tags",
+  "unintended refs before they can reach the signing path",
   "hdiutil verify",
   "stapler validate",
   "read-only attach",
@@ -155,6 +162,24 @@ function exactRunStepLine(text, command) {
   return -1;
 }
 
+function workflowJobBlock(text, jobName) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === `  ${jobName}:`);
+  if (start === -1) {
+    return [];
+  }
+
+  const block = [];
+  for (let index = start; index < lines.length; index += 1) {
+    if (index !== start && /^  [A-Za-z0-9_-]+:\s*$/.test(lines[index])) {
+      break;
+    }
+    block.push(lines[index]);
+  }
+
+  return block;
+}
+
 function firstShellCommandLine(text, matches) {
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
@@ -187,6 +212,19 @@ if (publicationReadinessStepLine === -1 || buildDmgStepLine === -1 || publicatio
   fail(
     ".github/workflows/release.yml",
     "Publication readiness must run before building the public release DMG",
+  );
+}
+
+const releaseBuildJob = workflowJobBlock(workflow, "build-release-dmg");
+if (releaseBuildJob.length === 0) {
+  fail(".github/workflows/release.yml", "Missing build-release-dmg job");
+} else if (
+  !releaseBuildJob.includes("    environment:") ||
+  !releaseBuildJob.includes("      name: macos-signing")
+) {
+  fail(
+    ".github/workflows/release.yml",
+    "build-release-dmg must use the protected macos-signing environment",
   );
 }
 
