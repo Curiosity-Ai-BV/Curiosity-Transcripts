@@ -28,6 +28,33 @@ const expectedManualItemIds = [
 const manualStatusValues = new Set(["pending", "passed", "failed", "skipped"]);
 const overallResultValues = new Set(["pending", "passed", "failed", "incomplete"]);
 const completionValues = new Set(["passed", "completed"]);
+const semverCorePattern =
+  "(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
+const semverPattern = new RegExp(`^${semverCorePattern}$`);
+const semverTagPattern = new RegExp(`^v${semverCorePattern}$`);
+const gitShaPattern = /^[0-9a-f]{7,40}$/i;
+const sha256Pattern = /^[0-9a-f]{64}$/i;
+const iso8601TimestampWithTimezonePattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const macosVersionPattern =
+  /^(?:macOS(?:\s+[A-Za-z][A-Za-z0-9-]*){0,2}\s+)?\d{2,}(?:\.\d+){1,2}(?:\s*\([0-9A-Za-z]+\))?$/i;
+const firstReleaseArchitectureValues = new Set(["arm64", "aarch64"]);
+const weakEvidenceTextValues = new Set([
+  "-",
+  "done",
+  "n/a",
+  "na",
+  "none",
+  "ok",
+  "okay",
+  "pass",
+  "passed",
+  "pending",
+  "tbd",
+  "template",
+  "todo",
+  "unknown",
+]);
 const criticalResultFields = [
   ["build", "signing", "status"],
   ["build", "signing", "codesignVerified"],
@@ -225,12 +252,41 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isPlaceholderText(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  return /^TEMPLATE$/i.test(trimmed) || /\bTEMPLATE_[A-Z0-9_]+\b/i.test(trimmed) || /^PENDING:/i.test(trimmed);
+}
+
+function meaningfulString(value) {
+  if (!nonEmptyString(value) || isPlaceholderText(value)) {
+    return false;
+  }
+
+  return !weakEvidenceTextValues.has(value.trim().toLowerCase());
+}
+
 function fieldLabel(pathParts) {
   return pathParts.join(".");
 }
 
 function valueAt(object, pathParts) {
   return pathParts.reduce((current, part) => current?.[part], object);
+}
+
+function hasPath(object, pathParts) {
+  const key = pathParts[pathParts.length - 1];
+  const parent = pathParts.slice(0, -1).reduce((current, part) => {
+    if (!isPlainObject(current)) {
+      return undefined;
+    }
+    return current[part];
+  }, object);
+
+  return isPlainObject(parent) && hasOwn(parent, key);
 }
 
 function requirePresent(errors, object, pathParts) {
@@ -276,11 +332,27 @@ function requireNonEmptyString(errors, object, pathParts) {
   }
 }
 
-function hasMeaningfulEvidence(value) {
-  if (nonEmptyString(value)) {
-    return true;
+function requireFilledStringFormat(errors, object, pathParts, predicate, expectation) {
+  if (!hasPath(object, pathParts)) {
+    return "";
   }
-  if (typeof value === "number" || typeof value === "boolean") {
+
+  const label = fieldLabel(pathParts);
+  const value = valueAt(object, pathParts);
+  if (!nonEmptyString(value)) {
+    errors.push(`${label} must be ${expectation}`);
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (!predicate(trimmed)) {
+    errors.push(`${label} must be ${expectation}`);
+  }
+  return trimmed;
+}
+
+function hasMeaningfulEvidence(value) {
+  if (meaningfulString(value)) {
     return true;
   }
   if (Array.isArray(value)) {
@@ -290,6 +362,14 @@ function hasMeaningfulEvidence(value) {
     return Object.values(value).some((item) => hasMeaningfulEvidence(item));
   }
   return false;
+}
+
+function hasManualItemEvidence(item) {
+  if (!isPlainObject(item.evidence)) {
+    return false;
+  }
+
+  return hasMeaningfulEvidence(item.evidence.observations) || hasMeaningfulEvidence(item.evidence.artifacts);
 }
 
 function skipReasonFor(item) {
@@ -302,14 +382,146 @@ function skipReasonFor(item) {
   return "";
 }
 
+function normalizeGitTag(value) {
+  return value.startsWith("refs/tags/") ? value.slice("refs/tags/".length) : value;
+}
+
+function isArm64DmgArtifact(value) {
+  const basename = path.basename(value).toLowerCase();
+  return basename.endsWith(".dmg") && (basename.includes("aarch64") || basename.includes("arm64"));
+}
+
+function isIso8601TimestampWithTimezone(value) {
+  const match = value.match(iso8601TimestampWithTimezonePattern);
+  if (!match || Number.isNaN(Date.parse(value))) {
+    return false;
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) {
+    return false;
+  }
+
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day >= 1 && day <= daysInMonth;
+}
+
+function validateFilledBuildMetadata(evidence, errors) {
+  const version = requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "version"],
+    (value) => semverPattern.test(value),
+    "a SemVer-like version",
+  );
+  const gitRef = requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "gitRef"],
+    (value) => semverTagPattern.test(normalizeGitTag(value)),
+    "a vMAJOR.MINOR.PATCH tag",
+  );
+  const normalizedTag = normalizeGitTag(gitRef);
+  if (semverPattern.test(version) && semverTagPattern.test(normalizedTag) && normalizedTag !== `v${version}`) {
+    errors.push(`build.gitRef must match build.version as v${version}`);
+  }
+
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "gitSha"],
+    (value) => gitShaPattern.test(value),
+    "a plausible git SHA (7-40 hex characters)",
+  );
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "buildTimestamp"],
+    isIso8601TimestampWithTimezone,
+    "an ISO-8601 timestamp with timezone",
+  );
+  const artifactPath = requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "releaseArtifact", "path"],
+    isArm64DmgArtifact,
+    "an arm64/aarch64 .dmg artifact path",
+  );
+  const artifactName = requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "releaseArtifact", "name"],
+    isArm64DmgArtifact,
+    "an arm64/aarch64 .dmg artifact name",
+  );
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["build", "releaseArtifact", "sha256"],
+    (value) => sha256Pattern.test(value),
+    "a 64-hex SHA-256 checksum",
+  );
+
+  if (semverPattern.test(version)) {
+    const expectedArtifactName = `Curiosity-Transcripts-${version}-macos-aarch64.dmg`;
+    if (artifactPath && path.basename(artifactPath) !== expectedArtifactName) {
+      errors.push(`build.releaseArtifact.path must end with ${expectedArtifactName}`);
+    }
+    if (artifactName && artifactName !== expectedArtifactName) {
+      errors.push(`build.releaseArtifact.name must be ${expectedArtifactName}`);
+    }
+  }
+  if (artifactPath && artifactName && path.basename(artifactPath) !== artifactName) {
+    errors.push("build.releaseArtifact.path basename must match build.releaseArtifact.name");
+  }
+}
+
+function validateFilledMachineMetadata(evidence, errors) {
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["machine", "architecture"],
+    (value) => firstReleaseArchitectureValues.has(value.toLowerCase()),
+    "arm64 or aarch64 for the first release target",
+  );
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["machine", "macosVersion"],
+    (value) => macosVersionPattern.test(value),
+    "a concrete macOS version such as 15.5",
+  );
+  requireFilledStringFormat(
+    errors,
+    evidence,
+    ["machine", "machineLabel"],
+    meaningfulString,
+    "a non-placeholder smoke-test Mac label or model",
+  );
+}
+
+function validateFilledModelSetup(evidence, errors) {
+  if (isCompleted(valueAt(evidence, ["modelSetup", "whisper", "status"]))) {
+    requireFilledStringFormat(
+      errors,
+      evidence,
+      ["modelSetup", "whisper", "sha256"],
+      (value) => sha256Pattern.test(value),
+      "a 64-hex SHA-256 checksum",
+    );
+  }
+}
+
 function collectTemplatePlaceholders(errors, value, options, pathParts = []) {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
-    if (
-      /\bTEMPLATE_[A-Z0-9_]+/.test(value) ||
-      value.trim().startsWith("PENDING:") ||
-      (!options.allowIncomplete && normalized === "pending")
-    ) {
+    if (isPlaceholderText(value) || (!options.allowIncomplete && normalized === "pending")) {
       errors.push(`Non-template evidence must replace placeholder value at ${fieldLabel(pathParts)}`);
     }
     return;
@@ -423,6 +635,10 @@ function validateBuild(evidence, errors) {
   ]) {
     requireNonEmptyString(errors, evidence, pathParts);
   }
+
+  if (evidence.isTemplate === false) {
+    validateFilledBuildMetadata(evidence, errors);
+  }
 }
 
 function validateMachine(evidence, errors) {
@@ -439,6 +655,10 @@ function validateMachine(evidence, errors) {
     ["machine", "cleanUserAccount", "developmentCheckoutAbsent"],
   ]) {
     requireNonEmptyString(errors, evidence, pathParts);
+  }
+
+  if (evidence.isTemplate === false) {
+    validateFilledMachineMetadata(evidence, errors);
   }
 }
 
@@ -467,6 +687,10 @@ function validateModelSetup(evidence, errors) {
     if ((!nonEmptyString(ollama.baseUrl) || !nonEmptyString(ollama.model)) && !nonEmptyString(ollama.skipReason)) {
       errors.push("modelSetup.ollama requires baseUrl/model or explicit skipReason");
     }
+  }
+
+  if (evidence.isTemplate === false) {
+    validateFilledModelSetup(evidence, errors);
   }
 }
 
@@ -520,6 +744,10 @@ function validateManualItems(evidence, errors, options) {
 
     if (item.status === "failed" && (!nonEmptyString(item.notes) || !hasMeaningfulEvidence(item.evidence))) {
       errors.push(`${prefix} failed item requires non-empty notes and evidence`);
+    }
+
+    if (item.status === "passed" && (!meaningfulString(item.notes) || !hasManualItemEvidence(item))) {
+      errors.push(`${prefix} passed item requires meaningful notes and observation or artifact evidence`);
     }
   }
 
@@ -662,6 +890,188 @@ function runSelfTests() {
   expectRejected("template signing status passed", validateEvidence(templateSigningPassed), "build.signing.status");
 
   expectAccepted("strict filled evidence", validateEvidence(createStrictPassedFixture()));
+
+  const lowercaseTemplateMetadata = createStrictPassedFixture();
+  lowercaseTemplateMetadata.build.signing.developerIdApplication = "template_developer_id_application";
+  expectRejected(
+    "filled evidence lowercase template metadata",
+    validateEvidence(lowercaseTemplateMetadata),
+    "build.signing.developerIdApplication",
+  );
+
+  const lowercasePendingMetadata = createStrictPassedFixture();
+  lowercasePendingMetadata.build.signing.developerIdApplication = "pending: add real Developer ID identity";
+  expectRejected(
+    "filled evidence lowercase pending metadata",
+    validateEvidence(lowercasePendingMetadata),
+    "build.signing.developerIdApplication",
+  );
+
+  const embeddedTemplateMetadata = createStrictPassedFixture();
+  embeddedTemplateMetadata.build.signing.developerIdApplication =
+    "Developer ID Application: TEMPLATE_DEVELOPER_ID_APPLICATION";
+  expectRejected(
+    "filled evidence embedded template metadata",
+    validateEvidence(embeddedTemplateMetadata),
+    "build.signing.developerIdApplication",
+  );
+
+  const embeddedLowercaseTemplateMetadata = createStrictPassedFixture();
+  embeddedLowercaseTemplateMetadata.build.signing.developerIdApplication =
+    "Developer ID Application: template_developer_id_application";
+  expectRejected(
+    "filled evidence embedded lowercase template metadata",
+    validateEvidence(embeddedLowercaseTemplateMetadata),
+    "build.signing.developerIdApplication",
+  );
+
+  const badBuildVersion = createStrictPassedFixture();
+  badBuildVersion.build.version = "release-1";
+  expectRejected("filled evidence bad build version", validateEvidence(badBuildVersion), "build.version");
+
+  const badGitRef = createStrictPassedFixture();
+  badGitRef.build.gitRef = "main";
+  expectRejected("filled evidence bad git tag", validateEvidence(badGitRef), "build.gitRef");
+
+  const mismatchedGitRef = createStrictPassedFixture();
+  mismatchedGitRef.build.gitRef = "refs/tags/v1.2.4";
+  expectRejected("filled evidence mismatched git tag", validateEvidence(mismatchedGitRef), "build.gitRef");
+
+  const badGitSha = createStrictPassedFixture();
+  badGitSha.build.gitSha = "not-a-sha";
+  expectRejected("filled evidence bad git SHA", validateEvidence(badGitSha), "build.gitSha");
+
+  const badBuildTimestamp = createStrictPassedFixture();
+  badBuildTimestamp.build.buildTimestamp = "soon";
+  expectRejected("filled evidence bad build timestamp", validateEvidence(badBuildTimestamp), "build.buildTimestamp");
+
+  const impossibleBuildTimestamp = createStrictPassedFixture();
+  impossibleBuildTimestamp.build.buildTimestamp = "2026-02-31T12:00:00Z";
+  expectRejected(
+    "filled evidence impossible build timestamp date",
+    validateEvidence(impossibleBuildTimestamp),
+    "build.buildTimestamp",
+  );
+
+  const badArtifactPath = createStrictPassedFixture();
+  badArtifactPath.build.releaseArtifact.path = "/tmp/Curiosity-Transcripts.zip";
+  expectRejected("filled evidence non-DMG artifact path", validateEvidence(badArtifactPath), "build.releaseArtifact.path");
+
+  const badArtifactName = createStrictPassedFixture();
+  badArtifactName.build.releaseArtifact.name = "Curiosity-Transcripts-1.2.3-macos-x64.dmg";
+  expectRejected("filled evidence wrong artifact name", validateEvidence(badArtifactName), "build.releaseArtifact.name");
+
+  const mismatchedArtifactVersion = createStrictPassedFixture();
+  mismatchedArtifactVersion.build.releaseArtifact.path = "/tmp/Curiosity-Transcripts-9.9.9-macos-aarch64.dmg";
+  mismatchedArtifactVersion.build.releaseArtifact.name = "Curiosity-Transcripts-9.9.9-macos-aarch64.dmg";
+  expectRejected(
+    "filled evidence mismatched artifact version",
+    validateEvidence(mismatchedArtifactVersion),
+    "build.releaseArtifact.path",
+  );
+
+  const badArtifactChecksum = createStrictPassedFixture();
+  badArtifactChecksum.build.releaseArtifact.sha256 = "abc123";
+  expectRejected(
+    "filled evidence bad artifact checksum",
+    validateEvidence(badArtifactChecksum),
+    "build.releaseArtifact.sha256",
+  );
+
+  const badMachineArchitecture = createStrictPassedFixture();
+  badMachineArchitecture.machine.architecture = "x64";
+  expectRejected(
+    "filled evidence wrong machine architecture",
+    validateEvidence(badMachineArchitecture),
+    "machine.architecture",
+  );
+
+  const badMacosVersion = createStrictPassedFixture();
+  badMacosVersion.machine.macosVersion = "latest";
+  expectRejected("filled evidence bad macOS version", validateEvidence(badMacosVersion), "machine.macosVersion");
+
+  const marketingMacosVersion = createStrictPassedFixture();
+  marketingMacosVersion.machine.macosVersion = "macOS Sequoia 15.5 (24F74)";
+  expectAccepted("filled evidence macOS marketing version", validateEvidence(marketingMacosVersion));
+
+  const weakMachineLabel = createStrictPassedFixture();
+  weakMachineLabel.machine.machineLabel = "unknown";
+  expectRejected("filled evidence weak machine label", validateEvidence(weakMachineLabel), "machine.machineLabel");
+
+  const templateMachineLabel = createStrictPassedFixture();
+  templateMachineLabel.machine.machineLabel = "TEMPLATE";
+  expectRejected(
+    "filled evidence template machine label",
+    validateEvidence(templateMachineLabel),
+    "machine.machineLabel",
+  );
+
+  const badWhisperChecksum = createStrictPassedFixture();
+  badWhisperChecksum.modelSetup.whisper.sha256 = "not-a-sha256";
+  expectRejected(
+    "filled evidence bad Whisper checksum",
+    validateEvidence(badWhisperChecksum),
+    "modelSetup.whisper.sha256",
+  );
+
+  const passedItemWithoutEvidence = createStrictPassedFixture();
+  passedItemWithoutEvidence.manualItems[0].evidence = {
+    observations: [],
+    artifacts: [],
+    skipReason: "",
+  };
+  expectRejected(
+    "passed manual item without evidence",
+    validateEvidence(passedItemWithoutEvidence),
+    "manualItems[0] passed item",
+  );
+
+  const passedItemWithoutNotes = createStrictPassedFixture();
+  passedItemWithoutNotes.manualItems[0].notes = "";
+  expectRejected(
+    "passed manual item without notes",
+    validateEvidence(passedItemWithoutNotes),
+    "manualItems[0] passed item",
+  );
+
+  const passedItemWithWeakEvidence = createStrictPassedFixture();
+  passedItemWithWeakEvidence.manualItems[0].evidence = {
+    observations: ["ok"],
+    artifacts: [],
+    skipReason: "not applicable",
+  };
+  passedItemWithWeakEvidence.manualItems[0].notes = "ok";
+  expectRejected(
+    "passed manual item with weak evidence",
+    validateEvidence(passedItemWithWeakEvidence),
+    "manualItems[0] passed item",
+  );
+
+  const passedItemWithBareTemplateEvidence = createStrictPassedFixture();
+  passedItemWithBareTemplateEvidence.manualItems[0].evidence = {
+    observations: ["TEMPLATE"],
+    artifacts: [],
+    skipReason: "",
+  };
+  passedItemWithBareTemplateEvidence.manualItems[0].notes = "TEMPLATE";
+  expectRejected(
+    "passed manual item with bare template evidence",
+    validateEvidence(passedItemWithBareTemplateEvidence),
+    "manualItems[0] passed item",
+  );
+
+  const passedItemWithLowercasePendingEvidence = createStrictPassedFixture();
+  passedItemWithLowercasePendingEvidence.manualItems[0].evidence = {
+    observations: ["pending: capture clean install result"],
+    artifacts: [],
+    skipReason: "",
+  };
+  passedItemWithLowercasePendingEvidence.manualItems[0].notes = "pending: attach install screenshot";
+  expectRejected(
+    "passed manual item with lowercase pending evidence",
+    validateEvidence(passedItemWithLowercasePendingEvidence),
+    "manualItems[0] passed item",
+  );
 
   expectAccepted(
     "allow-incomplete draft evidence with pending statuses",
