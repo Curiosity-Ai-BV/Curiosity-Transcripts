@@ -158,6 +158,16 @@ Deliverables:
 - Keep hosted analysis behind explicit key selection and transcript disclosure
   confirmation.
 
+Current Phase 2A CSP status: `apps/desktop/src-tauri/tauri.conf.json` ships a
+restrictive renderer CSP instead of a null policy. The policy allows local Tauri
+assets with `'self'`, limits command transport to
+`connect-src ipc: http://ipc.localhost`, and blocks object, base URI, form,
+frame, worker, and media embedding surfaces with `'none'`.
+`scripts/check-tauri-security.js` is part of publication readiness and rejects
+null, empty, unsafe-inline, unsafe-eval, wildcard, remote-origin, broad-scheme,
+missing-IPC, unexpected-directive, and `devCsp` regressions before manual release
+smoke starts.
+
 Current Phase 2B status: desktop npm drift is gated by
 `npm audit --audit-level=high` in CI, and Dependabot is configured for
 `/apps/desktop` npm, root Cargo, desktop Tauri Cargo, and GitHub Actions
