@@ -645,7 +645,19 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
-      const result = await commandFacade.testWhisperModelPath({ path: settingsForm.whisperModelPath });
+      const testedPath = settingsForm.whisperModelPath;
+      const result = await commandFacade.testWhisperModelPath({ path: testedPath });
+      const testedPathTrimmed = testedPath.trim();
+      const savedWhisperPath = currentSnapshot.settings.whisperModelPath.trim();
+      const effectiveWhisperPath = currentSnapshot.model.configuredPath.trim();
+      if (
+        result.state === "Valid" &&
+        testedPathTrimmed !== "" &&
+        (testedPathTrimmed === savedWhisperPath || testedPathTrimmed === effectiveWhisperPath)
+      ) {
+        const nextSnapshot = await commandFacade.desktopSnapshot();
+        applyDesktopSnapshot(nextSnapshot);
+      }
       setSettingsFeedback({
         tone: result.state === "Valid" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,

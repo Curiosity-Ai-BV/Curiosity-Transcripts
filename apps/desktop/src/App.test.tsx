@@ -439,7 +439,7 @@ describe("desktop workspace shell", () => {
     const snapshot = {
       ...connectedSnapshot({
         model: {
-          kind: "ready",
+          kind: "untested",
           configuredPath: "/models/ggml-base.en.bin",
         },
         settings: {
@@ -457,6 +457,7 @@ describe("desktop workspace shell", () => {
           message: "Whisper model path is readable; compatibility is not verified.",
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
+          lastPathTest: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -575,7 +576,7 @@ describe("desktop workspace shell", () => {
           message: "Whisper model path is readable; compatibility is not verified.",
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
-          lastPathTest: null,
+          lastPathTest: validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -628,7 +629,7 @@ describe("desktop workspace shell", () => {
           message: "Whisper model path is readable; compatibility is not verified.",
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
-          lastPathTest: null,
+          lastPathTest: validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -1928,6 +1929,10 @@ describe("desktop workspace shell", () => {
         kind: "ready",
         configuredPath: "/models/ggml-base.en.bin",
       },
+      setupGuidance: whisperSetupGuidanceForPath(
+        "/models/ggml-base.en.bin",
+        validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
+      ),
       settings: {
         whisperModelPath: "/models/ggml-base.en.bin",
         ollamaBaseUrl: "http://127.0.0.1:11434",
@@ -1977,6 +1982,128 @@ describe("desktop workspace shell", () => {
     ]);
     expect(screen.getByText("Whisper model path saved.")).toBeInTheDocument();
     expect(screen.getByLabelText("Whisper model path")).toHaveValue("/models/ggml-base.en.bin");
+  });
+
+  it("enables transcription after testing the already-saved Whisper path", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const savedUntested = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+      setupGuidance: whisperSetupGuidanceForPath("/models/ggml-base.en.bin", null),
+      settings: {
+        whisperModelPath: "/models/ggml-base.en.bin",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const refreshedReady = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+      setupGuidance: whisperSetupGuidanceForPath(
+        "/models/ggml-base.en.bin",
+        validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
+      ),
+      settings: savedUntested.settings,
+    });
+    const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return refreshedReady;
+      },
+      testWhisperModelPath: async (args) => {
+        calls.push({ method: "testWhisperModelPath", args });
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+        };
+      },
+    });
+
+    render(<App snapshot={savedUntested} commandFacade={commandFacade} />);
+
+    const transcribe = screen.getByRole("button", { name: "Transcribe" });
+    expect(transcribe).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+
+    await waitFor(() => expect(transcribe).toBeEnabled());
+    expect(calls).toEqual([
+      {
+        method: "testWhisperModelPath",
+        args: { path: "/models/ggml-base.en.bin" },
+      },
+      { method: "desktopSnapshot" },
+    ]);
+  });
+
+  it("enables transcription after testing the environment fallback Whisper path", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const envPath = "/env/models/ggml-base.en.bin";
+    const envUntested = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: envPath,
+      },
+      setupGuidance: whisperSetupGuidanceForPath(envPath, null),
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const refreshedReady = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: envPath,
+      },
+      setupGuidance: whisperSetupGuidanceForPath(envPath, validWhisperPathTestEvidence(envPath)),
+      settings: envUntested.settings,
+    });
+    const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return refreshedReady;
+      },
+      testWhisperModelPath: async (args) => {
+        calls.push({ method: "testWhisperModelPath", args });
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+        };
+      },
+    });
+
+    render(<App snapshot={envUntested} commandFacade={commandFacade} />);
+
+    const transcribe = screen.getByRole("button", { name: "Transcribe" });
+    expect(transcribe).toBeDisabled();
+    await user.type(screen.getByLabelText("Whisper model path"), envPath);
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+
+    await waitFor(() => expect(transcribe).toBeEnabled());
+    expect(screen.getByLabelText("Whisper model path")).toHaveValue(envPath);
+    expect(calls).toEqual([
+      {
+        method: "testWhisperModelPath",
+        args: { path: envPath },
+      },
+      { method: "desktopSnapshot" },
+    ]);
   });
 
   it("preserves a typed Whisper model path when model picking is canceled", async () => {
@@ -2060,6 +2187,10 @@ describe("desktop workspace shell", () => {
         kind: "ready",
         configuredPath: "/Users/adrian/models/chosen.gguf",
       },
+      setupGuidance: whisperSetupGuidanceForPath(
+        "/Users/adrian/models/chosen.gguf",
+        validWhisperPathTestEvidence("/Users/adrian/models/chosen.gguf"),
+      ),
       settings: {
         whisperModelPath: "/Users/adrian/models/chosen.gguf",
         ollamaBaseUrl: "http://127.0.0.1:11434",
@@ -2969,6 +3100,22 @@ describe("desktop workspace shell", () => {
 
 function connectedSnapshot(overrides: Partial<ReturnType<typeof getMockDesktopSnapshot>> = {}) {
   const base = getMockDesktopSnapshot();
+  const defaultWhisperPath = "~/Library/Application Support/Curiosity/models/base.en.bin";
+  const settingsWhisperPath = overrides.settings?.whisperModelPath.trim();
+  const configuredWhisperPath =
+    overrides.model?.configuredPath.trim() || settingsWhisperPath || defaultWhisperPath;
+  const model = overrides.model ?? {
+    kind: "ready" as const,
+    configuredPath: configuredWhisperPath,
+  };
+  const setupGuidance =
+    overrides.setupGuidance ??
+    (model.kind === "ready"
+      ? whisperSetupGuidanceForPath(model.configuredPath, validWhisperPathTestEvidence(model.configuredPath))
+      : model.kind === "untested"
+        ? whisperSetupGuidanceForPath(model.configuredPath, null)
+        : base.setupGuidance);
+
   return {
     ...base,
     commandSurface: {
@@ -2979,11 +3126,38 @@ function connectedSnapshot(overrides: Partial<ReturnType<typeof getMockDesktopSn
       microphone: "Ready" as const,
       systemAudio: "SystemAudioUnavailable" as const,
     },
-    model: {
-      kind: "ready" as const,
-      configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin",
-    },
+    model,
+    setupGuidance,
     ...overrides,
+  };
+}
+
+function validWhisperPathTestEvidence(path: string) {
+  return {
+    testedPath: path,
+    testedAtMs: 1_700_000_001_000,
+    state: "Valid" as const,
+    fileSizeBytes: 16,
+    sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+    failureDetail: null,
+  };
+}
+
+function whisperSetupGuidanceForPath(
+  path: string,
+  lastPathTest: ReturnType<typeof validWhisperPathTestEvidence> | null,
+) {
+  const base = getMockDesktopSnapshot();
+  return {
+    ...base.setupGuidance,
+    whisper: {
+      state: "ReadablePath" as const,
+      configuredPath: path,
+      message: "Whisper model path is readable; compatibility is not verified.",
+      setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+      compatibilityNote: "Readability does not prove model compatibility.",
+      lastPathTest,
+    },
   };
 }
 
