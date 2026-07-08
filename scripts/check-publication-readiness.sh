@@ -50,6 +50,7 @@ check_file "site/index.html"
 check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "docs/release-candidate-smoke-evidence.template.json"
+check_file "scripts/check-ci-critical-gates.js"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
 check_file "scripts/check-tauri-command-surface.js"
@@ -131,6 +132,8 @@ require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning 
 require_text docs/production-readiness-roadmap.md 'Current GitHub Actions workflow syntax status' 'current GitHub Actions workflow syntax status'
 require_text docs/production-readiness-roadmap.md 'actionlint -color=false' 'actionlint roadmap command'
 require_text docs/production-readiness-roadmap.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint Linux artifact roadmap documentation'
+require_text docs/production-readiness-roadmap.md 'continue-on-error' 'critical CI gates fail-blocking roadmap documentation'
+require_text docs/production-readiness-roadmap.md 'dedicated critical metadata check runs before publication readiness' 'critical CI metadata pre-publication roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
@@ -184,6 +187,8 @@ require_text docs/release-candidate-checklist.md 'encryption-at-rest is not impl
 require_text docs/release-candidate-checklist.md 'CodeQL scans Rust and JavaScript/TypeScript' 'CodeQL release-candidate visibility expectation'
 require_text docs/release-candidate-checklist.md 'actionlint -color=false' 'actionlint release-candidate workflow syntax command'
 require_text docs/release-candidate-checklist.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint release-candidate artifact'
+require_normalized_text docs/release-candidate-checklist.md 'Critical release, security, coverage, smoke, and build gates must not carry `if:` or `continue-on-error:` metadata' 'critical CI gates fail-blocking release-candidate documentation'
+require_text docs/release-candidate-checklist.md 'node scripts/check-ci-critical-gates\.js' 'critical CI metadata release-candidate command'
 require_text docs/release-candidate-checklist.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-chain-artifacts\.js' 'supply-chain artifact release-candidate command'
@@ -696,9 +701,21 @@ then
   failures=1
 fi
 require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publication readiness CI gate'
+require_text .github/workflows/ci.yml 'Check critical CI gate metadata' 'critical CI metadata workflow gate'
+require_text .github/workflows/ci.yml 'node scripts/check-ci-critical-gates\.js' 'critical CI metadata workflow command'
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
 require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Release workflow validation CI gate'
+require_text scripts/check-ci-critical-gates.js 'Critical CI gate must not be conditionally skipped' 'critical CI conditional-skip readiness guard'
+require_text scripts/check-ci-critical-gates.js 'Critical CI gate must fail CI when its command fails' 'critical CI non-blocking readiness guard'
+require_text scripts/check-ci-critical-gates.js 'Critical CI gate must be unique' 'critical CI duplicate-step readiness guard'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-ci-critical-gates\.js' 'critical CI metadata publication readiness gate'
+if ! node --check scripts/check-ci-critical-gates.js >/dev/null; then
+  failures=1
+fi
+if ! node scripts/check-ci-critical-gates.js; then
+  failures=1
+fi
 if ! node <<'NODE'
 const fs = require("fs");
 

@@ -32,7 +32,10 @@ Tauri renderer CSP values and prevents the debug/test-only `seed_dev_fixture`
 command from entering the release invoke handler before manual smoke starts. The
 command-surface gate must also keep frontend facade command literals registered
 in the release invoke handler and keep snapshot-returning facade commands in the
-`DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist.
+`DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist. Critical release,
+security, coverage, smoke, and build gates must not carry `if:` or
+`continue-on-error:` metadata; CI runs `node scripts/check-ci-critical-gates.js`
+before publication readiness, and publication readiness repeats that same check.
 It must also run `node scripts/check-plain-secret-storage.js` to guard persisted
 settings, app service DTOs, and desktop command/view DTO/contract shape against
 plain API key, OAuth/access/refresh/calendar token, encryption key, hosted
