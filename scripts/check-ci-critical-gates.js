@@ -78,9 +78,56 @@ function hasStepKey(step, key) {
   return step.lines.some((line) => new RegExp(`^ {8}${key}\\s*:`).test(line));
 }
 
+function validateTopLevelPermissions(text) {
+  const errors = [];
+  const lines = text.split(/\r?\n/);
+  const permissionsDeclarations = lines
+    .map((line, index) => {
+      const match = line.match(/^(\s*)permissions\s*:/);
+      return match ? { indent: match[1].length, index } : null;
+    })
+    .filter(Boolean);
+  const topLevelPermissions = permissionsDeclarations.filter((declaration) => declaration.indent === 0);
+  const jobsIndex = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+
+  if (topLevelPermissions.length === 0) {
+    return ["CI workflow must declare top-level read-only permissions"];
+  }
+  if (topLevelPermissions.length > 1) {
+    errors.push("CI workflow must declare exactly one top-level permissions block");
+  }
+
+  const overriddenPermissions = permissionsDeclarations.filter((declaration) => declaration.indent !== 0);
+  if (overriddenPermissions.length > 0) {
+    errors.push("CI workflow permissions must not be overridden below the workflow level");
+  }
+
+  const permissionsIndex = topLevelPermissions[0].index;
+  if (jobsIndex !== -1 && permissionsIndex > jobsIndex) {
+    errors.push("CI workflow permissions must be top-level before jobs");
+  }
+
+  const block = [];
+  for (const line of lines.slice(permissionsIndex + 1)) {
+    if (/^[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      break;
+    }
+    if (line.trim() !== "") {
+      block.push(line);
+    }
+  }
+
+  const normalized = block.map((line) => line.trim());
+  if (normalized.length !== 1 || normalized[0] !== "contents: read") {
+    errors.push("CI workflow permissions must be exactly contents: read");
+  }
+
+  return errors;
+}
+
 function validateCriticalGates(text) {
   const steps = parseSteps(text);
-  const errors = [];
+  const errors = validateTopLevelPermissions(text);
 
   for (const [job, name] of criticalSteps) {
     const matches = steps.filter((candidate) => candidate.job === job && candidate.name === name);

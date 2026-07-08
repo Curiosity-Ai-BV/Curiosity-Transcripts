@@ -39,7 +39,8 @@ Important existing strengths:
   A dedicated critical metadata check runs before publication readiness, and
   publication readiness repeats it; the shared guard rejects `if:` or
   `continue-on-error:` metadata on the critical release, security, coverage,
-  smoke, and build gates.
+  smoke, and build gates. The CI workflow token is scoped to top-level
+  `contents: read` permissions for CI jobs.
 - Release and Pages workflows build macOS DMGs with Developer ID signing and
   notarization paths, then verify disk image, app signature, stapling, and
   Gatekeeper checks before upload.
