@@ -108,7 +108,11 @@ Deliverables:
   matching last-test evidence as available, missing-model, or
   unavailable-at-last-test state with installed-model details or the deterministic
   pull command. No background health checks run. Model download/management and
-  automatic Ollama pulls remain later work.
+  automatic Ollama pulls remain later work. The desktop snapshot and Settings UI
+  now expose manual model setup options separately from readiness: an existing
+  local Whisper `.bin` or `.gguf` file path, and local Ollama candidate tags with
+  copy-only `ollama pull ...` commands. These options never download models,
+  pull Ollama models, save settings, or run setup tests by themselves.
 - Add a first-run model setup flow for Whisper:
   model discovery, download or file selection, compatibility checks, hash/size
   recording, model health state, and recovery guidance for missing or invalid

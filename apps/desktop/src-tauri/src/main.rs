@@ -990,6 +990,7 @@ fn desktop_snapshot_for_app_root_with_state(
         recording: recording_snapshot(app_root, command_state),
         model: model_status_from_settings(&settings),
         setup_guidance: setup_guidance_from_settings(&settings),
+        model_setup_options: model_setup_options(),
         calendar_context: calendar_context_snapshot(
             command_state.last_calendar_authorization_status,
         ),
@@ -3896,6 +3897,47 @@ fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidance
     }
 }
 
+fn model_setup_options() -> ModelSetupOptionsView {
+    let candidates = recommended_analysis_model_presets()
+        .iter()
+        .filter(|preset| {
+            preset.provider_kind == AnalysisProviderKind::OllamaLocal
+                && !preset.network_used
+                && !preset.requires_data_disclosure
+        })
+        .map(|preset| OllamaModelSetupCandidateView {
+            id: preset.id.to_string(),
+            display_name: preset.display_name.to_string(),
+            model_tag: preset.model_tag.to_string(),
+            pull_command: format!("ollama pull {}", preset.model_tag),
+            default_candidate: preset.default_candidate,
+            setup_notes: preset.setup_notes.to_string(),
+        })
+        .collect();
+
+    ModelSetupOptionsView {
+        whisper: WhisperModelSetupOptionsView {
+            mode: "ManualFile".to_string(),
+            title: "Local Whisper file".to_string(),
+            detail: "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet."
+                .to_string(),
+            choose_label: "Choose model".to_string(),
+            save_label: "Save Whisper".to_string(),
+            test_label: "Test path".to_string(),
+            downloads_managed: false,
+            accepted_extensions: vec!["bin".to_string(), "gguf".to_string()],
+        },
+        ollama: OllamaModelSetupOptionsView {
+            mode: "ManualOllama".to_string(),
+            title: "Local Ollama models".to_string(),
+            detail: "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama."
+                .to_string(),
+            automatic_pulls: false,
+            candidates,
+        },
+    }
+}
+
 fn calendar_context_snapshot(
     authorization_status: Option<AppleCalendarAuthorizationStatus>,
 ) -> CalendarContextView {
@@ -5191,6 +5233,7 @@ struct DesktopSnapshot {
     recording: CommandRecordingDto,
     model: ModelStatus,
     setup_guidance: FirstRunSetupGuidanceView,
+    model_setup_options: ModelSetupOptionsView,
     calendar_context: CalendarContextView,
     settings: AppSettingsView,
     capture: CaptureStatus,
@@ -5244,6 +5287,47 @@ struct OllamaSetupGuidanceView {
     message: String,
     setup_guidance: String,
     last_connection_test: Option<OllamaConnectionTestEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelSetupOptionsView {
+    whisper: WhisperModelSetupOptionsView,
+    ollama: OllamaModelSetupOptionsView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperModelSetupOptionsView {
+    mode: String,
+    title: String,
+    detail: String,
+    choose_label: String,
+    save_label: String,
+    test_label: String,
+    downloads_managed: bool,
+    accepted_extensions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaModelSetupOptionsView {
+    mode: String,
+    title: String,
+    detail: String,
+    automatic_pulls: bool,
+    candidates: Vec<OllamaModelSetupCandidateView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaModelSetupCandidateView {
+    id: String,
+    display_name: String,
+    model_tag: String,
+    pull_command: String,
+    default_candidate: bool,
+    setup_notes: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -6846,6 +6930,56 @@ mod tests {
             json["setupGuidance"]["ollama"]["lastConnectionTest"],
             serde_json::Value::Null
         );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_exposes_manual_model_setup_options_without_downloads_or_hosted_models() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let setup_options = &json["modelSetupOptions"];
+
+        assert_eq!(
+            setup_options["whisper"]["mode"],
+            serde_json::json!("ManualFile")
+        );
+        assert_eq!(setup_options["whisper"]["downloadsManaged"], false);
+        assert_eq!(
+            setup_options["whisper"]["acceptedExtensions"],
+            serde_json::json!(["bin", "gguf"])
+        );
+        assert!(setup_options["whisper"]["detail"]
+            .as_str()
+            .expect("whisper setup detail")
+            .contains("does not download Whisper models yet"));
+
+        assert_eq!(
+            setup_options["ollama"]["mode"],
+            serde_json::json!("ManualOllama")
+        );
+        assert_eq!(setup_options["ollama"]["automaticPulls"], false);
+        let candidates = setup_options["ollama"]["candidates"]
+            .as_array()
+            .expect("ollama candidates");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["modelTag"] == "qwen3.6:27b"
+                && candidate["pullCommand"] == "ollama pull qwen3.6:27b"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["modelTag"] == "gemma4:31b"
+                && candidate["pullCommand"] == "ollama pull gemma4:31b"));
+        assert!(!setup_options["ollama"]
+            .to_string()
+            .contains("deepseek-v3.2:cloud"));
 
         restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);

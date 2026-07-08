@@ -831,6 +831,13 @@ h3 {
   padding-bottom: 18px;
 }
 
+.model-setup-options {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
 .calendar-context {
   display: grid;
   gap: 10px;
@@ -891,6 +898,60 @@ h3 {
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 12px;
+}
+
+.setup-option-group {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.setup-option-group > strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.setup-option-group p,
+.setup-option-meta,
+.ollama-candidate-row small {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.setup-option-meta {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+
+.ollama-candidate-list {
+  display: grid;
+  gap: 6px;
+}
+
+.ollama-candidate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.ollama-candidate-row span {
+  min-width: 0;
+}
+
+.ollama-candidate-row strong,
+.ollama-candidate-row small {
+  display: block;
 }
 
 .calendar-event-list {
@@ -1071,6 +1132,10 @@ h3 {
 
   .privacy-row,
   .engine-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .ollama-candidate-row {
     grid-template-columns: 1fr;
   }
 

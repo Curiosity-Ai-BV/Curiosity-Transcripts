@@ -60,7 +60,9 @@ splitting, or complete privacy/deletion/recovery coverage.
 - Model setup: verify the Settings readiness panel shows missing/readable
   Whisper guidance, treats an existing Whisper file as untested until matching
   `Test path` evidence exists, and shows Ollama availability as unknown until
-  matching `Test Ollama` evidence exists.
+  matching `Test Ollama` evidence exists. Verify the manual setup options list
+  existing-file Whisper setup and local Ollama candidate tags without starting
+  downloads, pulls, saves, or tests.
   Configure a local Whisper model path in Settings and record the path test's
   file size plus SHA-256 readability evidence. Run a sample transcription and
   confirm the separate last-successful-transcription evidence appears for the

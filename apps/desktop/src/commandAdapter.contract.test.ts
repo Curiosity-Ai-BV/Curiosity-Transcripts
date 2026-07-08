@@ -98,6 +98,69 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.setupGuidance");
   });
 
+  it("requires manual model setup options to be explicit in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete driftedBackendSnapshot.modelSetupOptions;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions");
+  });
+
+  it("guards manual model setup options against managed pulls and cloud candidates", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const automaticPullSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        ollama: {
+          ...backendSnapshot.modelSetupOptions.ollama,
+          automaticPulls: true,
+        },
+      },
+    };
+    const cloudCandidateSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        ollama: {
+          ...backendSnapshot.modelSetupOptions.ollama,
+          candidates: [
+            ...backendSnapshot.modelSetupOptions.ollama.candidates,
+            {
+              id: "hosted-deepseek-v3-2-speciale",
+              displayName: "DeepSeek V3.2 Speciale",
+              modelTag: "DeepSeek-V3.2-Speciale",
+              pullCommand: "ollama pull DeepSeek-V3.2-Speciale",
+              defaultCandidate: false,
+              setupNotes: "Hosted model must not appear in local setup options.",
+            },
+          ],
+        },
+      },
+    };
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => automaticPullSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.ollama.automaticPulls");
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => cloudCandidateSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.ollama.candidates");
+  });
+
   it("guards unsupported Ollama availability in snapshots", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {

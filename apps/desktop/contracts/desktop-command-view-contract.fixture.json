@@ -31,6 +31,45 @@
         "configuredPath": "",
         "kind": "missing"
       },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
       "recording": {
         "meeting_id": "",
         "permission_state": "Ready",
@@ -151,6 +190,45 @@
         "configuredPath": "",
         "kind": "missing"
       },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
       "recording": {
         "meeting_id": "",
         "permission_state": "Ready",
@@ -225,6 +303,45 @@
       "model": {
         "configuredPath": "<app-root>/fixture-whisper.bin",
         "kind": "ready"
+      },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
       },
       "recording": {
         "meeting_id": "",

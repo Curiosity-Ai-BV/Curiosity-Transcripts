@@ -20,6 +20,10 @@ export type ExportFormat = "json" | "markdown" | "srt";
 
 const RAW_AUDIO_RETENTION_POLICIES = ["Retain", "DeleteAfterTranscription", "NeverSave"] as const;
 const PERSISTED_RAW_AUDIO_RETENTION_POLICIES = ["Retain", "DeleteAfterTranscription"] as const;
+const LOCAL_OLLAMA_SETUP_CANDIDATES = [
+  { id: "ollama-qwen3-6-27b", modelTag: "qwen3.6:27b" },
+  { id: "ollama-gemma4-31b", modelTag: "gemma4:31b" },
+] as const;
 
 export interface CommandRecordingDto {
   meeting_id: string;
@@ -79,6 +83,39 @@ export interface OllamaSetupGuidance {
 export interface FirstRunSetupGuidance {
   whisper: WhisperSetupGuidance;
   ollama: OllamaSetupGuidance;
+}
+
+export interface ModelSetupOptions {
+  whisper: WhisperModelSetupOptions;
+  ollama: OllamaModelSetupOptions;
+}
+
+export interface WhisperModelSetupOptions {
+  mode: "ManualFile";
+  title: string;
+  detail: string;
+  chooseLabel: string;
+  saveLabel: string;
+  testLabel: string;
+  downloadsManaged: false;
+  acceptedExtensions: string[];
+}
+
+export interface OllamaModelSetupOptions {
+  mode: "ManualOllama";
+  title: string;
+  detail: string;
+  automaticPulls: false;
+  candidates: OllamaModelSetupCandidate[];
+}
+
+export interface OllamaModelSetupCandidate {
+  id: string;
+  displayName: string;
+  modelTag: string;
+  pullCommand: string;
+  defaultCandidate: boolean;
+  setupNotes: string;
 }
 
 export type CalendarPermissionState = "NotRequested" | "Granted" | "Denied" | "Unavailable";
@@ -301,6 +338,7 @@ export interface DesktopSnapshot {
   recording: CommandRecordingDto;
   model: ModelStatus;
   setupGuidance: FirstRunSetupGuidance;
+  modelSetupOptions: ModelSetupOptions;
   calendarContext: CalendarContext;
   settings: AppSettings;
   capture: CaptureStatus;
@@ -458,6 +496,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
 
   validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance", configuredModelPath);
   validateWhisperModelReadinessEvidence(modelKind, configuredModelPath, root.setupGuidance);
+  validateModelSetupOptions(root.modelSetupOptions, "desktop_snapshot.modelSetupOptions");
   validateCalendarContext(root.calendarContext, "desktop_snapshot.calendarContext");
 
   const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
@@ -853,6 +892,47 @@ export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): St
   };
 }
 
+function defaultModelSetupOptions(): ModelSetupOptions {
+  return {
+    whisper: {
+      mode: "ManualFile",
+      title: "Local Whisper file",
+      detail:
+        "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+      chooseLabel: "Choose model",
+      saveLabel: "Save Whisper",
+      testLabel: "Test path",
+      downloadsManaged: false,
+      acceptedExtensions: ["bin", "gguf"],
+    },
+    ollama: {
+      mode: "ManualOllama",
+      title: "Local Ollama models",
+      detail:
+        "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+      automaticPulls: false,
+      candidates: [
+        {
+          id: "ollama-qwen3-6-27b",
+          displayName: "Qwen 3.6 27B",
+          modelTag: "qwen3.6:27b",
+          pullCommand: "ollama pull qwen3.6:27b",
+          defaultCandidate: true,
+          setupNotes: "Install Ollama locally, then run `ollama pull qwen3.6:27b`.",
+        },
+        {
+          id: "ollama-gemma4-31b",
+          displayName: "Gemma 4 31B",
+          modelTag: "gemma4:31b",
+          pullCommand: "ollama pull gemma4:31b",
+          defaultCandidate: true,
+          setupNotes: "Install Ollama locally, then run `ollama pull gemma4:31b`.",
+        },
+      ],
+    },
+  };
+}
+
 export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "default"): DesktopSnapshot {
   const meetings = [
     meeting({
@@ -954,6 +1034,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               lastConnectionTest: null,
             },
           },
+    modelSetupOptions: defaultModelSetupOptions(),
     calendarContext: {
       source: "AppleCalendar",
       permissionState: "NotRequested",
@@ -1036,6 +1117,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
         lastConnectionTest: null,
       },
     },
+    modelSetupOptions: defaultModelSetupOptions(),
     calendarContext: {
       source: "AppleCalendar",
       permissionState: "Unavailable",
@@ -1145,6 +1227,19 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["setupGuidance", "ollama", "message"],
   ["setupGuidance", "ollama", "setupGuidance"],
   ["setupGuidance", "ollama", "lastConnectionTest"],
+  ["modelSetupOptions", "whisper", "mode"],
+  ["modelSetupOptions", "whisper", "title"],
+  ["modelSetupOptions", "whisper", "detail"],
+  ["modelSetupOptions", "whisper", "chooseLabel"],
+  ["modelSetupOptions", "whisper", "saveLabel"],
+  ["modelSetupOptions", "whisper", "testLabel"],
+  ["modelSetupOptions", "whisper", "downloadsManaged"],
+  ["modelSetupOptions", "whisper", "acceptedExtensions"],
+  ["modelSetupOptions", "ollama", "mode"],
+  ["modelSetupOptions", "ollama", "title"],
+  ["modelSetupOptions", "ollama", "detail"],
+  ["modelSetupOptions", "ollama", "automaticPulls"],
+  ["modelSetupOptions", "ollama", "candidates"],
   ["calendarContext", "source"],
   ["calendarContext", "permissionState"],
   ["calendarContext", "availabilityState"],
@@ -1358,6 +1453,64 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string, config
     baseUrl,
     model,
   );
+}
+
+function validateModelSetupOptions(value: unknown, pathLabel: string): void {
+  const options = requireContractRecord(value, pathLabel);
+
+  const whisper = requireContractRecord(options.whisper, `${pathLabel}.whisper`);
+  requireEnum(whisper.mode, ["ManualFile"], `${pathLabel}.whisper.mode`);
+  requireNonEmptyString(whisper.title, `${pathLabel}.whisper.title`);
+  requireNonEmptyString(whisper.detail, `${pathLabel}.whisper.detail`);
+  requireNonEmptyString(whisper.chooseLabel, `${pathLabel}.whisper.chooseLabel`);
+  requireNonEmptyString(whisper.saveLabel, `${pathLabel}.whisper.saveLabel`);
+  requireNonEmptyString(whisper.testLabel, `${pathLabel}.whisper.testLabel`);
+  requireFalse(whisper.downloadsManaged, `${pathLabel}.whisper.downloadsManaged`);
+  const acceptedExtensions = requireContractArray(
+    whisper.acceptedExtensions,
+    `${pathLabel}.whisper.acceptedExtensions`,
+  ).map((extension, index) =>
+    requireNonEmptyString(extension, `${pathLabel}.whisper.acceptedExtensions[${index}]`),
+  );
+  for (const required of ["bin", "gguf"]) {
+    if (!acceptedExtensions.includes(required)) {
+      throw new Error(
+        `desktop_snapshot contract drift: expected ${pathLabel}.whisper.acceptedExtensions to include ${required}`,
+      );
+    }
+  }
+
+  const ollama = requireContractRecord(options.ollama, `${pathLabel}.ollama`);
+  requireEnum(ollama.mode, ["ManualOllama"], `${pathLabel}.ollama.mode`);
+  requireNonEmptyString(ollama.title, `${pathLabel}.ollama.title`);
+  requireNonEmptyString(ollama.detail, `${pathLabel}.ollama.detail`);
+  requireFalse(ollama.automaticPulls, `${pathLabel}.ollama.automaticPulls`);
+  const candidates = requireContractArray(ollama.candidates, `${pathLabel}.ollama.candidates`);
+  if (candidates.length !== LOCAL_OLLAMA_SETUP_CANDIDATES.length) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected ${pathLabel}.ollama.candidates to match the local-only candidate list`,
+    );
+  }
+  candidates.forEach((candidate, index) => {
+    const candidatePath = `${pathLabel}.ollama.candidates[${index}]`;
+    const expected = LOCAL_OLLAMA_SETUP_CANDIDATES[index];
+    const record = requireContractRecord(candidate, candidatePath);
+    const id = requireNonEmptyString(record.id, `${candidatePath}.id`);
+    if (id !== expected.id) {
+      throw new Error(`desktop_snapshot contract drift: expected ${candidatePath}.id to be a local Ollama preset`);
+    }
+    requireNonEmptyString(record.displayName, `${candidatePath}.displayName`);
+    const modelTag = requireNonEmptyString(record.modelTag, `${candidatePath}.modelTag`);
+    if (modelTag !== expected.modelTag) {
+      throw new Error(`desktop_snapshot contract drift: expected ${candidatePath}.modelTag to be a local model tag`);
+    }
+    const pullCommand = requireNonEmptyString(record.pullCommand, `${candidatePath}.pullCommand`);
+    if (pullCommand !== `ollama pull ${modelTag}`) {
+      throw new Error(`desktop_snapshot contract drift: expected ${candidatePath}.pullCommand to match modelTag`);
+    }
+    requireBoolean(record.defaultCandidate, `${candidatePath}.defaultCandidate`);
+    requireNonEmptyString(record.setupNotes, `${candidatePath}.setupNotes`);
+  });
 }
 
 function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): void {

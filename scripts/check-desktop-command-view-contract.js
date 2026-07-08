@@ -191,6 +191,9 @@ function validateFixture(fixture, schema) {
       if (typeof rule.minItems === "number" && located.value.length < rule.minItems) {
         errors.push(`Expected ${label} to have at least ${rule.minItems} item(s)`);
       }
+      if (typeof rule.maxItems === "number" && located.value.length > rule.maxItems) {
+        errors.push(`Expected ${label} to have at most ${rule.maxItems} item(s)`);
+      }
       if (typeof rule.pattern === "string" && !new RegExp(rule.pattern).test(located.value)) {
         errors.push(`Expected ${label} to match ${rule.pattern}`);
       }
@@ -235,6 +238,17 @@ if (fixture && schema) {
   const debugLeak = clone(fixture);
   debugLeak.cases["desktop_snapshot.empty"].commandSurface.detail = "seed_dev_fixture";
   expectRejected("debug-only command string in fixture", debugLeak, schema);
+
+  const hostedCandidate = clone(fixture);
+  hostedCandidate.cases["desktop_snapshot.empty"].modelSetupOptions.ollama.candidates.push({
+    id: "hosted-deepseek-v3-2-speciale",
+    displayName: "DeepSeek V3.2 Speciale",
+    modelTag: "DeepSeek-V3.2-Speciale",
+    pullCommand: "ollama pull DeepSeek-V3.2-Speciale",
+    defaultCandidate: false,
+    setupNotes: "Hosted model must not appear in local setup options.",
+  });
+  expectRejected("hosted model candidate in manual setup fixture", hostedCandidate, schema);
 
   const missingSchemaCase = clone(schema);
   missingSchemaCase.cases = missingSchemaCase.cases.filter(

@@ -303,6 +303,7 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     : null;
   const summaryJob = currentSnapshot.summaryJob ? mapCommandJobState(currentSnapshot.summaryJob) : null;
   const setupGuidance = currentSnapshot.setupGuidance;
+  const modelSetupOptions = currentSnapshot.modelSetupOptions;
   const calendarContext = currentSnapshot.calendarContext;
   const calendarTone = calendarContextTone(calendarContext);
   const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
@@ -718,6 +719,11 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
 
   function updateOllamaModel(value: string) {
     setSettingsForm((current) => ({ ...current, ollamaModel: value }));
+    setSettingsFeedback(null);
+  }
+
+  function chooseOllamaCandidate(modelTag: string) {
+    setSettingsForm((current) => ({ ...current, ollamaModel: modelTag }));
     setSettingsFeedback(null);
   }
 
@@ -1482,6 +1488,47 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                     <small>Last explicit observation, not current availability.</small>
                   </div>
                 ) : null}
+              </div>
+            </div>
+            <div className="model-setup-options" aria-label="Manual model setup options">
+              <div className="setup-option-group">
+                <strong>{modelSetupOptions.whisper.title}</strong>
+                <p>{modelSetupOptions.whisper.detail}</p>
+                <span className="setup-option-meta">
+                  Accepted: {modelSetupOptions.whisper.acceptedExtensions.map((extension) => `.${extension}`).join(", ")}
+                </span>
+                <span className="setup-option-meta">
+                  {modelSetupOptions.whisper.downloadsManaged
+                    ? "Managed downloads enabled"
+                    : "Managed downloads unavailable"}
+                </span>
+              </div>
+              <div className="setup-option-group">
+                <strong>{modelSetupOptions.ollama.title}</strong>
+                <p>{modelSetupOptions.ollama.detail}</p>
+                <span className="setup-option-meta">
+                  {modelSetupOptions.ollama.automaticPulls ? "Automatic pulls enabled" : "Manual pulls only"}
+                </span>
+                <div className="ollama-candidate-list">
+                  {modelSetupOptions.ollama.candidates.map((candidate) => (
+                    <div key={candidate.id} className="ollama-candidate-row">
+                      <span>
+                        <strong>{candidate.displayName}</strong>
+                        <small>{candidate.modelTag}</small>
+                      </span>
+                      <span className="setup-option-meta">{candidate.pullCommand}</span>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={settingsInputDisabled || settingsForm.ollamaModel === candidate.modelTag}
+                        title="Use this model tag in the local settings form."
+                        onClick={() => chooseOllamaCandidate(candidate.modelTag)}
+                      >
+                        Use
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="calendar-context" aria-label="Calendar context">

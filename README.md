@@ -116,7 +116,10 @@ Implemented MVP flows:
   check. Ollama availability stays unknown until matching `Test Ollama` evidence
   exists. The last explicit Ollama observation is shown as available,
   missing-model, or unavailable-at-last-test evidence without becoming a
-  background health check.
+  background health check. Settings also exposes manual model setup options:
+  choose an existing local Whisper `.bin` or `.gguf` file, and pick from local
+  Ollama candidate tags with copy-only pull commands. These options do not
+  download models, pull Ollama models, or perform background probes.
 - Read-only Apple Calendar context status in the desktop snapshot and settings
   pane, plus an explicit macOS Apple Calendar permission request action. The
   macOS 14+ path requests full Calendar event access, while the macOS 13 support
@@ -470,6 +473,8 @@ shows the last successful transcription timestamp, provider, model name, segment
 count, meeting id, model run id, transcript version id, and model-file size for
 that same path and modified time. This is historical compatibility evidence, not
 a background check and not a substitute for matching `Test path` evidence.
+Settings also shows manual Whisper setup options for existing `.bin` and `.gguf`
+model files; the app does not download or manage Whisper models yet.
 Desktop builds include the native Whisper backend by default; use `npm run
 tauri:dev:no-whisper` only when intentionally testing the unavailable-backend
 state. If the effective model path is missing, the UI should show an explicit
@@ -505,7 +510,7 @@ current availability.
 End-to-end expectation:
 
 1. Start `ollama serve`.
-2. Pull the chosen model, such as `ollama pull qwen3.6:27b`.
+2. Pull the chosen local model manually, such as `ollama pull qwen3.6:27b`.
 3. Open Settings, confirm the Ollama base URL/model, and run the connection
    test.
 4. Record and transcribe a meeting.

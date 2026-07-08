@@ -437,6 +437,59 @@ describe("desktop workspace shell", () => {
     expect(readiness.textContent).not.toContain("ollama pull");
   });
 
+  it("renders manual model setup options without saving, testing, pulling, or downloading", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const commandFacade = fakeCommandFacade({
+      saveWhisperModelPath: async () => {
+        calls.push("saveWhisperModelPath");
+        return connectedSnapshot();
+      },
+      saveAnalysisSettings: async () => {
+        calls.push("saveAnalysisSettings");
+        return connectedSnapshot();
+      },
+      testWhisperModelPath: async () => {
+        calls.push("testWhisperModelPath");
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+        };
+      },
+      testOllamaConnection: async () => {
+        calls.push("testOllamaConnection");
+        return {
+          state: "Available",
+          message: "Ollama is reachable.",
+          setupGuidance: "",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["qwen3.6:27b"],
+          pullCommand: null,
+        };
+      },
+    });
+
+    render(<App snapshot={connectedSnapshot()} commandFacade={commandFacade} />);
+
+    const setupOptions = screen.getByLabelText("Manual model setup options");
+    expect(within(setupOptions).getByText("Local Whisper file")).toBeInTheDocument();
+    expect(within(setupOptions).getByText("Managed downloads unavailable")).toBeInTheDocument();
+    expect(within(setupOptions).getByText("Local Ollama models")).toBeInTheDocument();
+    expect(within(setupOptions).getByText("Manual pulls only")).toBeInTheDocument();
+    expect(within(setupOptions).getByText("ollama pull qwen3.6:27b")).toBeInTheDocument();
+    expect(within(setupOptions).getByText("ollama pull gemma4:31b")).toBeInTheDocument();
+
+    const useButtons = within(setupOptions).getAllByRole("button", { name: "Use" });
+    expect(useButtons[0]).toBeDisabled();
+    await user.click(useButtons[1]);
+
+    expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
+    expect(calls).toEqual([]);
+  });
+
   it("describes a readable Whisper path as readable but not compatibility-verified", () => {
     const snapshot = {
       ...connectedSnapshot({
