@@ -351,27 +351,30 @@ fn finish_summary_job_for_app_root(
         created_at_ms,
         || summary_job_cancel_requested(command_state, &job.id),
     );
+    let (finish_state, last_error) = finish_state_for_summary(&command);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
         match &command {
             Ok(Some(command)) => {
-                let finish_state = if command.state == AnalysisCommandState::Failed {
-                    CommandJobFinishState::Failed
-                } else {
-                    CommandJobFinishState::Complete
-                };
                 command_state.finish_summary_job(&job, finish_state);
                 command_state.last_analysis = Some(command.clone());
             }
             Ok(None) => {
-                command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+                command_state.finish_summary_job(&job, finish_state);
             }
             Err(_) => {
-                command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+                command_state.finish_summary_job(&job, finish_state);
             }
         }
         command_state.snapshot_state()
     };
+    persist_summary_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
     command?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
@@ -745,6 +748,19 @@ fn desktop_snapshot_for_app_root_with_state(
         } else {
             None
         };
+    let recovered_summary_job = if command_state.summary_job.is_none() {
+        store
+            .recover_active_summary_jobs(
+                current_timestamp_ms(),
+                "summary worker was not running after app restart",
+            )
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .next()
+            .map(command_job_from_processing_job)
+    } else {
+        None
+    };
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
     let mut meetings = Vec::with_capacity(meeting_summaries.len());
@@ -845,7 +861,7 @@ fn desktop_snapshot_for_app_root_with_state(
         export_command: command_state.last_export.clone().unwrap_or_default(),
         delete_command: command_state.last_delete.clone().unwrap_or_default(),
         analysis_command: command_state.last_analysis.clone(),
-        summary_job: command_state.summary_job.clone(),
+        summary_job: command_state.summary_job.clone().or(recovered_summary_job),
     })
 }
 
@@ -1137,35 +1153,93 @@ where
         model_name,
         created_at_ms,
         || summary_job_cancel_requested(command_state, &job.id),
-    )?;
+    );
+    let (finish_state, last_error) = finish_state_for_summary(&command);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-        if let Some(command) = command {
-            let finish_state = if command.state == AnalysisCommandState::Failed {
-                CommandJobFinishState::Failed
-            } else {
-                CommandJobFinishState::Complete
-            };
-            command_state.finish_summary_job(&job, finish_state);
-            command_state.last_analysis = Some(command);
-        } else {
-            command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+        match &command {
+            Ok(Some(command)) => {
+                command_state.finish_summary_job(&job, finish_state);
+                command_state.last_analysis = Some(command.clone());
+            }
+            Ok(None) | Err(_) => {
+                command_state.finish_summary_job(&job, finish_state);
+            }
         }
         command_state.snapshot_state()
     };
+    persist_summary_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
+    command?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
 fn begin_summary_job_for_app_root(
-    _app_root: &Path,
+    app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
 ) -> Result<CommandJobView, String> {
-    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-    command_state
-        .begin_summary_job(meeting_id, started_at_ms)
-        .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))
+    let job = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .begin_summary_job(meeting_id, started_at_ms)
+            .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))?
+    };
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    let active_job = match store.active_summary_job_for_meeting(meeting_id) {
+        Ok(active_job) => active_job,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error.to_string());
+        }
+    };
+    if let Some(active_job) = active_job {
+        let recovered_job = match store
+            .recover_processing_job(
+                &active_job.id,
+                started_at_ms,
+                "summary worker was not running after app restart",
+            )
+            .and_then(|_| store.processing_job(&active_job.id))
+        {
+            Ok(recovered_job) => recovered_job,
+            Err(error) => {
+                let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+                command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+                return Err(error.to_string());
+            }
+        };
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.summary_job = Some(command_job_from_processing_job(recovered_job));
+        return Err(format!(
+            "{} already owns summary for {}",
+            active_job.id, active_job.meeting_id
+        ));
+    }
+
+    let durable_job = processing_job_from_command_job(&job);
+    if let Err(error) = store.insert_processing_job(&durable_job) {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+        return Err(error.to_string());
+    }
+
+    Ok(job)
 }
 
 fn start_summary_job_for_app_root(
@@ -1184,6 +1258,13 @@ fn start_summary_job_for_app_root(
         Err(error) => {
             let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
             command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            let _ = persist_summary_job_finish(
+                app_root,
+                &job.id,
+                CommandJobFinishState::Failed,
+                started_at_ms,
+                Some(&error),
+            );
             return Err(error);
         }
     };
@@ -1200,6 +1281,7 @@ fn cancel_summary_job_for_app_root(
         command_state.request_summary_cancel(job_id)?;
         command_state.snapshot_state()
     };
+    persist_summary_job_cancel_request(app_root, job_id)?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
@@ -2593,26 +2675,44 @@ fn begin_transcription_job_for_app_root(
 }
 
 fn processing_job_from_command_job(job: &CommandJobView) -> ProcessingJob {
-    let mut processing_job = ProcessingJob::new(
-        &job.id,
-        &job.meeting_id,
-        JobKind::Transcribe,
-        JobStatus::Running,
-    );
+    let kind = match job.kind {
+        CommandJobKind::Transcription => JobKind::Transcribe,
+        CommandJobKind::Summary => JobKind::Summarize,
+    };
+    let mut processing_job = ProcessingJob::new(&job.id, &job.meeting_id, kind, JobStatus::Running);
     processing_job.attempts = 1;
     processing_job.started_at_ms = Some(job.started_at_ms);
-    processing_job.idempotency_key = Some(transcription_idempotency_key(&job.meeting_id));
+    processing_job.idempotency_key = Some(command_job_idempotency_key(job.kind, &job.meeting_id));
     processing_job
 }
 
 fn transcription_idempotency_key(meeting_id: &str) -> String {
-    format!("transcribe:{meeting_id}")
+    command_job_idempotency_key(CommandJobKind::Transcription, meeting_id)
+}
+
+#[cfg(test)]
+fn summary_idempotency_key(meeting_id: &str) -> String {
+    command_job_idempotency_key(CommandJobKind::Summary, meeting_id)
+}
+
+fn command_job_idempotency_key(kind: CommandJobKind, meeting_id: &str) -> String {
+    match kind {
+        CommandJobKind::Transcription => format!("transcribe:{meeting_id}"),
+        CommandJobKind::Summary => format!("summarize:{meeting_id}"),
+    }
 }
 
 fn command_job_from_processing_job(job: ProcessingJob) -> CommandJobView {
+    let kind = match job.kind {
+        JobKind::Transcribe => CommandJobKind::Transcription,
+        JobKind::Summarize => CommandJobKind::Summary,
+        JobKind::Export | JobKind::Index => {
+            panic!("unsupported durable command job kind: {:?}", job.kind)
+        }
+    };
     CommandJobView {
         id: job.id,
-        kind: CommandJobKind::Transcription,
+        kind,
         meeting_id: job.meeting_id,
         state: command_job_state_from_processing_status(job.status, job.cancel_requested),
         cancel_requested: job.cancel_requested,
@@ -2641,6 +2741,12 @@ fn persist_transcription_job_cancel_request(app_root: &Path, job_id: &str) -> Re
         .map_err(|error| error.to_string())
 }
 
+fn persist_summary_job_cancel_request(app_root: &Path, job_id: &str) -> Result<(), String> {
+    open_store(app_root)?
+        .request_processing_job_cancel(job_id)
+        .map_err(|error| error.to_string())
+}
+
 fn persist_transcription_job_finish(
     app_root: &Path,
     job_id: &str,
@@ -2657,6 +2763,45 @@ fn persist_transcription_job_finish(
         }
     }
     .map_err(|error| error.to_string())
+}
+
+fn persist_summary_job_finish(
+    app_root: &Path,
+    job_id: &str,
+    finish_state: CommandJobFinishState,
+    finished_at_ms: u64,
+    last_error: Option<&str>,
+) -> Result<(), String> {
+    let store = open_store(app_root)?;
+    match finish_state {
+        CommandJobFinishState::Complete => store.complete_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Canceled => store.cancel_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Failed => {
+            store.fail_processing_job(job_id, finished_at_ms, last_error.unwrap_or("failed"))
+        }
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn analysis_command_last_error(command: &AnalysisCommandView) -> Option<String> {
+    command
+        .failure
+        .as_ref()
+        .map(|failure| failure.message.clone())
+}
+
+fn finish_state_for_summary(
+    command: &Result<Option<AnalysisCommandView>, String>,
+) -> (CommandJobFinishState, Option<String>) {
+    match command {
+        Ok(Some(command)) if command.state == AnalysisCommandState::Failed => (
+            CommandJobFinishState::Failed,
+            analysis_command_last_error(command),
+        ),
+        Ok(Some(_)) => (CommandJobFinishState::Complete, None),
+        Ok(None) => (CommandJobFinishState::Canceled, None),
+        Err(error) => (CommandJobFinishState::Failed, Some(error.clone())),
+    }
 }
 
 fn transcription_command_last_error(transcription: &TranscriptionCommandView) -> Option<String> {
@@ -6678,6 +6823,94 @@ mod tests {
     }
 
     #[test]
+    fn summary_job_lifecycle_persists_durable_processing_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let succeeded =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        let durable_started = store
+            .processing_job(&succeeded.id)
+            .expect("durable started summary job");
+        assert_eq!(durable_started.kind, curiosity_domain::JobKind::Summarize);
+        assert_eq!(durable_started.status, curiosity_domain::JobStatus::Running);
+        assert_eq!(durable_started.attempts, 1);
+        assert_eq!(durable_started.started_at_ms, Some(1_700_000_001_000));
+        assert_eq!(
+            durable_started.idempotency_key.as_deref(),
+            Some(summary_idempotency_key("meeting-1").as_str())
+        );
+        assert!(!durable_started.cancel_requested);
+
+        let success_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Durable summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let success_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", success_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            succeeded.clone(),
+            "meeting-1",
+            success_client,
+            "qwen3.6:27b",
+            1_700_000_001_500,
+        )
+        .expect("finish successful summary job");
+        let durable_succeeded = store
+            .processing_job(&succeeded.id)
+            .expect("durable succeeded summary job");
+        assert_eq!(
+            durable_succeeded.status,
+            curiosity_domain::JobStatus::Succeeded
+        );
+        assert_eq!(durable_succeeded.finished_at_ms, Some(1_700_000_001_500));
+        assert_eq!(durable_succeeded.last_error, None);
+        assert!(!durable_succeeded.cancel_requested);
+
+        let failed =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("begin failing summary job");
+        let failure_transport = RecordingOllamaTransport::generate_error("connection refused");
+        let failure_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", failure_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            failed.clone(),
+            "meeting-1",
+            failure_client,
+            "qwen3.6:27b",
+            1_700_000_002_500,
+        )
+        .expect("finish failed summary job as visible command failure");
+        let durable_failed = store
+            .processing_job(&failed.id)
+            .expect("durable failed summary job");
+        assert_eq!(durable_failed.status, curiosity_domain::JobStatus::Failed);
+        assert_eq!(durable_failed.finished_at_ms, Some(1_700_000_002_500));
+        assert!(
+            durable_failed
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("connection refused"),
+            "failed durable summary jobs should keep the actionable provider error"
+        );
+        assert!(!durable_failed.cancel_requested);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn summary_job_cancel_request_marks_snapshot_and_blocks_duplicate() {
         let root = unique_test_root();
         let command_state = Mutex::new(DesktopCommandState::default());
@@ -6694,6 +6927,10 @@ mod tests {
         let cancel_snapshot = cancel_summary_job_for_app_root(&root, &command_state, &started.id)
             .expect("request summary cancel");
         let cancel_json = serde_json::to_value(&cancel_snapshot).expect("serialize cancel");
+        let store = open_store(&root).expect("open store");
+        let durable_cancel = store
+            .processing_job(&started.id)
+            .expect("durable cancel-requested summary job");
         let duplicate =
             begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
                 .expect_err("cancel-requested summary still owns command");
@@ -6701,6 +6938,7 @@ mod tests {
         assert!(duplicate.contains(&started.id));
         assert_eq!(cancel_json["summaryJob"]["state"], "CancelRequested");
         assert_eq!(cancel_json["summaryJob"]["cancelRequested"], true);
+        assert!(durable_cancel.cancel_requested);
 
         let transport = RecordingOllamaTransport::generate_response(
             r#"{"response":"{\"summary\":\"Canceled summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
@@ -6709,7 +6947,7 @@ mod tests {
         let finish_snapshot = finish_summary_job_for_app_root_with_client(
             &root,
             &command_state,
-            started,
+            started.clone(),
             "meeting-1",
             client,
             "qwen3.6:27b",
@@ -6717,11 +6955,113 @@ mod tests {
         )
         .expect("finish canceled summary job");
         let finish_json = serde_json::to_value(&finish_snapshot).expect("serialize finish");
+        let durable_finished = store
+            .processing_job(&started.id)
+            .expect("durable canceled summary job");
 
         assert_eq!(finish_json["summaryJob"]["state"], "Canceled");
         assert_eq!(finish_json["summaryJob"]["cancelRequested"], false);
         assert!(finish_json["analysisCommand"].is_null());
         assert!(finish_json["meetings"][0]["analysis"].is_null());
+        assert_eq!(
+            durable_finished.status,
+            curiosity_domain::JobStatus::Canceled
+        );
+        assert_eq!(durable_finished.finished_at_ms, Some(1_700_000_001_500));
+        assert!(!durable_finished.cancel_requested);
+        assert!(
+            store
+                .current_analysis_result("meeting-1")
+                .expect("query analysis result")
+                .is_none(),
+            "a canceled summary must not persist completed analyzer output"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_restart_duplicate_recovers_orphan_without_phantom_running_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_summary_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            "meeting-1",
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should reject this duplicate summary attempt");
+        let snapshot = {
+            let state = restarted_command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("snapshot after duplicate")
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_ne!(json["summaryJob"]["state"], "Running");
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("summary worker was not running after app restart")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_restart_snapshot_recovers_missing_worker() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let restarted_snapshot = desktop_snapshot_for_app_root_with_state(
+            &root,
+            &DesktopCommandSnapshotState::default(),
+        )
+        .expect("restart snapshot");
+        let restarted_json = serde_json::to_value(&restarted_snapshot).expect("serialize restart");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert_eq!(restarted_json["summaryJob"]["id"], started.id);
+        assert_eq!(restarted_json["summaryJob"]["state"], "Failed");
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert!(
+            recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,
+            "recovery finish time should be the snapshot recovery time, not the job start time"
+        );
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("summary worker was not running after app restart")
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

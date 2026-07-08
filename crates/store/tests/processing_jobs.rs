@@ -188,6 +188,62 @@ fn terminal_transcription_job_with_stale_cancel_flag_does_not_own_future_work() 
 }
 
 #[test]
+fn active_summary_job_for_meeting_ignores_terminal_and_transcription_rows() {
+    let root = test_root("active-summary-filter");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+
+    let mut stale_summary = ProcessingJob::new(
+        "summary-stale",
+        "meeting-1",
+        JobKind::Summarize,
+        JobStatus::Succeeded,
+    );
+    stale_summary.cancel_requested = true;
+    stale_summary.started_at_ms = Some(1_100);
+    stale_summary.finished_at_ms = Some(1_900);
+    store
+        .insert_processing_job(&stale_summary)
+        .expect("insert stale summary");
+
+    let mut running_transcription = ProcessingJob::new(
+        "transcription-running",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    running_transcription.started_at_ms = Some(1_200);
+    store
+        .insert_processing_job(&running_transcription)
+        .expect("insert running transcription");
+
+    let mut running_summary = ProcessingJob::new(
+        "summary-running",
+        "meeting-1",
+        JobKind::Summarize,
+        JobStatus::Running,
+    );
+    running_summary.started_at_ms = Some(1_300);
+    running_summary.idempotency_key = Some("summarize:meeting-1".to_string());
+    store
+        .insert_processing_job(&running_summary)
+        .expect("insert running summary");
+
+    assert_eq!(
+        store
+            .active_summary_job_for_meeting("meeting-1")
+            .expect("active summary query")
+            .expect("active summary")
+            .id,
+        "summary-running",
+        "only a running Summarize row should own summary generation after restart"
+    );
+}
+
+#[test]
 fn processing_job_failure_and_recovery_mutators_record_final_state() {
     let root = test_root("failure-recovery-mutators");
     let store = Store::open(root.join("app.db"), root).expect("open store");
@@ -346,6 +402,59 @@ fn recover_active_transcription_jobs_only_recovers_transcription_workers_without
             .expect("summary job")
             .status,
         JobStatus::Running
+    );
+}
+
+#[test]
+fn recover_active_summary_jobs_only_recovers_summary_workers_without_runtime_owner() {
+    let root = test_root("recover-active-summary");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+
+    let mut transcription_job = ProcessingJob::new(
+        "job-transcribe",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    transcription_job.started_at_ms = Some(1_100);
+    store
+        .insert_processing_job(&transcription_job)
+        .expect("insert transcription job");
+
+    let mut summary_job = ProcessingJob::new(
+        "job-summary",
+        "meeting-1",
+        JobKind::Summarize,
+        JobStatus::Running,
+    );
+    summary_job.started_at_ms = Some(1_200);
+    store
+        .insert_processing_job(&summary_job)
+        .expect("insert summary job");
+
+    let recovered = store
+        .recover_active_summary_jobs(2_100, "summary worker missing after restart")
+        .expect("recover active summary jobs");
+
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, "job-summary");
+    assert_eq!(recovered[0].status, JobStatus::Recovery);
+    assert_eq!(recovered[0].finished_at_ms, Some(2_100));
+    assert_eq!(
+        recovered[0].last_error.as_deref(),
+        Some("summary worker missing after restart")
+    );
+    assert_eq!(
+        store
+            .processing_job("job-transcribe")
+            .expect("transcription job")
+            .status,
+        JobStatus::Running,
+        "summary recovery must not mutate the independent transcription lifecycle"
     );
 }
 

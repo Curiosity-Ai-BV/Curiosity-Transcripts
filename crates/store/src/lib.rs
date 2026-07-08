@@ -635,6 +635,21 @@ impl Store {
         &self,
         meeting_id: &str,
     ) -> StoreResult<Option<ProcessingJob>> {
+        self.active_processing_job_for_meeting(meeting_id, JobKind::Transcribe)
+    }
+
+    pub fn active_summary_job_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<ProcessingJob>> {
+        self.active_processing_job_for_meeting(meeting_id, JobKind::Summarize)
+    }
+
+    fn active_processing_job_for_meeting(
+        &self,
+        meeting_id: &str,
+        kind: JobKind,
+    ) -> StoreResult<Option<ProcessingJob>> {
         self.processing_job_for_query(
             "
             SELECT
@@ -650,12 +665,12 @@ impl Store {
                 idempotency_key
             FROM processing_jobs
             WHERE meeting_id = ?1
-              AND kind = 'Transcribe'
+              AND kind = ?2
               AND status = 'Running'
             ORDER BY started_at_ms DESC, id DESC
             LIMIT 1
             ",
-            params![meeting_id],
+            params![meeting_id, enum_name(kind)],
         )
     }
 
@@ -664,9 +679,26 @@ impl Store {
         finished_at_ms: u64,
         last_error: &str,
     ) -> StoreResult<Vec<ProcessingJob>> {
+        self.recover_active_processing_jobs(JobKind::Transcribe, finished_at_ms, last_error)
+    }
+
+    pub fn recover_active_summary_jobs(
+        &self,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        self.recover_active_processing_jobs(JobKind::Summarize, finished_at_ms, last_error)
+    }
+
+    fn recover_active_processing_jobs(
+        &self,
+        kind: JobKind,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let result =
-            self.recover_active_transcription_jobs_in_transaction(finished_at_ms, last_error);
+            self.recover_active_processing_jobs_in_transaction(kind, finished_at_ms, last_error);
         match result {
             Ok(jobs) => {
                 if let Err(err) = self.conn.execute_batch("COMMIT") {
@@ -682,8 +714,9 @@ impl Store {
         }
     }
 
-    fn recover_active_transcription_jobs_in_transaction(
+    fn recover_active_processing_jobs_in_transaction(
         &self,
+        kind: JobKind,
         finished_at_ms: u64,
         last_error: &str,
     ) -> StoreResult<Vec<ProcessingJob>> {
@@ -691,13 +724,13 @@ impl Store {
             "
             SELECT id
             FROM processing_jobs
-            WHERE kind = 'Transcribe'
+            WHERE kind = ?1
               AND status = 'Running'
             ORDER BY started_at_ms DESC, id DESC
             ",
         )?;
         let job_ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map(params![enum_name(kind)], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
 
