@@ -339,7 +339,9 @@ fn generate_summary(
             return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
         }
     };
-    spawn_summary_job(app, app_root, job, meeting_id);
+    if let Some(job) = job {
+        spawn_summary_job(app, app_root, job, meeting_id);
+    }
     Ok(snapshot)
 }
 
@@ -1552,7 +1554,13 @@ fn start_summary_job_for_app_root(
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
-) -> Result<(CommandJobView, DesktopSnapshot), String> {
+) -> Result<(Option<CommandJobView>, DesktopSnapshot), String> {
+    if let Some(snapshot) =
+        summary_readiness_failure_snapshot_for_app_root(app_root, command_state, meeting_id)?
+    {
+        return Ok((None, snapshot));
+    }
+
     let job = begin_summary_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
     let snapshot_state = {
         let command_state = command_state.lock().map_err(|error| error.to_string())?;
@@ -1573,7 +1581,70 @@ fn start_summary_job_for_app_root(
             return Err(error);
         }
     };
-    Ok((job, snapshot))
+    Ok((Some(job), snapshot))
+}
+
+fn summary_readiness_failure_snapshot_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+) -> Result<Option<DesktopSnapshot>, String> {
+    if command_state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .summary_job
+        .as_ref()
+        .is_some_and(CommandJobView::is_active)
+    {
+        return Ok(None);
+    }
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(_) => return Ok(None),
+    };
+    if store
+        .active_summary_job_for_meeting(meeting_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    let transcript_segments = store
+        .transcript_segments(meeting_id)
+        .map_err(|error| error.to_string())?;
+    let failure = if transcript_segments.is_empty() {
+        Some(analysis_failed(
+            meeting_id,
+            "no_transcript_segments",
+            "Generate a transcript before requesting a summary.",
+            "",
+        ))
+    } else {
+        let settings = store.app_settings().map_err(|error| error.to_string())?;
+        let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+        let readiness = validate_local_ollama_model(&model)
+            .and_then(|_| local_ollama_endpoint(&settings.ollama_base_url, "/api/generate"));
+        readiness.err().map(|error| {
+            analysis_failed(
+                meeting_id,
+                "invalid_analysis_settings",
+                &error.to_string(),
+                "Use a localhost or loopback Ollama URL and a local model tag, save it, run Test Ollama, then retry summary.",
+            )
+        })
+    };
+    let Some(failure) = failure else {
+        return Ok(None);
+    };
+
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.last_analysis = Some(failure);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state).map(Some)
 }
 
 fn cancel_summary_job_for_app_root(
@@ -3614,6 +3685,24 @@ fn transcription_failed(
     TranscriptionCommandView {
         meeting_id: meeting_id.to_string(),
         state: TranscriptionCommandState::Failed,
+        failure: Some(CommandFailureView {
+            code: code.to_string(),
+            message: message.to_string(),
+            setup_guidance: setup_guidance.to_string(),
+        }),
+    }
+}
+
+fn analysis_failed(
+    meeting_id: &str,
+    code: &str,
+    message: &str,
+    setup_guidance: &str,
+) -> AnalysisCommandView {
+    AnalysisCommandView {
+        meeting_id: meeting_id.to_string(),
+        state: AnalysisCommandState::Failed,
+        analysis: None,
         failure: Some(CommandFailureView {
             code: code.to_string(),
             message: message.to_string(),
@@ -10431,6 +10520,256 @@ mod tests {
     }
 
     #[test]
+    fn summary_job_start_preflights_missing_transcript_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "No Transcript", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("missing transcript preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "no_transcript_segments"
+        );
+        assert_eq!(
+            json["analysisCommand"]["failure"]["message"],
+            "Generate a transcript before requesting a summary."
+        );
+        assert_eq!(json["analysisCommand"]["failure"]["setupGuidance"], "");
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preflights_drifted_non_local_analysis_settings_without_durable_job() {
+        for (case, ollama_base_url, ollama_model, expected_message_fragment) in [
+            (
+                "cloud-model",
+                "http://127.0.0.1:11434",
+                "deepseek-v3.2:cloud",
+                "hosted or cloud model tags",
+            ),
+            (
+                "non-loopback-url",
+                "https://ollama.example.com",
+                "qwen3.6:27b",
+                "loopback",
+            ),
+            (
+                "invalid-url",
+                "not a url",
+                "qwen3.6:27b",
+                "Ollama base URL is invalid",
+            ),
+        ] {
+            let root = unique_test_root();
+            let command_state = Mutex::new(DesktopCommandState::default());
+            seed_transcribed_meeting_with_private_artifact(
+                &root,
+                "meeting-1",
+                "Summary Planning",
+                "summarize this transcript",
+            );
+            let store = open_store(&root).expect("open store");
+            store
+                .save_analysis_settings(ollama_base_url, ollama_model)
+                .expect("inject drifted analysis settings");
+            drop(store);
+
+            let (job, snapshot) = start_summary_job_for_app_root(
+                &root,
+                &command_state,
+                "meeting-1",
+                1_700_000_001_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: expected preflight snapshot: {error}"));
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            let store = open_store(&root).expect("reopen store");
+
+            assert!(job.is_none(), "{case}");
+            assert_eq!(json["analysisCommand"]["state"], "Failed", "{case}");
+            assert_eq!(
+                json["analysisCommand"]["failure"]["code"], "invalid_analysis_settings",
+                "{case}"
+            );
+            assert!(
+                json["analysisCommand"]["failure"]["message"]
+                    .as_str()
+                    .expect("failure message")
+                    .contains(expected_message_fragment),
+                "{case}"
+            );
+            assert!(json["summaryJob"].is_null(), "{case}");
+            assert_eq!(
+                store.count("processing_jobs").expect("processing jobs"),
+                0,
+                "{case}"
+            );
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn summary_job_start_preflights_after_historical_completed_job_without_new_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let completed =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin historical summary job");
+        let success_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Historical summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let success_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", success_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            completed.clone(),
+            "meeting-1",
+            success_client,
+            "qwen3.6:27b",
+            1_700_000_001_500,
+        )
+        .expect("finish historical summary job");
+        let store = open_store(&root).expect("open store");
+        let historical_job_count = store.count("processing_jobs").expect("processing jobs");
+        store
+            .save_analysis_settings("https://ollama.example.com", "qwen3.6:27b")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("invalid settings preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["summaryJob"]["id"], completed.id);
+        assert_eq!(json["summaryJob"]["state"], "Complete");
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "invalid_analysis_settings"
+        );
+        assert!(json["analysisCommand"]["failure"]["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("loopback"));
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            historical_job_count
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preserves_active_job_before_readiness_preflight() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_analysis_settings("https://ollama.example.com", "deepseek-v3.2:cloud")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let duplicate =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
+                .expect_err("active summary job should still own duplicate start");
+        let snapshot_state = {
+            let state = command_state.lock().expect("command state");
+            state.snapshot_state()
+        };
+        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
+            .expect("duplicate snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Running");
+        assert!(json["analysisCommand"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preserves_durable_orphan_before_readiness_preflight() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_analysis_settings("https://ollama.example.com", "deepseek-v3.2:cloud")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = start_summary_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            "meeting-1",
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should still own duplicate start");
+        let snapshot_state = {
+            let state = restarted_command_state.lock().expect("command state");
+            state.snapshot_state()
+        };
+        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
+            .expect("duplicate snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Recovery");
+        assert!(json["analysisCommand"].is_null());
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn summary_job_cancel_request_marks_snapshot_and_blocks_duplicate() {
         let root = unique_test_root();
         let command_state = Mutex::new(DesktopCommandState::default());
@@ -10608,6 +10947,7 @@ mod tests {
         let (started, snapshot) =
             start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
                 .expect("start summary job");
+        let started = started.expect("valid start should return a summary job");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(json["summaryJob"]["id"], started.id);
