@@ -21,8 +21,16 @@ const expectedManualItemIds = [
   "at-rest-disclosure",
   "export-json-markdown-srt",
   "contract-fixture",
+  "automated-release-artifacts",
   "delete-cleanup",
   "uninstall-private-data",
+];
+
+const automatedReleaseArtifactItemId = "automated-release-artifacts";
+const requiredAutomatedReleaseArtifactReferences = [
+  "release-artifacts/supply-chain",
+  "release-artifacts/coverage",
+  "release-artifacts/contracts/desktop-command-view-contract.receipt.json",
 ];
 
 const manualStatusValues = new Set(["pending", "passed", "failed", "skipped"]);
@@ -201,17 +209,33 @@ function createStrictPassedFixture() {
       skipReason: "",
     },
   };
-  evidence.manualItems = evidence.manualItems.map((item) => ({
-    id: item.id,
-    label: item.label.replace("Template label for ", ""),
-    status: "passed",
-    evidence: {
-      observations: [`Observed ${item.id} pass during clean macOS DMG smoke.`],
-      artifacts: [`release-smoke/${item.id}.txt`],
-      skipReason: "",
-    },
-    notes: `${item.id} passed with recorded evidence.`,
-  }));
+  evidence.manualItems = evidence.manualItems.map((item) => {
+    if (item.id === automatedReleaseArtifactItemId) {
+      return {
+        id: item.id,
+        label: item.label.replace("Template label for ", ""),
+        status: "passed",
+        evidence: {
+          observations: ["Confirmed CI-produced release artifact references before manual publish."],
+          artifacts: [...requiredAutomatedReleaseArtifactReferences],
+          skipReason: "",
+        },
+        notes: "Automated release artifacts are attached to the draft release evidence.",
+      };
+    }
+
+    return {
+      id: item.id,
+      label: item.label.replace("Template label for ", ""),
+      status: "passed",
+      evidence: {
+        observations: [`Observed ${item.id} pass during clean macOS DMG smoke.`],
+        artifacts: [`release-smoke/${item.id}.txt`],
+        skipReason: "",
+      },
+      notes: `${item.id} passed with recorded evidence.`,
+    };
+  });
   return evidence;
 }
 
@@ -370,6 +394,31 @@ function hasManualItemEvidence(item) {
   }
 
   return hasMeaningfulEvidence(item.evidence.observations) || hasMeaningfulEvidence(item.evidence.artifacts);
+}
+
+function collectMeaningfulStrings(value, strings = []) {
+  if (meaningfulString(value)) {
+    strings.push(value.trim());
+    return strings;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMeaningfulStrings(item, strings));
+    return strings;
+  }
+  if (isPlainObject(value)) {
+    Object.values(value).forEach((item) => collectMeaningfulStrings(item, strings));
+  }
+  return strings;
+}
+
+function validateAutomatedReleaseArtifactItem(item, prefix, errors) {
+  const artifactReferences = new Set(collectMeaningfulStrings(item.evidence?.artifacts));
+
+  for (const requiredReference of requiredAutomatedReleaseArtifactReferences) {
+    if (!artifactReferences.has(requiredReference)) {
+      errors.push(`${prefix} requires automated release artifact reference ${requiredReference}`);
+    }
+  }
 }
 
 function skipReasonFor(item) {
@@ -763,6 +812,10 @@ function validateManualItems(evidence, errors, options) {
     if (item.status === "passed" && (!meaningfulString(item.notes) || !hasManualItemEvidence(item))) {
       errors.push(`${prefix} passed item requires meaningful notes and observation or artifact evidence`);
     }
+
+    if (!evidence.isTemplate && !options.allowIncomplete && item.id === automatedReleaseArtifactItemId) {
+      validateAutomatedReleaseArtifactItem(item, prefix, errors);
+    }
   }
 
   const incompleteItems = evidence.manualItems.filter((item) => item?.status !== "passed");
@@ -1119,6 +1172,57 @@ function runSelfTests() {
     validateEvidence(passedItemWithLowercasePendingEvidence),
     "manualItems[0] passed item",
   );
+
+  const requiredArtifactItemIndex = createStrictPassedFixture().manualItems.findIndex(
+    (item) => item.id === "automated-release-artifacts",
+  );
+  if (requiredArtifactItemIndex === -1) {
+    fail(scriptLabel, "Self-test fixture missing automated-release-artifacts manual item");
+  } else {
+    for (const missingArtifact of [
+      "release-artifacts/supply-chain",
+      "release-artifacts/coverage",
+      "release-artifacts/contracts/desktop-command-view-contract.receipt.json",
+    ]) {
+      const missingRequiredArtifact = createStrictPassedFixture();
+      missingRequiredArtifact.manualItems[requiredArtifactItemIndex].evidence.artifacts =
+        missingRequiredArtifact.manualItems[requiredArtifactItemIndex].evidence.artifacts.filter(
+          (artifact) => artifact !== missingArtifact,
+        );
+      expectRejected(
+        `automated release artifact item missing ${missingArtifact}`,
+        validateEvidence(missingRequiredArtifact),
+        missingArtifact,
+      );
+    }
+
+    const suffixFalsePositive = createStrictPassedFixture();
+    suffixFalsePositive.manualItems[requiredArtifactItemIndex].evidence.artifacts =
+      suffixFalsePositive.manualItems[requiredArtifactItemIndex].evidence.artifacts.map((artifact) =>
+        artifact === "release-artifacts/coverage" ? "release-artifacts/coverage-old" : artifact,
+      );
+    expectRejected(
+      "automated release artifact item rejects suffix false positive",
+      validateEvidence(suffixFalsePositive),
+      "release-artifacts/coverage",
+    );
+
+    const proseFalsePositive = createStrictPassedFixture();
+    proseFalsePositive.manualItems[requiredArtifactItemIndex].evidence.artifacts =
+      proseFalsePositive.manualItems[requiredArtifactItemIndex].evidence.artifacts.filter(
+        (artifact) => artifact !== "release-artifacts/supply-chain",
+      );
+    proseFalsePositive.manualItems[requiredArtifactItemIndex].notes =
+      "Artifact missing release-artifacts/supply-chain from the draft evidence.";
+    proseFalsePositive.manualItems[requiredArtifactItemIndex].evidence.observations = [
+      "Do not accept prose-only references to release-artifacts/supply-chain.",
+    ];
+    expectRejected(
+      "automated release artifact item rejects prose false positive",
+      validateEvidence(proseFalsePositive),
+      "release-artifacts/supply-chain",
+    );
+  }
 
   expectAccepted(
     "allow-incomplete draft evidence with pending statuses",

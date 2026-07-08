@@ -267,6 +267,23 @@
       "notes": "PENDING: record contract fixture notes without claiming pass"
     },
     {
+      "id": "automated-release-artifacts",
+      "label": "Automated release artifacts",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: confirm CI-produced supply-chain, coverage, and desktop command/view contract receipt artifacts are attached before manual publish"
+        ],
+        "artifacts": [
+          "PENDING: attach release-artifacts/supply-chain",
+          "PENDING: attach release-artifacts/coverage",
+          "PENDING: attach release-artifacts/contracts/desktop-command-view-contract.receipt.json"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record automated release artifact notes without claiming pass"
+    },
+    {
       "id": "delete-cleanup",
       "label": "Delete cleanup",
       "status": "pending",

@@ -47,6 +47,11 @@ fields before manual smoke starts.
 The same publication readiness gate validates the smoke evidence template and
 runs `node scripts/check-release-smoke-evidence.js --self-test` so release
 evidence drift fails before manual smoke starts.
+Before manually publishing, filled smoke evidence must include the
+`automated-release-artifacts` item with references to the CI-produced
+`release-artifacts/supply-chain`, `release-artifacts/coverage`, and
+`release-artifacts/contracts/desktop-command-view-contract.receipt.json`
+artifacts attached as automated release evidence.
 
 Desktop npm dependencies must pass `npm audit --audit-level=high` after
 `npm ci`, and `.github/dependabot.yml` must keep npm, Cargo, and GitHub Actions
@@ -177,6 +182,11 @@ or complete privacy/deletion/recovery coverage.
   `node scripts/check-tauri-command-surface.js` so frontend facade commands stay
   registered in the release invoke handler and snapshot-returning commands stay
   covered by runtime snapshot validation.
+- Automated release artifacts: attach the CI-produced
+  `release-artifacts/supply-chain`, `release-artifacts/coverage`, and
+  `release-artifacts/contracts/desktop-command-view-contract.receipt.json`
+  artifacts before manual publish, and cite those exact artifact paths in the
+  filled smoke evidence item.
 - Delete: delete the meeting and verify app-private transcript, analysis,
   manifests, meeting-scoped private DB rows, `processing_jobs`, and
   `meeting_search` rows are removed. Verify app-private audio artifacts are
