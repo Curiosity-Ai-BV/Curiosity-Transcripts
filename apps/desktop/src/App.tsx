@@ -2,6 +2,7 @@ import {
   CalendarBlank,
   CalendarPlus,
   CheckCircle,
+  CopySimple,
   DownloadSimple,
   FileText,
   FolderOpen,
@@ -49,11 +50,16 @@ interface AppProps {
   snapshot?: DesktopSnapshot;
   commandFacade?: DesktopCommandFacade;
   filePicker?: Partial<AppFilePicker>;
+  clipboardWriter?: AppClipboardWriter;
 }
 
 interface AppFilePicker {
   chooseImportWavPath(): Promise<string | null>;
   chooseWhisperModelPath(): Promise<string | null>;
+}
+
+interface AppClipboardWriter {
+  writeText(text: string): Promise<void>;
 }
 
 type PendingCommand =
@@ -84,6 +90,16 @@ type ThemeMode = "dark" | "light";
 const defaultAppFilePicker: AppFilePicker = {
   chooseImportWavPath: chooseNativeImportWavPath,
   chooseWhisperModelPath: chooseNativeWhisperModelPath,
+};
+
+const defaultClipboardWriter: AppClipboardWriter = {
+  async writeText(text: string) {
+    const writeText = globalThis.navigator?.clipboard?.writeText;
+    if (!writeText) {
+      throw new Error("Clipboard API unavailable.");
+    }
+    await writeText.call(globalThis.navigator.clipboard, text);
+  },
 };
 
 async function chooseNativeImportWavPath(): Promise<string | null> {
@@ -152,8 +168,9 @@ interface SettingsFeedback {
       };
 }
 
-export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
+export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
   const appFilePicker = { ...defaultAppFilePicker, ...filePicker };
+  const appClipboardWriter = clipboardWriter ?? defaultClipboardWriter;
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
@@ -734,6 +751,37 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
   function chooseOllamaCandidate(modelTag: string) {
     setSettingsForm((current) => ({ ...current, ollamaModel: modelTag }));
     setSettingsFeedback(null);
+  }
+
+  async function copyOllamaPullCommand(pullCommand: string) {
+    if (commandBusy) {
+      return;
+    }
+
+    try {
+      await appClipboardWriter.writeText(pullCommand);
+      setSettingsFeedback({
+        tone: "ready",
+        message: "Pull command copied.",
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: null,
+          installedLocalModels: null,
+          pullCommand,
+        },
+      });
+    } catch (error) {
+      setSettingsFeedback({
+        tone: "blocked",
+        message: `Could not copy pull command: ${commandErrorMessage(error)}`,
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: null,
+          installedLocalModels: null,
+          pullCommand,
+        },
+      });
+    }
   }
 
   function updateRawAudioRetentionPolicy(value: PersistedRawAudioRetentionPolicy) {
@@ -1491,7 +1539,14 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                       </span>
                     ) : null}
                     {setupGuidance.ollama.lastConnectionTest.pullCommand ? (
-                      <span>Pull command: {setupGuidance.ollama.lastConnectionTest.pullCommand}</span>
+                      <span className="pull-command-copy">
+                        <span>Pull command: {setupGuidance.ollama.lastConnectionTest.pullCommand}</span>
+                        <CopyPullCommandButton
+                          pullCommand={setupGuidance.ollama.lastConnectionTest.pullCommand}
+                          disabled={commandBusy}
+                          onCopy={copyOllamaPullCommand}
+                        />
+                      </span>
                     ) : null}
                     {setupGuidance.ollama.lastConnectionTest.failureDetail ? (
                       <span>{setupGuidance.ollama.lastConnectionTest.failureDetail}</span>
@@ -1527,7 +1582,14 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                         <strong>{candidate.displayName}</strong>
                         <small>{candidate.modelTag}</small>
                       </span>
-                      <span className="setup-option-meta">{candidate.pullCommand}</span>
+                      <span className="pull-command-copy">
+                        <span className="setup-option-meta">{candidate.pullCommand}</span>
+                        <CopyPullCommandButton
+                          pullCommand={candidate.pullCommand}
+                          disabled={commandBusy}
+                          onCopy={copyOllamaPullCommand}
+                        />
+                      </span>
                       <button
                         type="button"
                         className="button"
@@ -1736,7 +1798,14 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                             </span>
                           ) : null}
                           {settingsFeedback.metadata.pullCommand ? (
-                            <span>Pull command: {settingsFeedback.metadata.pullCommand}</span>
+                            <span className="pull-command-copy">
+                              <span>Pull command: {settingsFeedback.metadata.pullCommand}</span>
+                              <CopyPullCommandButton
+                                pullCommand={settingsFeedback.metadata.pullCommand}
+                                disabled={commandBusy}
+                                onCopy={copyOllamaPullCommand}
+                              />
+                            </span>
                           ) : null}
                         </>
                       )}
@@ -1754,6 +1823,41 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
 
 function StatusPill({ tone, label }: { tone: Tone; label: string }) {
   return <span className={`status-pill ${tone}`}>{label}</span>;
+}
+
+function CopyPullCommandButton({
+  pullCommand,
+  disabled,
+  onCopy,
+}: {
+  pullCommand: string;
+  disabled: boolean;
+  onCopy(pullCommand: string): Promise<void>;
+}) {
+  const modelLabel = ollamaPullCommandModelLabel(pullCommand);
+  return (
+    <button
+      type="button"
+      className="button quiet pull-command-copy-button"
+      disabled={disabled}
+      title="Copy this pull command to the clipboard."
+      aria-label={`Copy pull command for ${modelLabel}`}
+      onClick={() => {
+        void onCopy(pullCommand);
+      }}
+    >
+      <CopySimple size={14} weight="regular" />
+      Copy
+    </button>
+  );
+}
+
+function ollamaPullCommandModelLabel(pullCommand: string) {
+  const parts = pullCommand.trim().split(/\s+/);
+  if (parts[0] === "ollama" && parts[1] === "pull" && parts.length > 2) {
+    return parts.slice(2).join(" ");
+  }
+  return pullCommand;
 }
 
 function whisperSetupLabel(state: DesktopSnapshot["setupGuidance"]["whisper"]["state"]) {

@@ -445,7 +445,12 @@ describe("desktop workspace shell", () => {
   it("renders manual model setup options without saving, testing, pulling, or downloading", async () => {
     const user = userEvent.setup();
     const calls: string[] = [];
+    const copiedCommands: string[] = [];
     const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push("desktopSnapshot");
+        return connectedSnapshot();
+      },
       saveWhisperModelPath: async () => {
         calls.push("saveWhisperModelPath");
         return connectedSnapshot();
@@ -477,7 +482,17 @@ describe("desktop workspace shell", () => {
       },
     });
 
-    render(<App snapshot={connectedSnapshot()} commandFacade={commandFacade} />);
+    render(
+      <App
+        snapshot={connectedSnapshot()}
+        commandFacade={commandFacade}
+        clipboardWriter={{
+          writeText: async (text) => {
+            copiedCommands.push(text);
+          },
+        }}
+      />,
+    );
 
     const setupOptions = screen.getByLabelText("Manual model setup options");
     expect(within(setupOptions).getByText("Local Whisper file")).toBeInTheDocument();
@@ -487,11 +502,69 @@ describe("desktop workspace shell", () => {
     expect(within(setupOptions).getByText("ollama pull qwen3.6:27b")).toBeInTheDocument();
     expect(within(setupOptions).getByText("ollama pull gemma4:31b")).toBeInTheDocument();
 
+    await user.click(within(setupOptions).getByRole("button", { name: "Copy pull command for qwen3.6:27b" }));
+
+    expect(copiedCommands).toEqual(["ollama pull qwen3.6:27b"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command copied.");
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command: ollama pull qwen3.6:27b");
+    expect(calls).toEqual([]);
+
     const useButtons = within(setupOptions).getAllByRole("button", { name: "Use" });
     expect(useButtons[0]).toBeDisabled();
     await user.click(useButtons[1]);
 
     expect(screen.getByLabelText("Ollama model")).toHaveValue("gemma4:31b");
+    expect(calls).toEqual([]);
+  });
+
+  it("surfaces pull-command copy failures through settings feedback without desktop commands", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const attemptedCommands: string[] = [];
+    const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push("desktopSnapshot");
+        return connectedSnapshot();
+      },
+      saveAnalysisSettings: async () => {
+        calls.push("saveAnalysisSettings");
+        return connectedSnapshot();
+      },
+      testOllamaConnection: async () => {
+        calls.push("testOllamaConnection");
+        return {
+          state: "Available",
+          message: "Ollama is reachable.",
+          setupGuidance: "",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["qwen3.6:27b"],
+          pullCommand: null,
+        };
+      },
+    });
+
+    render(
+      <App
+        snapshot={connectedSnapshot()}
+        commandFacade={commandFacade}
+        clipboardWriter={{
+          writeText: async (text) => {
+            attemptedCommands.push(text);
+            throw new Error("clipboard denied");
+          },
+        }}
+      />,
+    );
+
+    await user.click(
+      within(screen.getByLabelText("Manual model setup options")).getByRole("button", {
+        name: "Copy pull command for gemma4:31b",
+      }),
+    );
+
+    expect(attemptedCommands).toEqual(["ollama pull gemma4:31b"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Could not copy pull command: clipboard denied");
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command: ollama pull gemma4:31b");
     expect(calls).toEqual([]);
   });
 
@@ -674,7 +747,10 @@ describe("desktop workspace shell", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows missing Ollama model evidence with the deterministic pull command", () => {
+  it("shows missing Ollama model evidence with the deterministic pull command", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const copiedCommands: string[] = [];
     const snapshot = {
       ...connectedSnapshot({
         model: {
@@ -722,7 +798,37 @@ describe("desktop workspace shell", () => {
       },
     } as never;
 
-    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+    render(
+      <App
+        snapshot={snapshot}
+        commandFacade={fakeCommandFacade({
+          desktopSnapshot: async () => {
+            calls.push("desktopSnapshot");
+            return connectedSnapshot();
+          },
+          saveAnalysisSettings: async () => {
+            calls.push("saveAnalysisSettings");
+            return connectedSnapshot();
+          },
+          testOllamaConnection: async () => {
+            calls.push("testOllamaConnection");
+            return {
+              state: "Available",
+              message: "Ollama is reachable.",
+              setupGuidance: "",
+              selectedLocalModelTag: "qwen3.6:27b",
+              installedLocalModels: ["qwen3.6:27b"],
+              pullCommand: null,
+            };
+          },
+        })}
+        clipboardWriter={{
+          writeText: async (text) => {
+            copiedCommands.push(text);
+          },
+        }}
+      />,
+    );
 
     const readiness = screen.getByLabelText("Model readiness guidance");
     expect(within(readiness).getByText("Ollama model missing")).toBeInTheDocument();
@@ -730,6 +836,13 @@ describe("desktop workspace shell", () => {
     expect(within(readiness).getByText("Observed models: gemma4:31b")).toBeInTheDocument();
     expect(readiness.textContent).toContain("Summaries are unavailable");
     expect(readiness.textContent).toContain("Last explicit observation, not current availability.");
+
+    await user.click(within(readiness).getByRole("button", { name: "Copy pull command for qwen3.6:27b" }));
+
+    expect(copiedCommands).toEqual(["ollama pull qwen3.6:27b"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command copied.");
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command: ollama pull qwen3.6:27b");
+    expect(calls).toEqual([]);
   });
 
   it("shows unavailable Ollama test evidence without suggesting a model pull", () => {
@@ -2628,6 +2741,7 @@ describe("desktop workspace shell", () => {
   it("refreshes readiness with the manual Ollama pull command when the selected saved model is missing", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
+    const copiedCommands: string[] = [];
     const settings = {
       whisperModelPath: "",
       ollamaBaseUrl: "http://127.0.0.1:11434",
@@ -2680,7 +2794,17 @@ describe("desktop workspace shell", () => {
       },
     });
 
-    render(<App snapshot={initial} commandFacade={commandFacade} />);
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={commandFacade}
+        clipboardWriter={{
+          writeText: async (text) => {
+            copiedCommands.push(text);
+          },
+        }}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Test Ollama" }));
 
@@ -2698,6 +2822,14 @@ describe("desktop workspace shell", () => {
     expect(within(feedback).getByText("Ollama is reachable, but qwen3.6:27b is not installed.")).toBeInTheDocument();
     expect(within(feedback).getByText("Installed models: gemma4:31b")).toBeInTheDocument();
     expect(within(feedback).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();
+    calls.length = 0;
+    await user.click(within(feedback).getByRole("button", { name: "Copy pull command for qwen3.6:27b" }));
+
+    expect(copiedCommands).toEqual(["ollama pull qwen3.6:27b"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command copied.");
+    expect(screen.getByRole("status")).toHaveTextContent("Pull command: ollama pull qwen3.6:27b");
+    expect(calls).toEqual([]);
+
     const readiness = screen.getByLabelText("Model readiness guidance");
     expect(within(readiness).getByText("Ollama model missing")).toBeInTheDocument();
     expect(within(readiness).getByText("Pull command: ollama pull qwen3.6:27b")).toBeInTheDocument();

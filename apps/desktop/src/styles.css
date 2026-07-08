@@ -931,6 +931,25 @@ h3 {
   font-size: 11px;
 }
 
+.pull-command-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pull-command-copy > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pull-command-copy-button {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
 .ollama-candidate-list {
   display: grid;
   gap: 6px;
