@@ -32,7 +32,7 @@ use curiosity_domain::{
 use curiosity_store::{
     AppSettings, CompletedAudioArtifact, OllamaConnectionTestEvidence,
     PendingDeleteFinalizationReport, RecoverableArtifact, Store, WhisperPathTestEvidence,
-    WhisperTranscriptionCompatibilityEvidence,
+    WhisperTranscriptionCompatibilityEvidence, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL,
 };
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
@@ -1077,10 +1077,20 @@ fn save_analysis_settings_for_app_root(
     ollama_base_url: String,
     ollama_model: String,
 ) -> Result<AppSettingsView, String> {
+    let ollama_base_url = match ollama_base_url.trim() {
+        "" => DEFAULT_OLLAMA_BASE_URL,
+        value => value,
+    };
+    let ollama_model = match ollama_model.trim() {
+        "" => DEFAULT_OLLAMA_MODEL,
+        value => value,
+    };
+    let ollama_model = canonical_local_ollama_model_tag(ollama_model);
+    validate_local_ollama_model(&ollama_model).map_err(|error| error.to_string())?;
+    local_ollama_endpoint(ollama_base_url, "/api/tags").map_err(|error| error.to_string())?;
     let store = open_store(app_root)?;
-    let ollama_model = canonical_local_ollama_model_tag(&ollama_model);
     store
-        .save_analysis_settings(&ollama_base_url, &ollama_model)
+        .save_analysis_settings(ollama_base_url, &ollama_model)
         .map(app_settings_view)
         .map_err(|error| error.to_string())
 }
@@ -6158,8 +6168,27 @@ mod tests {
             .expect("save whisper");
         save_analysis_settings_for_app_root(
             &root,
+            "http://localhost:11434".to_string(),
+            "Qwen 3.6 27B".to_string(),
+        )
+        .expect("save qwen display name");
+        let qwen_settings = get_settings_for_app_root(&root).expect("qwen settings");
+        assert_eq!(qwen_settings.ollama_base_url, "http://localhost:11434");
+        assert_eq!(qwen_settings.ollama_model, "qwen3.6:27b");
+
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "ollama-qwen3-6-27b".to_string(),
+        )
+        .expect("save qwen preset id");
+        let qwen_id_settings = get_settings_for_app_root(&root).expect("qwen id settings");
+        assert_eq!(qwen_id_settings.ollama_model, "qwen3.6:27b");
+
+        save_analysis_settings_for_app_root(
+            &root,
             "http://127.0.0.1:11435".to_string(),
-            "gemma4:31b".to_string(),
+            "Gemma 4 31B".to_string(),
         )
         .expect("save analysis");
         save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
@@ -6387,48 +6416,57 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_keeps_invalid_ollama_config_but_reports_matching_failed_test_evidence() {
+    fn save_analysis_settings_rejects_non_local_privacy_paths_without_mutating_settings() {
         let root = unique_test_root();
         fs::create_dir_all(&root).expect("test root");
-        let ollama_result = test_ollama_connection_for_app_root(
-            &root,
-            "http://127.0.0.1:11434".to_string(),
-            "deepseek-v3.2:cloud".to_string(),
-            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#),
-            1_700_000_005_000,
-        )
-        .expect("test ollama");
         save_analysis_settings_for_app_root(
             &root,
-            "http://127.0.0.1:11434".to_string(),
-            "deepseek-v3.2:cloud".to_string(),
+            "http://localhost:11435".to_string(),
+            "gemma4:31b".to_string(),
         )
-        .expect("save analysis");
+        .expect("save baseline");
+
+        for hosted_model in [
+            "deepseek-v3.2:cloud",
+            "ollama-cloud-deepseek-v3-2",
+            "hosted-deepseek-v3-2-speciale",
+            "DeepSeek V3.2 Speciale",
+        ] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                "http://127.0.0.1:11434".to_string(),
+                hosted_model.to_string(),
+            )
+            .expect_err("hosted model should not be saved as local analysis settings");
+            assert!(
+                error.contains("hosted or cloud model tags"),
+                "unexpected error for {hosted_model}: {error}"
+            );
+        }
+
+        for remote_base_url in ["https://ollama.example.com", "http://192.168.1.20:11434"] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                remote_base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .expect_err("non-loopback Ollama URL should not be saved");
+            assert!(
+                error.contains("loopback"),
+                "unexpected error for {remote_base_url}: {error}"
+            );
+        }
+
+        let settings = get_settings_for_app_root(&root).expect("settings after rejected saves");
+        assert_eq!(settings.ollama_base_url, "http://localhost:11435");
+        assert_eq!(settings.ollama_model, "gemma4:31b");
 
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
-
-        assert_eq!(ollama_result.state, "Unavailable");
         assert_eq!(
             json["setupGuidance"]["ollama"]["state"],
-            "InvalidLocalConfiguration"
+            "ConfiguredNotChecked"
         );
-        assert_eq!(
-            json["setupGuidance"]["ollama"]["availability"],
-            "UnavailableAtLastTest"
-        );
-        assert_eq!(
-            json["setupGuidance"]["ollama"]["lastConnectionTest"]["state"],
-            "Unavailable"
-        );
-        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
-            .as_str()
-            .expect("ollama setup guidance")
-            .contains("hosted or cloud model tags cannot use the local Ollama privacy path"));
-        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
-            .as_str()
-            .expect("ollama setup guidance")
-            .contains("Availability is not checked in the background"));
 
         let _ = fs::remove_dir_all(root);
     }
