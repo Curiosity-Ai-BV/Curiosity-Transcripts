@@ -95,9 +95,13 @@ Deliverables:
   distinguishes missing, unreadable, and readable-but-unverified paths without
   hashing during snapshot load. The Whisper model path can be filled through a
   native scoped file picker while remaining editable for transparency and
-  debugging. Ollama guidance shows the configured local URL/model and keeps
-  availability unknown until the user runs `Test Ollama`. Model
-  download/management and automatic Ollama pulls remain later work.
+  debugging. Explicit `Test path` results persist the last matching file-size
+  and SHA-256 readability evidence without claiming model compatibility. Ollama
+  guidance shows the configured local URL/model, keeps availability unknown
+  until the user runs `Test Ollama`, and persists the last matching explicit
+  observation, installed-model list, or pull command without running background
+  health checks. Model download/management and automatic Ollama pulls remain
+  later work.
 - Add a first-run model setup flow for Whisper:
   model discovery, download or file selection, compatibility checks, hash/size
   recording, model health state, and recovery guidance for missing or invalid

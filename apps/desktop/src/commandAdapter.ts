@@ -58,6 +58,7 @@ export interface WhisperSetupGuidance {
   message: string;
   setupGuidance: string;
   compatibilityNote: string;
+  lastPathTest: WhisperPathTestEvidence | null;
 }
 
 export interface OllamaSetupGuidance {
@@ -67,6 +68,7 @@ export interface OllamaSetupGuidance {
   availability: OllamaAvailabilityState;
   message: string;
   setupGuidance: string;
+  lastConnectionTest: OllamaConnectionTestEvidence | null;
 }
 
 export interface FirstRunSetupGuidance {
@@ -85,6 +87,15 @@ export interface AppSettings {
 interface WhisperModelPathTestBase {
   message: string;
   setupGuidance: string;
+}
+
+export interface WhisperPathTestEvidence {
+  testedPath: string;
+  testedAtMs: number;
+  state: "Valid" | "Invalid";
+  fileSizeBytes: number | null;
+  sha256: string | null;
+  failureDetail: string | null;
 }
 
 export type WhisperModelPathTestResult =
@@ -106,6 +117,17 @@ export interface OllamaConnectionTestResult {
   selectedLocalModelTag: string | null;
   installedLocalModels: string[] | null;
   pullCommand: string | null;
+}
+
+export interface OllamaConnectionTestEvidence {
+  baseUrl: string;
+  requestedModel: string;
+  testedAtMs: number;
+  state: "Available" | "Unavailable";
+  selectedLocalModelTag: string | null;
+  installedLocalModels: string[] | null;
+  pullCommand: string | null;
+  failureDetail: string | null;
 }
 
 export interface ExportCommandState {
@@ -816,6 +838,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               setupGuidance:
                 "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
               compatibilityNote: "Readability does not prove model compatibility.",
+              lastPathTest: null,
             },
             ollama: {
               state: "ConfiguredNotChecked",
@@ -825,6 +848,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               message: "Ollama is configured for a local loopback URL and model.",
               setupGuidance:
                 "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+              lastConnectionTest: null,
             },
           }
         : {
@@ -834,6 +858,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               message: "No Whisper model path is configured.",
               setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
               compatibilityNote: "Readability does not prove model compatibility.",
+              lastPathTest: null,
             },
             ollama: {
               state: "ConfiguredNotChecked",
@@ -843,6 +868,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               message: "Ollama is configured for a local loopback URL and model.",
               setupGuidance:
                 "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+              lastConnectionTest: null,
             },
           },
     settings: {
@@ -903,6 +929,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
         message: "No Whisper model path is configured.",
         setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
         compatibilityNote: "Readability does not prove model compatibility.",
+        lastPathTest: null,
       },
       ollama: {
         state: "ConfiguredNotChecked",
@@ -912,6 +939,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
         message: "Ollama is configured for a local loopback URL and model.",
         setupGuidance:
           "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+        lastConnectionTest: null,
       },
     },
     settings: {
@@ -1000,12 +1028,14 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["setupGuidance", "whisper", "message"],
   ["setupGuidance", "whisper", "setupGuidance"],
   ["setupGuidance", "whisper", "compatibilityNote"],
+  ["setupGuidance", "whisper", "lastPathTest"],
   ["setupGuidance", "ollama", "state"],
   ["setupGuidance", "ollama", "baseUrl"],
   ["setupGuidance", "ollama", "model"],
   ["setupGuidance", "ollama", "availability"],
   ["setupGuidance", "ollama", "message"],
   ["setupGuidance", "ollama", "setupGuidance"],
+  ["setupGuidance", "ollama", "lastConnectionTest"],
   ["settings", "whisperModelPath"],
   ["settings", "ollamaBaseUrl"],
   ["settings", "ollamaModel"],
@@ -1123,6 +1153,13 @@ function requireNullableStringArray(value: unknown, pathLabel: string): string[]
   );
 }
 
+function requireNullableNumber(value: unknown, pathLabel: string): number | null {
+  if (value === null) {
+    return value;
+  }
+  return requireNumber(value, pathLabel);
+}
+
 function requireNumber(value: unknown, pathLabel: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a finite number`);
@@ -1160,6 +1197,7 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void 
   requireString(whisper.message, `${pathLabel}.whisper.message`);
   requireString(whisper.setupGuidance, `${pathLabel}.whisper.setupGuidance`);
   requireString(whisper.compatibilityNote, `${pathLabel}.whisper.compatibilityNote`);
+  validateWhisperPathTestEvidence(whisper.lastPathTest, `${pathLabel}.whisper.lastPathTest`);
 
   const ollama = requireContractRecord(guidance.ollama, `${pathLabel}.ollama`);
   requireEnum(
@@ -1172,6 +1210,49 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void 
   requireEnum(ollama.availability, ["UnknownUntilTest"], `${pathLabel}.ollama.availability`);
   requireString(ollama.message, `${pathLabel}.ollama.message`);
   requireString(ollama.setupGuidance, `${pathLabel}.ollama.setupGuidance`);
+  validateOllamaConnectionTestEvidence(ollama.lastConnectionTest, `${pathLabel}.ollama.lastConnectionTest`);
+}
+
+function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const evidence = requireContractRecord(value, pathLabel);
+  requireString(evidence.testedPath, `${pathLabel}.testedPath`);
+  requireNonNegativeInteger(evidence.testedAtMs, `${pathLabel}.testedAtMs`);
+  requireEnum(evidence.state, ["Valid", "Invalid"], `${pathLabel}.state`);
+  const fileSizeBytes = requireNullableNumber(evidence.fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+  if (fileSizeBytes !== null) {
+    requireNonNegativeInteger(fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+  }
+  const sha256 = requireNullableString(evidence.sha256, `${pathLabel}.sha256`);
+  if (sha256 !== null && !/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
+  }
+  requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
+}
+
+function validateOllamaConnectionTestEvidence(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const evidence = requireContractRecord(value, pathLabel);
+  requireString(evidence.baseUrl, `${pathLabel}.baseUrl`);
+  requireString(evidence.requestedModel, `${pathLabel}.requestedModel`);
+  requireNonNegativeInteger(evidence.testedAtMs, `${pathLabel}.testedAtMs`);
+  requireEnum(evidence.state, ["Available", "Unavailable"], `${pathLabel}.state`);
+  requireNullableString(evidence.selectedLocalModelTag, `${pathLabel}.selectedLocalModelTag`);
+  requireNullableStringArray(evidence.installedLocalModels, `${pathLabel}.installedLocalModels`);
+  requireNullableString(evidence.pullCommand, `${pathLabel}.pullCommand`);
+  requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
+}
+
+function requireNonNegativeInteger(value: unknown, pathLabel: string): number {
+  const number = requireNumber(value, pathLabel);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a non-negative integer`);
+  }
+  return number;
 }
 
 function validateExportCommandState(value: unknown, pathLabel: string): void {

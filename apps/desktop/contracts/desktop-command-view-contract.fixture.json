@@ -1,6 +1,4 @@
 {
-  "version": 1,
-  "owner": "apps/desktop/src-tauri/src/main.rs",
   "cases": {
     "desktop_snapshot.empty": {
       "analysisCommand": null,
@@ -48,6 +46,7 @@
         "ollama": {
           "availability": "UnknownUntilTest",
           "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": null,
           "message": "Ollama is configured for a local loopback URL and model.",
           "model": "qwen3.6:27b",
           "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
@@ -56,6 +55,7 @@
         "whisper": {
           "compatibilityNote": "Readability does not prove model compatibility.",
           "configuredPath": "",
+          "lastPathTest": null,
           "message": "No Whisper model path is configured.",
           "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
           "state": "MissingPath"
@@ -155,6 +155,7 @@
         "ollama": {
           "availability": "UnknownUntilTest",
           "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": null,
           "message": "Ollama is configured for a local loopback URL and model.",
           "model": "qwen3.6:27b",
           "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
@@ -163,6 +164,7 @@
         "whisper": {
           "compatibilityNote": "Readability does not prove model compatibility.",
           "configuredPath": "",
+          "lastPathTest": null,
           "message": "No Whisper model path is configured.",
           "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
           "state": "MissingPath"
@@ -172,17 +174,89 @@
       "transcription": null,
       "transcriptionJob": null
     },
-    "test_whisper_model_path.valid_readable_file": {
-      "fileSizeBytes": 16,
-      "message": "Whisper model path is readable; compatibility is not verified by this test.",
-      "setupGuidance": "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility.",
-      "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
-      "state": "Valid"
-    },
-    "test_whisper_model_path.missing_path": {
-      "message": "No Whisper model path is configured.",
-      "setupGuidance": "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
-      "state": "Invalid"
+    "desktop_snapshot.with_setup_evidence": {
+      "analysisCommand": null,
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [],
+      "model": {
+        "configuredPath": "<app-root>/fixture-whisper.bin",
+        "kind": "ready"
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": null,
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
+        "whisperModelPath": "<app-root>/fixture-whisper.bin"
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": {
+            "baseUrl": "http://127.0.0.1:11434",
+            "failureDetail": null,
+            "installedLocalModels": [
+              "gemma4:31b",
+              "qwen3.6:27b"
+            ],
+            "pullCommand": null,
+            "requestedModel": "qwen3.6:27b",
+            "selectedLocalModelTag": "qwen3.6:27b",
+            "state": "Available",
+            "testedAtMs": 1700000002000
+          },
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "<app-root>/fixture-whisper.bin",
+          "lastPathTest": {
+            "failureDetail": null,
+            "fileSizeBytes": 16,
+            "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
+            "state": "Valid",
+            "testedAtMs": 1700000001000,
+            "testedPath": "<app-root>/fixture-whisper.bin"
+          },
+          "message": "Whisper model path is readable; compatibility is not verified.",
+          "setupGuidance": "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          "state": "ReadablePath"
+        }
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
     },
     "test_ollama_connection.available_configured_model": {
       "installedLocalModels": [
@@ -195,6 +269,14 @@
       "setupGuidance": "",
       "state": "Available"
     },
+    "test_ollama_connection.cloud_model_rejected": {
+      "installedLocalModels": null,
+      "message": "hosted or cloud model tags cannot use the local Ollama privacy path.",
+      "pullCommand": null,
+      "selectedLocalModelTag": null,
+      "setupGuidance": "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
+      "state": "Unavailable"
+    },
     "test_ollama_connection.missing_local_model": {
       "installedLocalModels": [
         "gemma4:31b"
@@ -205,13 +287,19 @@
       "setupGuidance": "Install the selected model with `ollama pull qwen3.6:27b`, then retry. Installed local models: gemma4:31b.",
       "state": "Unavailable"
     },
-    "test_ollama_connection.cloud_model_rejected": {
-      "installedLocalModels": null,
-      "message": "hosted or cloud model tags cannot use the local Ollama privacy path.",
-      "pullCommand": null,
-      "selectedLocalModelTag": null,
-      "setupGuidance": "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
-      "state": "Unavailable"
+    "test_whisper_model_path.missing_path": {
+      "message": "No Whisper model path is configured.",
+      "setupGuidance": "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
+      "state": "Invalid"
+    },
+    "test_whisper_model_path.valid_readable_file": {
+      "fileSizeBytes": 16,
+      "message": "Whisper model path is readable; compatibility is not verified by this test.",
+      "setupGuidance": "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility.",
+      "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
+      "state": "Valid"
     }
-  }
+  },
+  "owner": "apps/desktop/src-tauri/src/main.rs",
+  "version": 1
 }

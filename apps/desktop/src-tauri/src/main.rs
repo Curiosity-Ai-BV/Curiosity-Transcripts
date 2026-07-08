@@ -29,8 +29,8 @@ use curiosity_domain::{
     RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
 };
 use curiosity_store::{
-    AppSettings, CompletedAudioArtifact, PendingDeleteFinalizationReport, RecoverableArtifact,
-    Store,
+    AppSettings, CompletedAudioArtifact, OllamaConnectionTestEvidence,
+    PendingDeleteFinalizationReport, RecoverableArtifact, Store, WhisperPathTestEvidence,
 };
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
@@ -450,13 +450,34 @@ fn save_raw_audio_retention_policy(
 }
 
 #[tauri::command]
-fn test_whisper_model_path(path: String) -> WhisperModelPathTestView {
-    test_whisper_model_path_value(&path)
+fn test_whisper_model_path(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<WhisperModelPathTestView, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    test_whisper_model_path_for_app_root(&app_root, path, current_timestamp_ms())
 }
 
 #[tauri::command]
-fn test_ollama_connection(base_url: String, model: String) -> OllamaConnectionTestView {
-    test_ollama_connection_value(&base_url, &model, &UreqOllamaHttpTransport)
+fn test_ollama_connection(
+    app: tauri::AppHandle,
+    base_url: String,
+    model: String,
+) -> Result<OllamaConnectionTestView, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    test_ollama_connection_for_app_root(
+        &app_root,
+        base_url,
+        model,
+        &UreqOllamaHttpTransport,
+        current_timestamp_ms(),
+    )
 }
 
 #[tauri::command]
@@ -984,6 +1005,61 @@ fn save_raw_audio_retention_policy_for_app_root(
         .save_raw_audio_retention_policy(&raw_audio_retention_policy)
         .map(app_settings_view)
         .map_err(|error| error.to_string())
+}
+
+fn test_whisper_model_path_for_app_root(
+    app_root: &Path,
+    path: String,
+    tested_at_ms: u64,
+) -> Result<WhisperModelPathTestView, String> {
+    let result = test_whisper_model_path_value(&path);
+    let evidence = WhisperPathTestEvidence {
+        tested_path: path.trim().to_string(),
+        tested_at_ms,
+        state: result.state.clone(),
+        file_size_bytes: result.file_size_bytes,
+        sha256: result.sha256.clone(),
+        failure_detail: if result.state == "Valid" {
+            None
+        } else {
+            Some(result.message.clone())
+        },
+    };
+    open_store(app_root)?
+        .save_whisper_path_test_evidence(&evidence)
+        .map_err(|error| format!("persist Whisper path test evidence: {error}"))?;
+    Ok(result)
+}
+
+fn test_ollama_connection_for_app_root<T>(
+    app_root: &Path,
+    base_url: String,
+    model: String,
+    transport: &T,
+    tested_at_ms: u64,
+) -> Result<OllamaConnectionTestView, String>
+where
+    T: OllamaHttpTransport,
+{
+    let result = test_ollama_connection_value(&base_url, &model, transport);
+    let evidence = OllamaConnectionTestEvidence {
+        base_url: base_url.trim().to_string(),
+        requested_model: canonical_local_ollama_model_tag(&model),
+        tested_at_ms,
+        state: result.state.clone(),
+        selected_local_model_tag: result.selected_local_model_tag.clone(),
+        installed_local_models: result.installed_local_models.clone(),
+        pull_command: result.pull_command.clone(),
+        failure_detail: if result.state == "Available" {
+            None
+        } else {
+            Some(result.message.clone())
+        },
+    };
+    open_store(app_root)?
+        .save_ollama_connection_test_evidence(&evidence)
+        .map_err(|error| format!("persist Ollama connection test evidence: {error}"))?;
+    Ok(result)
 }
 
 fn search_meetings_for_app_root(
@@ -3546,6 +3622,7 @@ fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidance
 
 fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
     let configured_path = resolved_whisper_model_path(settings);
+    let last_path_test = matching_whisper_path_test_evidence(settings, &configured_path);
     if configured_path.trim().is_empty() {
         return WhisperSetupGuidanceView {
             state: "MissingPath".to_string(),
@@ -3555,6 +3632,7 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
                 "Enter a local Whisper model path in Settings, save it, then use Test path."
                     .to_string(),
             compatibility_note: "Readability does not prove model compatibility.".to_string(),
+            last_path_test,
         };
     }
 
@@ -3565,6 +3643,7 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
         message,
         setup_guidance: setup_guidance.to_string(),
         compatibility_note: "Readability does not prove model compatibility.".to_string(),
+        last_path_test: last_path_test.clone(),
     };
 
     let metadata = match std::fs::metadata(&path) {
@@ -3597,6 +3676,7 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
             "Use Test path for file evidence, then transcribe a sample to verify compatibility."
                 .to_string(),
         compatibility_note: "Readability does not prove model compatibility.".to_string(),
+        last_path_test,
     }
 }
 
@@ -3628,7 +3708,32 @@ fn ollama_setup_guidance_from_settings(settings: &AppSettings) -> OllamaSetupGui
         availability: "UnknownUntilTest".to_string(),
         message,
         setup_guidance: setup_guidance.to_string(),
+        last_connection_test: matching_ollama_connection_test_evidence(settings),
     }
+}
+
+fn matching_whisper_path_test_evidence(
+    settings: &AppSettings,
+    configured_path: &str,
+) -> Option<WhisperPathTestEvidence> {
+    let configured_path = configured_path.trim();
+    settings
+        .whisper_path_test_evidence
+        .as_ref()
+        .filter(|evidence| evidence.tested_path == configured_path)
+        .cloned()
+}
+
+fn matching_ollama_connection_test_evidence(
+    settings: &AppSettings,
+) -> Option<OllamaConnectionTestEvidence> {
+    let base_url = settings.ollama_base_url.trim();
+    let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+    settings
+        .ollama_connection_test_evidence
+        .as_ref()
+        .filter(|evidence| evidence.base_url == base_url && evidence.requested_model == model)
+        .cloned()
 }
 
 fn resolved_whisper_model_path(settings: &AppSettings) -> String {
@@ -4202,6 +4307,7 @@ struct WhisperSetupGuidanceView {
     message: String,
     setup_guidance: String,
     compatibility_note: String,
+    last_path_test: Option<WhisperPathTestEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4213,6 +4319,7 @@ struct OllamaSetupGuidanceView {
     availability: String,
     message: String,
     setup_guidance: String,
+    last_connection_test: Option<OllamaConnectionTestEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4629,6 +4736,17 @@ mod tests {
         let expected: serde_json::Value =
             serde_json::from_str(&fixture_text).expect("parse desktop command/view fixture");
         let actual = desktop_command_view_contract_fixture();
+        if std::env::var_os("UPDATE_DESKTOP_COMMAND_VIEW_CONTRACT").is_some() {
+            let fixture_json = serde_json::to_string_pretty(&actual)
+                .expect("serialize desktop command/view fixture");
+            fs::write(&fixture_path, format!("{fixture_json}\n")).unwrap_or_else(|error| {
+                panic!(
+                    "write desktop command/view contract fixture at {}: {error}",
+                    fixture_path.display()
+                )
+            });
+            return;
+        }
 
         assert_eq!(
             actual, expected,
@@ -4699,6 +4817,123 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_setup_tests_persist_matching_snapshot_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _whisper_env = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.bin");
+        let model_bytes = b"not a real model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        let model_path = model_path.to_string_lossy().to_string();
+        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
+
+        let whisper_result =
+            test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+                .expect("test whisper path");
+        save_whisper_model_path_for_app_root(&root, model_path.clone()).expect("save whisper");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"gemma4:31b"},{"name":"qwen3.6:27b"}]}"#,
+            ),
+            1_700_000_002_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(whisper_result.state, "Valid");
+        assert_eq!(ollama_result.state, "Available");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["testedPath"],
+            model_path
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["testedAtMs"],
+            1_700_000_001_000_u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["fileSizeBytes"],
+            model_bytes.len() as u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["sha256"],
+            expected_sha256
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["failureDetail"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["baseUrl"],
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["requestedModel"],
+            "qwen3.6:27b"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["testedAtMs"],
+            1_700_000_002_000_u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["selectedLocalModelTag"],
+            "qwen3.6:27b"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["installedLocalModels"],
+            serde_json::json!(["gemma4:31b", "qwen3.6:27b"])
+        );
+        assert!(!json["setupGuidance"]["whisper"]
+            .to_string()
+            .to_lowercase()
+            .contains("is compatible"));
+
+        save_whisper_model_path_for_app_root(&root, "/models/stale.bin".to_string())
+            .expect("save mismatched whisper");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11435".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save mismatched analysis");
+        let stale_snapshot = desktop_snapshot_for_app_root(&root).expect("stale snapshot");
+        let stale_json = serde_json::to_value(&stale_snapshot).expect("serialize stale snapshot");
+        assert_eq!(
+            stale_json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            stale_json["setupGuidance"]["ollama"]["lastConnectionTest"],
+            serde_json::Value::Null
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_setup_test_fails_loudly_when_evidence_cannot_be_persisted() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("blocking file");
+
+        let error = test_whisper_model_path_for_app_root(&root, "".to_string(), 1_700_000_001_000)
+            .expect_err("persistence failure should fail the explicit test command");
+
+        assert!(!error.trim().is_empty());
+        let _ = fs::remove_file(root);
     }
 
     #[test]
@@ -5222,6 +5457,22 @@ mod tests {
             .to_string()
             .to_lowercase()
             .contains("download"));
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        let ollama = json["setupGuidance"]["ollama"]
+            .as_object()
+            .expect("ollama guidance");
+        assert!(whisper.contains_key("lastPathTest"));
+        assert!(ollama.contains_key("lastConnectionTest"));
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"],
+            serde_json::Value::Null
+        );
 
         restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
@@ -5260,6 +5511,11 @@ mod tests {
             .expect("whisper guidance");
         assert!(!whisper.contains_key("sha256"));
         assert!(!whisper.contains_key("fileSizeBytes"));
+        assert!(whisper.contains_key("lastPathTest"));
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
 
         restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
@@ -8982,6 +9238,44 @@ mod tests {
         canonicalize_app_root_paths(&mut meeting_snapshot, &meeting_root);
         fs::remove_dir_all(&meeting_root).expect("cleanup meeting fixture root");
 
+        let evidence_root = unique_test_root();
+        fs::create_dir_all(&evidence_root).expect("evidence fixture root");
+        let evidence_model_path = evidence_root.join("fixture-whisper.bin");
+        fs::write(&evidence_model_path, b"not a real model")
+            .expect("evidence fixture whisper model");
+        test_whisper_model_path_for_app_root(
+            &evidence_root,
+            evidence_model_path.to_string_lossy().to_string(),
+            1_700_000_001_000,
+        )
+        .expect("persist evidence fixture whisper test");
+        save_whisper_model_path_for_app_root(
+            &evidence_root,
+            evidence_model_path.to_string_lossy().to_string(),
+        )
+        .expect("save evidence fixture whisper path");
+        test_ollama_connection_for_app_root(
+            &evidence_root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"gemma4:31b"},{"name":"qwen3.6:27b"}]}"#,
+            ),
+            1_700_000_002_000,
+        )
+        .expect("persist evidence fixture ollama test");
+        save_analysis_settings_for_app_root(
+            &evidence_root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save evidence fixture analysis settings");
+        let mut evidence_snapshot = serialize_desktop_snapshot_case(&evidence_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut evidence_snapshot, &evidence_root);
+        fs::remove_dir_all(&evidence_root).expect("cleanup evidence fixture root");
+
         let whisper_root = unique_test_root();
         fs::create_dir_all(&whisper_root).expect("whisper fixture root");
         let model_path = whisper_root.join("fixture-whisper.bin");
@@ -9019,6 +9313,7 @@ mod tests {
             "cases": {
                 "desktop_snapshot.empty": empty_snapshot,
                 "desktop_snapshot.transcribed_analyzed_meeting": meeting_snapshot,
+                "desktop_snapshot.with_setup_evidence": evidence_snapshot,
                 "test_whisper_model_path.valid_readable_file": readable_whisper,
                 "test_whisper_model_path.missing_path": serde_json::to_value(test_whisper_model_path_value(""))
                     .expect("serialize missing whisper path test"),

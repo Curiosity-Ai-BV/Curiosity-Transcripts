@@ -108,8 +108,9 @@ Implemented MVP flows:
   Rust exact-equality and TS command adapter contract tests.
 - Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
   missing/readable Whisper paths are typed, readable paths remain compatibility
-  unverified, and Ollama availability stays unknown until the user runs
-  `Test Ollama`.
+  unverified, explicit `Test path` evidence is persisted when run, and Ollama
+  availability stays unknown until the user runs `Test Ollama`, whose last
+  explicit observation is persisted without becoming a background health check.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
@@ -441,7 +442,9 @@ CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:sys
 
 The desktop settings pane can choose a local Whisper model file with a native
 file picker, keep the path editable, save the path, and show first-run readiness
-guidance for missing paths and readable-but-unverified files. If no path is
+guidance for missing paths and readable-but-unverified files. Running `Test
+path` stores the last explicit file-size and SHA-256 readability evidence for
+the matching saved path; it does not prove model compatibility. If no path is
 saved, the desktop `transcribe_meeting` command falls back to
 `CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
 default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
@@ -470,7 +473,10 @@ ollama pull qwen3.6:27b
 source of truth. The local Ollama path accepts localhost/loopback URLs only; use
 the hosted provider path, disclosure gate, and explicit secrets for any
 networked provider. Snapshot readiness guidance does not probe Ollama; availability
-is unknown until the user runs the Settings pane's `Test Ollama` action.
+is unknown until the user runs the Settings pane's `Test Ollama` action. The
+last explicit test observation is persisted for the matching saved local
+URL/model, including installed-model evidence or the suggested pull command, but
+it is not treated as current availability.
 
 End-to-end expectation:
 

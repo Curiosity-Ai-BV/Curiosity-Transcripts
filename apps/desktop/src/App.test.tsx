@@ -475,6 +475,77 @@ describe("desktop workspace shell", () => {
     expect(readiness.textContent).not.toContain("SHA-256");
   });
 
+  it("shows matching last explicit setup test evidence without claiming current availability", () => {
+    const snapshot = {
+      ...connectedSnapshot({
+        model: {
+          kind: "ready",
+          configuredPath: "/models/ggml-base.en.bin",
+        },
+        settings: {
+          whisperModelPath: "/models/ggml-base.en.bin",
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          ollamaModel: "qwen3.6:27b",
+          exportDirectory: null,
+          rawAudioRetentionPolicy: "Retain",
+        },
+      }),
+      setupGuidance: {
+        whisper: {
+          state: "ReadablePath",
+          configuredPath: "/models/ggml-base.en.bin",
+          message: "Whisper model path is readable; compatibility is not verified.",
+          setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          compatibilityNote: "Readability does not prove model compatibility.",
+          lastPathTest: {
+            testedPath: "/models/ggml-base.en.bin",
+            testedAtMs: 1_700_000_001_000,
+            state: "Valid",
+            fileSizeBytes: 16,
+            sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+            failureDetail: null,
+          },
+        },
+        ollama: {
+          state: "ConfiguredNotChecked",
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+          availability: "UnknownUntilTest",
+          message: "Ollama is configured for a local loopback URL and model.",
+          setupGuidance: "Start Ollama manually, install the selected local model if needed, then run Test Ollama.",
+          lastConnectionTest: {
+            baseUrl: "http://127.0.0.1:11434",
+            requestedModel: "qwen3.6:27b",
+            testedAtMs: 1_700_000_002_000,
+            state: "Available",
+            selectedLocalModelTag: "qwen3.6:27b",
+            installedLocalModels: ["gemma4:31b", "qwen3.6:27b"],
+            pullCommand: null,
+            failureDetail: null,
+          },
+        },
+      },
+    } as never;
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(
+      within(readiness).getByText("Last explicit Test path: Valid at 2023-11-14T22:13:21.000Z"),
+    ).toBeInTheDocument();
+    expect(within(readiness).getByText("Size: 16 bytes")).toBeInTheDocument();
+    expect(
+      within(readiness).getByText("SHA-256: 8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54"),
+    ).toBeInTheDocument();
+    expect(
+      within(readiness).getByText("Last explicit Test Ollama: Available at 2023-11-14T22:13:22.000Z"),
+    ).toBeInTheDocument();
+    expect(within(readiness).getByText("Observed models: gemma4:31b, qwen3.6:27b")).toBeInTheDocument();
+    expect(within(readiness).getByText("Last explicit observation, not current availability.")).toBeInTheDocument();
+    expect(readiness.textContent).not.toContain("compatibility is verified");
+    expect(readiness.textContent?.toLowerCase()).not.toContain("is compatible");
+  });
+
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
     const user = userEvent.setup();
 

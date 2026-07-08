@@ -1337,6 +1337,24 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                 ) : null}
                 <p>{setupGuidance.whisper.setupGuidance}</p>
                 <small>{setupGuidance.whisper.compatibilityNote}</small>
+                {setupGuidance.whisper.lastPathTest ? (
+                  <div className="readiness-evidence">
+                    <strong>
+                      Last explicit Test path: {setupGuidance.whisper.lastPathTest.state} at{" "}
+                      {formatEvidenceTimestamp(setupGuidance.whisper.lastPathTest.testedAtMs)}
+                    </strong>
+                    <span>Tested path: {setupGuidance.whisper.lastPathTest.testedPath || "none"}</span>
+                    {setupGuidance.whisper.lastPathTest.fileSizeBytes !== null ? (
+                      <span>Size: {setupGuidance.whisper.lastPathTest.fileSizeBytes} bytes</span>
+                    ) : null}
+                    {setupGuidance.whisper.lastPathTest.sha256 ? (
+                      <span>SHA-256: {setupGuidance.whisper.lastPathTest.sha256}</span>
+                    ) : null}
+                    {setupGuidance.whisper.lastPathTest.failureDetail ? (
+                      <span>{setupGuidance.whisper.lastPathTest.failureDetail}</span>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className={`readiness-item ${ollamaReadinessTone}`}>
                 <div className="readiness-heading">
@@ -1347,6 +1365,36 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                   {setupGuidance.ollama.baseUrl} / {setupGuidance.ollama.model}
                 </span>
                 <p>{setupGuidance.ollama.setupGuidance}</p>
+                {setupGuidance.ollama.lastConnectionTest ? (
+                  <div className="readiness-evidence">
+                    <strong>
+                      Last explicit Test Ollama: {setupGuidance.ollama.lastConnectionTest.state} at{" "}
+                      {formatEvidenceTimestamp(setupGuidance.ollama.lastConnectionTest.testedAtMs)}
+                    </strong>
+                    <span>
+                      Request: {setupGuidance.ollama.lastConnectionTest.baseUrl} /{" "}
+                      {setupGuidance.ollama.lastConnectionTest.requestedModel}
+                    </span>
+                    {setupGuidance.ollama.lastConnectionTest.selectedLocalModelTag ? (
+                      <span>Selected model: {setupGuidance.ollama.lastConnectionTest.selectedLocalModelTag}</span>
+                    ) : null}
+                    {setupGuidance.ollama.lastConnectionTest.installedLocalModels ? (
+                      <span>
+                        Observed models:{" "}
+                        {setupGuidance.ollama.lastConnectionTest.installedLocalModels.length > 0
+                          ? setupGuidance.ollama.lastConnectionTest.installedLocalModels.join(", ")
+                          : "none reported"}
+                      </span>
+                    ) : null}
+                    {setupGuidance.ollama.lastConnectionTest.pullCommand ? (
+                      <span>Pull command: {setupGuidance.ollama.lastConnectionTest.pullCommand}</span>
+                    ) : null}
+                    {setupGuidance.ollama.lastConnectionTest.failureDetail ? (
+                      <span>{setupGuidance.ollama.lastConnectionTest.failureDetail}</span>
+                    ) : null}
+                    <small>Last explicit observation, not current availability.</small>
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="settings-form" aria-label="Local settings">
@@ -1674,4 +1722,8 @@ function formatTime(ms: number) {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function formatEvidenceTimestamp(ms: number) {
+  return new Date(ms).toISOString();
 }

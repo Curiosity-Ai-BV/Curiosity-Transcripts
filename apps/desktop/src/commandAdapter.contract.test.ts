@@ -29,7 +29,11 @@ afterEach(() => {
 });
 
 describe("desktop snapshot DTO contract", () => {
-  it.each(["desktop_snapshot.empty", "desktop_snapshot.transcribed_analyzed_meeting"])(
+  it.each([
+    "desktop_snapshot.empty",
+    "desktop_snapshot.transcribed_analyzed_meeting",
+    "desktop_snapshot.with_setup_evidence",
+  ])(
     "accepts the Rust-serialized %s fixture",
     async (caseName) => {
       const fixtureCase = rustContractFixture.cases[caseName];
@@ -118,6 +122,48 @@ describe("desktop snapshot DTO contract", () => {
         previewFallback: false,
       }),
     ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.state");
+  });
+
+  it("guards setup guidance evidence field types in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      setupGuidance: {
+        ...backendSnapshot.setupGuidance,
+        whisper: {
+          ...backendSnapshot.setupGuidance.whisper,
+          lastPathTest: {
+            testedPath: "/models/base.en.bin",
+            testedAtMs: "later",
+            state: "Valid",
+            fileSizeBytes: 16,
+            sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+            failureDetail: null,
+          },
+        },
+        ollama: {
+          ...backendSnapshot.setupGuidance.ollama,
+          lastConnectionTest: {
+            baseUrl: "http://127.0.0.1:11434",
+            requestedModel: "qwen3.6:27b",
+            testedAtMs: 1_700_000_002_000,
+            state: "Available",
+            selectedLocalModelTag: "qwen3.6:27b",
+            installedLocalModels: ["qwen3.6:27b"],
+            pullCommand: null,
+            failureDetail: null,
+          },
+        },
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.lastPathTest.testedAtMs");
   });
 
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
