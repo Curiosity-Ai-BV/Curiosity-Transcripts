@@ -25,6 +25,7 @@ const criticalSteps = [
   ["checks", "Check audio smoke fails loud without hardware request"],
   ["checks", "Check Whisper smoke fails loud without model inputs"],
   ["checks", "Generate supply-chain artifacts"],
+  ["checks", "Check supply-chain artifacts"],
   ["checks", "Upload supply-chain artifacts"],
   ["checks", "Audit desktop npm dependencies"],
   ["checks", "Test desktop frontend"],

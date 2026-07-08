@@ -52,6 +52,7 @@ check_file "docs/release-candidate-checklist.md"
 check_file "docs/release-candidate-smoke-evidence.template.json"
 check_file "scripts/check-ci-critical-gates.js"
 check_file "scripts/generate-supply-chain-artifacts.js"
+check_file "scripts/check-supply-chain-artifacts.js"
 check_file "scripts/check-coverage-artifacts.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "scripts/check-plain-secret-storage.js"
@@ -469,6 +470,7 @@ require_text .github/workflows/ci.yml 'node scripts/check-coverage-artifacts\.js
 require_text .github/workflows/ci.yml 'path: release-artifacts/coverage' 'coverage artifact upload path'
 require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
 require_text .github/workflows/ci.yml 'npm audit --audit-level=high' 'desktop npm audit CI gate'
+require_text .github/workflows/ci.yml 'node scripts/check-supply-chain-artifacts\.js' 'supply-chain artifact checker CI gate'
 require_text apps/desktop/package.json '"test:coverage": "vitest run --coverage"' 'desktop Vitest coverage npm script'
 require_text apps/desktop/package.json '"@vitest/coverage-v8"' 'desktop Vitest V8 coverage dependency'
 require_text apps/desktop/vite.config.ts 'reportsDirectory: "../../release-artifacts/coverage/frontend"' 'frontend coverage output directory'
@@ -478,6 +480,12 @@ require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/commandAdapte
 require_text scripts/check-coverage-artifacts.js 'crates/store/src/lib\.rs' 'coverage checker Rust store path'
 require_text scripts/check-coverage-artifacts.js 'apps/desktop/src-tauri/src/main\.rs' 'coverage checker desktop Tauri main path'
 if ! node --check scripts/generate-supply-chain-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node --check scripts/check-supply-chain-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node scripts/check-supply-chain-artifacts.js --self-test >/dev/null; then
   failures=1
 fi
 if ! node --check scripts/check-coverage-artifacts.js >/dev/null; then
@@ -712,10 +720,14 @@ function hasLine(step, pattern) {
 
 const installDesktop = requireStep("Install desktop dependencies");
 const generate = requireStep("Generate supply-chain artifacts");
+const checkSupplyChain = requireStep("Check supply-chain artifacts");
 const upload = requireStep("Upload supply-chain artifacts");
 
 if (!hasLine(generate, /^\s*run:\s*node scripts\/generate-supply-chain-artifacts\.js\s*$/)) {
   fail("Generate supply-chain artifacts step must run node scripts/generate-supply-chain-artifacts.js");
+}
+if (!hasLine(checkSupplyChain, /^\s*run:\s*node scripts\/check-supply-chain-artifacts\.js\s*$/)) {
+  fail("Check supply-chain artifacts step must run node scripts/check-supply-chain-artifacts.js");
 }
 if (!hasLine(upload, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
   fail("Upload supply-chain artifacts step must use actions/upload-artifact@v4");
@@ -729,16 +741,23 @@ if (!hasLine(upload, /^\s*path:\s*release-artifacts\/supply-chain\s*$/)) {
 if (!hasLine(upload, /^\s*if-no-files-found:\s*error\s*$/)) {
   fail("Upload supply-chain artifacts step must fail when artifacts are missing");
 }
-if (installDesktop?.job !== generate?.job || installDesktop?.job !== upload?.job) {
-  fail("desktop npm install, supply-chain generation, and supply-chain upload steps must be in the same CI job");
+if (
+  installDesktop?.job !== generate?.job ||
+  installDesktop?.job !== checkSupplyChain?.job ||
+  installDesktop?.job !== upload?.job
+) {
+  fail("desktop npm install, supply-chain generation, supply-chain checking, and supply-chain upload steps must be in the same CI job");
 }
 if (
   installDesktop &&
   generate &&
+  checkSupplyChain &&
   upload &&
-  (installDesktop.index > generate.index || generate.index > upload.index)
+  (installDesktop.index > generate.index ||
+    generate.index > checkSupplyChain.index ||
+    checkSupplyChain.index > upload.index)
 ) {
-  fail("Supply-chain artifact generation must run after desktop npm install and before upload");
+  fail("Supply-chain artifact generation and checking must run after desktop npm install and before upload");
 }
 
 process.exit(ok ? 0 : 1);
@@ -898,6 +917,7 @@ require_text scripts/check-tauri-command-surface.js 'snapshot command removed fr
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-supply-chain-artifacts\.js --self-test' 'supply-chain artifact checker self-test publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
 require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
@@ -914,6 +934,12 @@ require_text scripts/generate-supply-chain-artifacts.js 'license_file' 'Cargo li
 require_text scripts/generate-supply-chain-artifacts.js 'root-cargo-\$\{releaseRustTarget\}-license-metadata\.json' 'root Cargo license metadata artifact'
 require_text scripts/generate-supply-chain-artifacts.js 'desktop-tauri-cargo-\$\{releaseRustTarget\}-license-metadata\.json' 'desktop Tauri Cargo license metadata artifact'
 require_text scripts/generate-supply-chain-artifacts.js 'release-artifacts", "supply-chain' 'supply-chain artifact output directory'
+require_text scripts/check-supply-chain-artifacts.js 'desktop-npm-cyclonedx-sbom\.json' 'npm SBOM artifact checker'
+require_text scripts/check-supply-chain-artifacts.js 'desktop-npm-lock-license-metadata\.json' 'npm license metadata artifact checker'
+require_text scripts/check-supply-chain-artifacts.js 'root-cargo-aarch64-apple-darwin-license-metadata\.json' 'root Cargo artifact checker'
+require_text scripts/check-supply-chain-artifacts.js 'desktop-tauri-cargo-aarch64-apple-darwin-license-metadata\.json' 'desktop Tauri Cargo artifact checker'
+require_text scripts/check-supply-chain-artifacts.js 'metadata\.timestamp' 'npm SBOM timestamp drift checker'
+require_text scripts/check-supply-chain-artifacts.js 'serialNumber' 'npm SBOM serial number drift checker'
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
 require_text .github/workflows/pages.yml 'runner_arch="\$\(uname -m\)"' 'Pages runner architecture assertion before aarch64 latest DMG staging'
@@ -1051,6 +1077,12 @@ fi
 
 if ! node scripts/check-release-smoke-evidence.js --self-test; then
   failures=1
+fi
+
+if [[ -d release-artifacts/supply-chain ]]; then
+  if ! node scripts/check-supply-chain-artifacts.js; then
+    failures=1
+  fi
 fi
 
 if ! node scripts/check-desktop-command-view-contract.js; then

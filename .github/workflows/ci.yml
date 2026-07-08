@@ -152,6 +152,9 @@ jobs:
       - name: Generate supply-chain artifacts
         run: node scripts/generate-supply-chain-artifacts.js
 
+      - name: Check supply-chain artifacts
+        run: node scripts/check-supply-chain-artifacts.js
+
       - name: Upload supply-chain artifacts
         uses: actions/upload-artifact@v4
         with:
