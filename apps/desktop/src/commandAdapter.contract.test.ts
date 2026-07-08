@@ -491,6 +491,14 @@ describe("desktop snapshot DTO contract", () => {
           kind: "untested",
           configuredPath: "/models/base.en.bin",
         },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+          },
+        },
       }) as never;
 
     const snapshot = await loadDesktopSnapshot({
@@ -557,6 +565,7 @@ describe("desktop snapshot DTO contract", () => {
             setupGuidance: "Use Test path before transcription.",
             compatibilityNote: "Readability does not prove model compatibility.",
             lastPathTest,
+            lastSuccessfulTranscription: null,
           },
         },
       }) as never;
@@ -594,6 +603,7 @@ describe("desktop snapshot DTO contract", () => {
               sha256: null,
               failureDetail: null,
             },
+            lastSuccessfulTranscription: null,
           },
         },
       }) as never;
@@ -604,6 +614,134 @@ describe("desktop snapshot DTO contract", () => {
         previewFallback: false,
       }),
     ).rejects.toThrow("desktop_snapshot.model.kind");
+  });
+
+  it("accepts Whisper successful-transcription compatibility evidence in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/base.en.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "base.en.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.setupGuidance.whisper.lastSuccessfulTranscription?.modelRunId).toBe("run-1");
+  });
+
+  it("rejects Whisper successful-transcription evidence for a different configured path", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/current.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/current.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/stale.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "stale.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modelPath");
+  });
+
+  it.each([
+    ["empty model path", { modelPath: "" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modelPath"],
+    ["string timestamp", { usedAtMs: "later" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.usedAtMs"],
+    ["empty provider", { provider: "" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.provider"],
+    ["zero segments", { segmentCount: 0 }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.segmentCount"],
+    ["zero file size", { fileSizeBytes: 0 }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.fileSizeBytes"],
+    ["string modified timestamp", { modifiedAtMs: "old" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modifiedAtMs"],
+  ] as const)("rejects invalid Whisper compatibility evidence with %s", async (_name, override, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/base.en.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "base.en.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+              ...override,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
   });
 
   it("requires command readiness to be explicit instead of inferred from detail text", async () => {

@@ -1419,6 +1419,29 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                     ) : null}
                   </div>
                 ) : null}
+                {setupGuidance.whisper.lastSuccessfulTranscription ? (
+                  <div className="readiness-evidence">
+                    <strong>
+                      Last successful transcription at{" "}
+                      {formatEvidenceTimestamp(setupGuidance.whisper.lastSuccessfulTranscription.usedAtMs)}
+                    </strong>
+                    <span>Model path: {setupGuidance.whisper.lastSuccessfulTranscription.modelPath}</span>
+                    <span>Provider: {setupGuidance.whisper.lastSuccessfulTranscription.provider}</span>
+                    <span>Model: {setupGuidance.whisper.lastSuccessfulTranscription.modelName}</span>
+                    <span>Meeting: {setupGuidance.whisper.lastSuccessfulTranscription.meetingId}</span>
+                    <span>Model run: {setupGuidance.whisper.lastSuccessfulTranscription.modelRunId}</span>
+                    <span>Transcript version: {setupGuidance.whisper.lastSuccessfulTranscription.transcriptVersionId}</span>
+                    <span>
+                      Transcript: {setupGuidance.whisper.lastSuccessfulTranscription.segmentCount} segment
+                      {setupGuidance.whisper.lastSuccessfulTranscription.segmentCount === 1 ? "" : "s"}
+                    </span>
+                    <span>Model file size: {setupGuidance.whisper.lastSuccessfulTranscription.fileSizeBytes} bytes</span>
+                    <span>
+                      Model modified:{" "}
+                      {formatEvidenceTimestamp(setupGuidance.whisper.lastSuccessfulTranscription.modifiedAtMs)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <div className={`readiness-item ${ollamaReadinessTone}`}>
                 <div className="readiness-heading">

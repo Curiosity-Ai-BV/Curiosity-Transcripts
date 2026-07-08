@@ -34,6 +34,8 @@ const SETTING_OLLAMA_MODEL: &str = "ollama_model";
 const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
 const SETTING_RAW_AUDIO_RETENTION_POLICY: &str = "raw_audio_retention_policy";
 const SETTING_WHISPER_PATH_TEST_EVIDENCE: &str = "whisper_path_test_evidence";
+const SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE: &str =
+    "whisper_transcription_compatibility_evidence";
 const SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE: &str = "ollama_connection_test_evidence";
 
 /// Typed store failure for storage, path safety, recovery, and invariant errors.
@@ -157,6 +159,8 @@ pub struct AppSettings {
     pub export_directory: Option<String>,
     pub raw_audio_retention_policy: RawAudioRetentionPolicy,
     pub whisper_path_test_evidence: Option<WhisperPathTestEvidence>,
+    pub whisper_transcription_compatibility_evidence:
+        Option<WhisperTranscriptionCompatibilityEvidence>,
     pub ollama_connection_test_evidence: Option<OllamaConnectionTestEvidence>,
 }
 
@@ -169,6 +173,21 @@ pub struct WhisperPathTestEvidence {
     pub file_size_bytes: Option<u64>,
     pub sha256: Option<String>,
     pub failure_detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperTranscriptionCompatibilityEvidence {
+    pub model_path: String,
+    pub used_at_ms: u64,
+    pub provider: String,
+    pub model_name: String,
+    pub meeting_id: String,
+    pub model_run_id: String,
+    pub transcript_version_id: String,
+    pub segment_count: u64,
+    pub file_size_bytes: u64,
+    pub modified_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -192,6 +211,19 @@ impl WhisperPathTestEvidence {
                 .as_deref()
                 .map(is_lower_hex_sha256)
                 .unwrap_or(true)
+    }
+}
+
+impl WhisperTranscriptionCompatibilityEvidence {
+    fn is_valid_snapshot_evidence(&self) -> bool {
+        !self.model_path.trim().is_empty()
+            && !self.provider.trim().is_empty()
+            && !self.model_name.trim().is_empty()
+            && !self.meeting_id.trim().is_empty()
+            && !self.model_run_id.trim().is_empty()
+            && !self.transcript_version_id.trim().is_empty()
+            && self.segment_count > 0
+            && self.file_size_bytes > 0
     }
 }
 
@@ -888,6 +920,10 @@ impl Store {
                 SETTING_WHISPER_PATH_TEST_EVIDENCE,
                 WhisperPathTestEvidence::is_valid_snapshot_evidence,
             )?,
+            whisper_transcription_compatibility_evidence: self.optional_setting_json(
+                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+            )?,
             ollama_connection_test_evidence: self.optional_setting_json(
                 SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
                 OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
@@ -904,6 +940,11 @@ impl Store {
                 SETTING_WHISPER_PATH_TEST_EVIDENCE,
                 WhisperPathTestEvidence::is_valid_snapshot_evidence,
                 |evidence| evidence.tested_path != whisper_model_path,
+            )?;
+            self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
+                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+                |evidence| evidence.model_path != whisper_model_path,
             )?;
             Ok(())
         })();
@@ -966,6 +1007,18 @@ impl Store {
         }
         let value = serde_json::to_string(evidence)?;
         self.upsert_setting(SETTING_WHISPER_PATH_TEST_EVIDENCE, &value)?;
+        self.app_settings()
+    }
+
+    pub fn save_whisper_transcription_compatibility_evidence(
+        &self,
+        evidence: &WhisperTranscriptionCompatibilityEvidence,
+    ) -> StoreResult<AppSettings> {
+        if !evidence.is_valid_snapshot_evidence() {
+            return Err("invalid Whisper transcription compatibility evidence".into());
+        }
+        let value = serde_json::to_string(evidence)?;
+        self.upsert_setting(SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE, &value)?;
         self.app_settings()
     }
 
@@ -2991,6 +3044,11 @@ impl Store {
         self.conn.execute(
             "DELETE FROM meeting_search WHERE meeting_id = ?1",
             params![meeting_id],
+        )?;
+        self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
+            SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+            WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+            |evidence| evidence.meeting_id == meeting_id,
         )?;
         Ok(())
     }

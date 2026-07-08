@@ -90,7 +90,7 @@ Goal: remove developer-only setup from the core user path.
 
 Deliverables:
 
-- Current Phase 1A/1B/1C status: the existing Settings pane now shows manual
+- Current Phase 1A/1B/1C/1D status: the existing Settings pane now shows manual
   first-run readiness guidance derived from saved settings. Whisper guidance
   distinguishes missing, unreadable, and readable-but-unverified paths without
   hashing during snapshot load. The Whisper model path can be filled through a
@@ -99,13 +99,16 @@ Deliverables:
   and SHA-256 readability evidence without claiming model compatibility.
   Existing Whisper files are treated as untested and transcription is blocked
   until matching valid Test path evidence exists and the current file size still
-  matches, without hashing during snapshot load. Ollama
-  guidance shows the configured local URL/model, keeps availability unknown
-  until matching `Test Ollama` evidence exists, and reports matching last-test
-  evidence as available, missing-model, or unavailable-at-last-test state with
-  installed-model details or the deterministic pull command. No background
-  health checks run. Model download/management and automatic Ollama pulls
-  remain later work.
+  matches, without hashing during snapshot load. Successful local Whisper
+  transcription records historical successful-transcription evidence for the
+  same model path, file size, and modified time, but that evidence is displayed
+  separately from readiness and never substitutes for matching `Test path`
+  evidence. Ollama guidance shows the configured local URL/model, keeps
+  availability unknown until matching `Test Ollama` evidence exists, and reports
+  matching last-test evidence as available, missing-model, or
+  unavailable-at-last-test state with installed-model details or the deterministic
+  pull command. No background health checks run. Model download/management and
+  automatic Ollama pulls remain later work.
 - Add a first-run model setup flow for Whisper:
   model discovery, download or file selection, compatibility checks, hash/size
   recording, model health state, and recovery guidance for missing or invalid

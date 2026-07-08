@@ -110,10 +110,13 @@ Implemented MVP flows:
   missing/readable Whisper paths are typed, readable paths remain compatibility
   unverified, explicit `Test path` evidence is persisted when run, and
   transcription is blocked until the saved Whisper path has matching valid
-  file-size evidence. Ollama availability stays unknown until matching
-  `Test Ollama` evidence exists. The last explicit Ollama observation is shown
-  as available, missing-model, or unavailable-at-last-test evidence without
-  becoming a background health check.
+  file-size evidence. After a successful local Whisper transcription, Settings
+  shows historical successful-transcription evidence for the same model path,
+  file size, and modified time without treating it as a background compatibility
+  check. Ollama availability stays unknown until matching `Test Ollama` evidence
+  exists. The last explicit Ollama observation is shown as available,
+  missing-model, or unavailable-at-last-test evidence without becoming a
+  background health check.
 - Read-only Apple Calendar context status in the desktop snapshot and settings
   pane, plus an explicit macOS Apple Calendar permission request action. The
   macOS 14+ path requests full Calendar event access, while the macOS 13 support
@@ -462,11 +465,15 @@ marks an existing file as untested and blocks transcription until that matching
 valid Test path evidence exists and the current file size still matches. If no
 path is saved, the desktop `transcribe_meeting` command falls back to
 `CURIOSITY_WHISPER_MODEL`, which is subject to the same Test path evidence
-requirement. Desktop builds include the native Whisper backend by default; use
-`npm run tauri:dev:no-whisper` only when intentionally testing the
-unavailable-backend state. If the effective model path is missing, the UI should
-show an explicit missing-model state. Model download and management are not yet
-implemented.
+requirement. After a successful local Whisper transcription, the settings pane
+shows the last successful transcription timestamp, provider, model name, segment
+count, meeting id, model run id, transcript version id, and model-file size for
+that same path and modified time. This is historical compatibility evidence, not
+a background check and not a substitute for matching `Test path` evidence.
+Desktop builds include the native Whisper backend by default; use `npm run
+tauri:dev:no-whisper` only when intentionally testing the unavailable-backend
+state. If the effective model path is missing, the UI should show an explicit
+missing-model state. Model download and management are not yet implemented.
 
 Copy `.env.example` for the optional Whisper smoke environment variables and
 hosted/provider secret placeholders. Ollama base URL and model are configured in

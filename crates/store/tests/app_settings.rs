@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use curiosity_domain::RawAudioRetentionPolicy;
 use curiosity_store::{
     AppSettings, OllamaConnectionTestEvidence, Store, WhisperPathTestEvidence,
-    DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL,
+    WhisperTranscriptionCompatibilityEvidence, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL,
 };
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -36,6 +36,7 @@ fn app_settings_default_to_local_ollama_and_empty_optional_paths() {
             export_directory: None,
             raw_audio_retention_policy: RawAudioRetentionPolicy::Retain,
             whisper_path_test_evidence: None,
+            whisper_transcription_compatibility_evidence: None,
             ollama_connection_test_evidence: None,
         }
     );
@@ -69,6 +70,7 @@ fn app_settings_persist_whisper_and_analysis_settings_across_store_reopen() {
         RawAudioRetentionPolicy::Retain
     );
     assert_eq!(settings.whisper_path_test_evidence, None);
+    assert_eq!(settings.whisper_transcription_compatibility_evidence, None);
     assert_eq!(settings.ollama_connection_test_evidence, None);
 }
 
@@ -98,10 +100,25 @@ fn app_settings_persist_setup_test_evidence_and_clear_only_mismatched_settings()
         pull_command: None,
         failure_detail: None,
     };
+    let compatibility_evidence = WhisperTranscriptionCompatibilityEvidence {
+        model_path: "/models/ggml-base.en.bin".to_string(),
+        used_at_ms: 1_700_000_003_000,
+        provider: "local-whisper".to_string(),
+        model_name: "ggml-base.en.bin".to_string(),
+        meeting_id: "meeting-1".to_string(),
+        model_run_id: "run-1".to_string(),
+        transcript_version_id: "version-1".to_string(),
+        segment_count: 2,
+        file_size_bytes: 16,
+        modified_at_ms: 1_700_000_004_000,
+    };
 
     store
         .save_whisper_path_test_evidence(&whisper_evidence)
         .expect("save whisper evidence");
+    store
+        .save_whisper_transcription_compatibility_evidence(&compatibility_evidence)
+        .expect("save compatibility evidence");
     store
         .save_ollama_connection_test_evidence(&ollama_evidence)
         .expect("save ollama evidence");
@@ -113,6 +130,10 @@ fn app_settings_persist_setup_test_evidence_and_clear_only_mismatched_settings()
     assert_eq!(
         settings.whisper_path_test_evidence,
         Some(whisper_evidence.clone())
+    );
+    assert_eq!(
+        settings.whisper_transcription_compatibility_evidence,
+        Some(compatibility_evidence.clone())
     );
     assert_eq!(
         settings.ollama_connection_test_evidence,
@@ -127,16 +148,21 @@ fn app_settings_persist_setup_test_evidence_and_clear_only_mismatched_settings()
         .expect("save same analysis settings");
     let kept = reopened.app_settings().expect("settings kept evidence");
     assert_eq!(kept.whisper_path_test_evidence, Some(whisper_evidence));
+    assert_eq!(
+        kept.whisper_transcription_compatibility_evidence,
+        Some(compatibility_evidence)
+    );
     assert_eq!(kept.ollama_connection_test_evidence, Some(ollama_evidence));
 
     reopened
         .save_whisper_model_path("/models/other.bin")
         .expect("save different whisper path");
+    let after_whisper_mismatch = reopened
+        .app_settings()
+        .expect("settings after whisper mismatch");
+    assert_eq!(after_whisper_mismatch.whisper_path_test_evidence, None);
     assert_eq!(
-        reopened
-            .app_settings()
-            .expect("settings after whisper mismatch")
-            .whisper_path_test_evidence,
+        after_whisper_mismatch.whisper_transcription_compatibility_evidence,
         None
     );
 
@@ -171,6 +197,14 @@ fn app_settings_ignore_and_clear_malformed_setup_test_evidence() {
         params!["ollama_connection_test_evidence", "{not valid json"],
     )
     .expect("insert malformed ollama evidence");
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+        params![
+            "whisper_transcription_compatibility_evidence",
+            "{not valid json"
+        ],
+    )
+    .expect("insert malformed compatibility evidence");
     drop(conn);
 
     let reopened = Store::open(&db_path, root).expect("reopen store");
@@ -179,6 +213,7 @@ fn app_settings_ignore_and_clear_malformed_setup_test_evidence() {
         .app_settings()
         .expect("malformed optional evidence should not fail settings");
     assert_eq!(settings.whisper_path_test_evidence, None);
+    assert_eq!(settings.whisper_transcription_compatibility_evidence, None);
     assert_eq!(settings.ollama_connection_test_evidence, None);
 
     reopened
@@ -194,11 +229,12 @@ fn app_settings_ignore_and_clear_malformed_setup_test_evidence() {
             "
             SELECT COUNT(*)
             FROM app_settings
-            WHERE key IN (?1, ?2)
+            WHERE key IN (?1, ?2, ?3)
             ",
             params![
                 "whisper_path_test_evidence",
-                "ollama_connection_test_evidence"
+                "ollama_connection_test_evidence",
+                "whisper_transcription_compatibility_evidence"
             ],
             |row| row.get(0),
         )
@@ -249,6 +285,26 @@ fn app_settings_ignore_and_clear_contract_invalid_setup_test_evidence() {
         ],
     )
     .expect("insert contract-invalid ollama evidence");
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+        params![
+            "whisper_transcription_compatibility_evidence",
+            json!({
+                "modelPath": "/models/ggml-base.en.bin",
+                "usedAtMs": 1_700_000_003_000_u64,
+                "provider": "",
+                "modelName": "ggml-base.en.bin",
+                "meetingId": "meeting-1",
+                "modelRunId": "run-1",
+                "transcriptVersionId": "version-1",
+                "segmentCount": 0,
+                "fileSizeBytes": 16,
+                "modifiedAtMs": 1_700_000_004_000_u64
+            })
+            .to_string()
+        ],
+    )
+    .expect("insert contract-invalid compatibility evidence");
     drop(conn);
 
     let reopened = Store::open(&db_path, root).expect("reopen store");
@@ -257,6 +313,7 @@ fn app_settings_ignore_and_clear_contract_invalid_setup_test_evidence() {
         .app_settings()
         .expect("contract-invalid optional evidence should not fail settings");
     assert_eq!(settings.whisper_path_test_evidence, None);
+    assert_eq!(settings.whisper_transcription_compatibility_evidence, None);
     assert_eq!(settings.ollama_connection_test_evidence, None);
 
     reopened
@@ -272,11 +329,12 @@ fn app_settings_ignore_and_clear_contract_invalid_setup_test_evidence() {
             "
             SELECT COUNT(*)
             FROM app_settings
-            WHERE key IN (?1, ?2)
+            WHERE key IN (?1, ?2, ?3)
             ",
             params![
                 "whisper_path_test_evidence",
-                "ollama_connection_test_evidence"
+                "ollama_connection_test_evidence",
+                "whisper_transcription_compatibility_evidence"
             ],
             |row| row.get(0),
         )

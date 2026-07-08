@@ -65,6 +65,7 @@
           "compatibilityNote": "Readability does not prove model compatibility.",
           "configuredPath": "",
           "lastPathTest": null,
+          "lastSuccessfulTranscription": null,
           "message": "No Whisper model path is configured.",
           "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
           "state": "MissingPath"
@@ -184,6 +185,7 @@
           "compatibilityNote": "Readability does not prove model compatibility.",
           "configuredPath": "",
           "lastPathTest": null,
+          "lastSuccessfulTranscription": null,
           "message": "No Whisper model path is configured.",
           "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
           "state": "MissingPath"
@@ -277,6 +279,7 @@
             "testedAtMs": 1700000001000,
             "testedPath": "<app-root>/fixture-whisper.bin"
           },
+          "lastSuccessfulTranscription": null,
           "message": "Whisper model path is readable; compatibility is not verified.",
           "setupGuidance": "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           "state": "ReadablePath"

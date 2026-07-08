@@ -32,6 +32,7 @@ use curiosity_domain::{
 use curiosity_store::{
     AppSettings, CompletedAudioArtifact, OllamaConnectionTestEvidence,
     PendingDeleteFinalizationReport, RecoverableArtifact, Store, WhisperPathTestEvidence,
+    WhisperTranscriptionCompatibilityEvidence,
 };
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
@@ -3359,14 +3360,31 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
             )
         })
         .collect::<Vec<_>>();
+    let model_path_for_evidence = model_path.clone();
     let transcriber = WhisperTranscriber::new(model_path, model_name, backend);
     match transcriber.transcribe_wav_bundle(&requests) {
         Ok(document) => {
             if is_cancelled() {
                 return Ok(None);
             }
+            let compatibility_evidence = whisper_transcription_compatibility_evidence(
+                &store,
+                meeting_id,
+                &model_path_for_evidence,
+                &document,
+                created_at_ms,
+            );
             match persist_transcription_document(&store, meeting_id, document, created_at_ms) {
                 Ok(()) => {
+                    if let Some(evidence) = compatibility_evidence {
+                        if let Err(error) =
+                            store.save_whisper_transcription_compatibility_evidence(&evidence)
+                        {
+                            eprintln!(
+                                "failed to persist Whisper transcription compatibility evidence: {error}"
+                            );
+                        }
+                    }
                     cleanup_raw_audio_retention_after_transcription(
                         &store, meeting_id, &artifacts,
                     )?;
@@ -3392,6 +3410,53 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
             }
         }
     }
+}
+
+fn whisper_transcription_compatibility_evidence(
+    store: &Store,
+    meeting_id: &str,
+    model_path: &Path,
+    document: &TranscriptionDocument,
+    used_at_ms: u64,
+) -> Option<WhisperTranscriptionCompatibilityEvidence> {
+    if document.segments.is_empty() {
+        return None;
+    }
+    let settings = store.app_settings().ok()?;
+    let configured_path = resolved_whisper_model_path(&settings);
+    let model_path = model_path.to_string_lossy().to_string();
+    if model_path.trim() != configured_path.trim() {
+        return None;
+    }
+    let metadata = std::fs::metadata(model_path.trim()).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified_at_ms = file_modified_at_ms(&metadata)?;
+    Some(WhisperTranscriptionCompatibilityEvidence {
+        model_path,
+        used_at_ms,
+        provider: document.provider.clone(),
+        model_name: document.model_name.clone(),
+        meeting_id: meeting_id.to_string(),
+        model_run_id: document.model_run_id.clone(),
+        transcript_version_id: document.transcript_version_id.clone(),
+        segment_count: document.segments.len() as u64,
+        file_size_bytes: metadata.len(),
+        modified_at_ms,
+    })
+}
+
+fn file_modified_at_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    u64::try_from(
+        metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+    .ok()
 }
 
 fn cleanup_raw_audio_retention_after_transcription(
@@ -4304,6 +4369,8 @@ fn map_eventkit_authorization_status(
 fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
     let configured_path = resolved_whisper_model_path(settings);
     let last_path_test = matching_whisper_path_test_evidence(settings, &configured_path);
+    let last_successful_transcription =
+        matching_whisper_transcription_compatibility_evidence(settings, &configured_path);
     if configured_path.trim().is_empty() {
         return WhisperSetupGuidanceView {
             state: "MissingPath".to_string(),
@@ -4314,6 +4381,7 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
                     .to_string(),
             compatibility_note: "Readability does not prove model compatibility.".to_string(),
             last_path_test,
+            last_successful_transcription,
         };
     }
 
@@ -4325,6 +4393,7 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
         setup_guidance: setup_guidance.to_string(),
         compatibility_note: "Readability does not prove model compatibility.".to_string(),
         last_path_test: last_path_test.clone(),
+        last_successful_transcription: last_successful_transcription.clone(),
     };
 
     let metadata = match std::fs::metadata(&path) {
@@ -4349,15 +4418,29 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
         );
     }
 
+    let (message, compatibility_note) = if last_successful_transcription.is_some() {
+        (
+            "Whisper model path is readable and has completed transcription before.".to_string(),
+            "Last successful transcription is historical evidence for this local path, not a background compatibility check."
+                .to_string(),
+        )
+    } else {
+        (
+            "Whisper model path is readable; compatibility is not verified.".to_string(),
+            "Readability does not prove model compatibility.".to_string(),
+        )
+    };
+
     WhisperSetupGuidanceView {
         state: "ReadablePath".to_string(),
         configured_path,
-        message: "Whisper model path is readable; compatibility is not verified.".to_string(),
+        message,
         setup_guidance:
             "Use Test path for file evidence, then transcribe a sample to verify compatibility."
                 .to_string(),
-        compatibility_note: "Readability does not prove model compatibility.".to_string(),
+        compatibility_note,
         last_path_test,
+        last_successful_transcription,
     }
 }
 
@@ -4507,6 +4590,24 @@ fn matching_whisper_path_test_evidence(
         .cloned()
 }
 
+fn matching_whisper_transcription_compatibility_evidence(
+    settings: &AppSettings,
+    configured_path: &str,
+) -> Option<WhisperTranscriptionCompatibilityEvidence> {
+    let configured_path = configured_path.trim();
+    settings
+        .whisper_transcription_compatibility_evidence
+        .as_ref()
+        .filter(|evidence| evidence.model_path == configured_path)
+        .filter(|evidence| {
+            whisper_transcription_compatibility_evidence_matches_current_file(
+                configured_path,
+                evidence,
+            )
+        })
+        .cloned()
+}
+
 fn whisper_path_test_evidence_proves_current_readiness(
     configured_path: &str,
     evidence: &Option<WhisperPathTestEvidence>,
@@ -4517,6 +4618,19 @@ fn whisper_path_test_evidence_proves_current_readiness(
         .filter(|evidence| evidence.tested_path == configured_path)
         .filter(|evidence| evidence.state == "Valid")
         .map(|evidence| whisper_path_test_evidence_matches_current_file(configured_path, evidence))
+        .unwrap_or(false)
+}
+
+fn whisper_transcription_compatibility_evidence_matches_current_file(
+    configured_path: &str,
+    evidence: &WhisperTranscriptionCompatibilityEvidence,
+) -> bool {
+    std::fs::metadata(configured_path.trim())
+        .map(|metadata| {
+            metadata.is_file()
+                && metadata.len() == evidence.file_size_bytes
+                && file_modified_at_ms(&metadata) == Some(evidence.modified_at_ms)
+        })
         .unwrap_or(false)
 }
 
@@ -5117,6 +5231,7 @@ struct WhisperSetupGuidanceView {
     setup_guidance: String,
     compatibility_note: String,
     last_path_test: Option<WhisperPathTestEvidence>,
+    last_successful_transcription: Option<WhisperTranscriptionCompatibilityEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -8570,6 +8685,104 @@ mod tests {
         assert_eq!(
             json["meetings"][0]["segments"][0]["sourceChannel"],
             "Microphone"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn successful_transcription_records_historical_whisper_compatibility_without_readiness() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let meeting_id = seed_stopped_fake_recording(&root, &mut command_state);
+        let model_path = root.join("fixture-whisper.bin");
+        let model_bytes = b"fixture model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper path");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path.clone(),
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "compatibility transcript",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect("transcribe meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let evidence = &json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"];
+        let model_modified_at_ms =
+            file_modified_at_ms(&fs::metadata(&model_path).expect("model metadata"))
+                .expect("model modified time");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(json["setupGuidance"]["whisper"]["lastPathTest"], serde_json::Value::Null);
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable and has completed transcription before."
+        );
+        assert!(json["setupGuidance"]["whisper"]["compatibilityNote"]
+            .as_str()
+            .expect("compatibility note")
+            .contains("historical evidence"));
+        assert_eq!(
+            evidence["modelPath"],
+            model_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(evidence["usedAtMs"], 1_700_000_001_000_u64);
+        assert_eq!(evidence["provider"], "local-whisper");
+        assert_eq!(evidence["modelName"], "fixture-whisper.bin");
+        assert_eq!(evidence["meetingId"], meeting_id);
+        assert_eq!(evidence["segmentCount"], 1_u64);
+        assert_eq!(evidence["fileSizeBytes"], model_bytes.len() as u64);
+        assert_eq!(evidence["modifiedAtMs"], model_modified_at_ms);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_hides_stale_successful_transcription_evidence_for_changed_model_metadata() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper path");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_whisper_transcription_compatibility_evidence(
+                &WhisperTranscriptionCompatibilityEvidence {
+                    model_path: model_path.to_string_lossy().to_string(),
+                    used_at_ms: 1_700_000_001_000,
+                    provider: "local-whisper".to_string(),
+                    model_name: "fixture-whisper.bin".to_string(),
+                    meeting_id: "meeting-1".to_string(),
+                    model_run_id: "run-1".to_string(),
+                    transcript_version_id: "version-1".to_string(),
+                    segment_count: 1,
+                    file_size_bytes: b"fixture model".len() as u64,
+                    modified_at_ms: 0,
+                },
+            )
+            .expect("save stale evidence");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable; compatibility is not verified."
         );
 
         fs::remove_dir_all(root).expect("cleanup");

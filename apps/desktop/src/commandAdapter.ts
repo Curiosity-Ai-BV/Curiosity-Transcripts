@@ -63,6 +63,7 @@ export interface WhisperSetupGuidance {
   setupGuidance: string;
   compatibilityNote: string;
   lastPathTest: WhisperPathTestEvidence | null;
+  lastSuccessfulTranscription: WhisperTranscriptionCompatibilityEvidence | null;
 }
 
 export interface OllamaSetupGuidance {
@@ -141,6 +142,19 @@ export interface WhisperPathTestEvidence {
   fileSizeBytes: number | null;
   sha256: string | null;
   failureDetail: string | null;
+}
+
+export interface WhisperTranscriptionCompatibilityEvidence {
+  modelPath: string;
+  usedAtMs: number;
+  provider: string;
+  modelName: string;
+  meetingId: string;
+  modelRunId: string;
+  transcriptVersionId: string;
+  segmentCount: number;
+  fileSizeBytes: number;
+  modifiedAtMs: number;
 }
 
 export type WhisperModelPathTestResult =
@@ -442,7 +456,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   );
   const configuredModelPath = requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
 
-  validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance");
+  validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance", configuredModelPath);
   validateWhisperModelReadinessEvidence(modelKind, configuredModelPath, root.setupGuidance);
   validateCalendarContext(root.calendarContext, "desktop_snapshot.calendarContext");
 
@@ -906,6 +920,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
                 "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
               compatibilityNote: "Readability does not prove model compatibility.",
               lastPathTest: null,
+              lastSuccessfulTranscription: null,
             },
             ollama: {
               state: "ConfiguredNotChecked",
@@ -926,6 +941,7 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
               compatibilityNote: "Readability does not prove model compatibility.",
               lastPathTest: null,
+              lastSuccessfulTranscription: null,
             },
             ollama: {
               state: "ConfiguredNotChecked",
@@ -1007,6 +1023,7 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
         setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
         compatibilityNote: "Readability does not prove model compatibility.",
         lastPathTest: null,
+        lastSuccessfulTranscription: null,
       },
       ollama: {
         state: "ConfiguredNotChecked",
@@ -1120,6 +1137,7 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["setupGuidance", "whisper", "setupGuidance"],
   ["setupGuidance", "whisper", "compatibilityNote"],
   ["setupGuidance", "whisper", "lastPathTest"],
+  ["setupGuidance", "whisper", "lastSuccessfulTranscription"],
   ["setupGuidance", "ollama", "state"],
   ["setupGuidance", "ollama", "baseUrl"],
   ["setupGuidance", "ollama", "model"],
@@ -1238,6 +1256,14 @@ function requireString(value: unknown, pathLabel: string): string {
   return value;
 }
 
+function requireNonEmptyString(value: unknown, pathLabel: string): string {
+  const string = requireString(value, pathLabel);
+  if (!string.trim()) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a non-empty string`);
+  }
+  return string;
+}
+
 function requireNullableString(value: unknown, pathLabel: string): string | null {
   if (value === null) {
     return value;
@@ -1286,7 +1312,7 @@ function requireEnum<const T extends string>(
   return value as T;
 }
 
-function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void {
+function validateFirstRunSetupGuidance(value: unknown, pathLabel: string, configuredModelPath: string): void {
   const guidance = requireContractRecord(value, pathLabel);
   const whisper = requireContractRecord(guidance.whisper, `${pathLabel}.whisper`);
   requireEnum(
@@ -1294,11 +1320,21 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void 
     ["MissingPath", "UnreadablePath", "ReadablePath"],
     `${pathLabel}.whisper.state`,
   );
-  requireString(whisper.configuredPath, `${pathLabel}.whisper.configuredPath`);
+  const whisperConfiguredPath = requireString(whisper.configuredPath, `${pathLabel}.whisper.configuredPath`);
+  if (whisperConfiguredPath !== configuredModelPath) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected ${pathLabel}.whisper.configuredPath to match desktop_snapshot.model.configuredPath`,
+    );
+  }
   requireString(whisper.message, `${pathLabel}.whisper.message`);
   requireString(whisper.setupGuidance, `${pathLabel}.whisper.setupGuidance`);
   requireString(whisper.compatibilityNote, `${pathLabel}.whisper.compatibilityNote`);
   validateWhisperPathTestEvidence(whisper.lastPathTest, `${pathLabel}.whisper.lastPathTest`);
+  validateWhisperTranscriptionCompatibilityEvidence(
+    whisper.lastSuccessfulTranscription,
+    `${pathLabel}.whisper.lastSuccessfulTranscription`,
+    configuredModelPath,
+  );
 
   const ollama = requireContractRecord(guidance.ollama, `${pathLabel}.ollama`);
   requireEnum(
@@ -1342,6 +1378,32 @@ function validateWhisperPathTestEvidence(value: unknown, pathLabel: string): voi
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel}.sha256 to be a SHA-256 hex string`);
   }
   requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
+}
+
+function validateWhisperTranscriptionCompatibilityEvidence(
+  value: unknown,
+  pathLabel: string,
+  configuredModelPath: string,
+): void {
+  if (value === null) {
+    return;
+  }
+  const evidence = requireContractRecord(value, pathLabel);
+  const modelPath = requireNonEmptyString(evidence.modelPath, `${pathLabel}.modelPath`);
+  if (modelPath !== configuredModelPath) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected ${pathLabel}.modelPath to match desktop_snapshot.model.configuredPath`,
+    );
+  }
+  requireNonNegativeInteger(evidence.usedAtMs, `${pathLabel}.usedAtMs`);
+  requireNonEmptyString(evidence.provider, `${pathLabel}.provider`);
+  requireNonEmptyString(evidence.modelName, `${pathLabel}.modelName`);
+  requireNonEmptyString(evidence.meetingId, `${pathLabel}.meetingId`);
+  requireNonEmptyString(evidence.modelRunId, `${pathLabel}.modelRunId`);
+  requireNonEmptyString(evidence.transcriptVersionId, `${pathLabel}.transcriptVersionId`);
+  requirePositiveInteger(evidence.segmentCount, `${pathLabel}.segmentCount`);
+  requirePositiveInteger(evidence.fileSizeBytes, `${pathLabel}.fileSizeBytes`);
+  requireNonNegativeInteger(evidence.modifiedAtMs, `${pathLabel}.modifiedAtMs`);
 }
 
 function validateWhisperModelReadinessEvidence(
@@ -1504,6 +1566,14 @@ function requireNonNegativeInteger(value: unknown, pathLabel: string): number {
   const number = requireNumber(value, pathLabel);
   if (!Number.isInteger(number) || number < 0) {
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a non-negative integer`);
+  }
+  return number;
+}
+
+function requirePositiveInteger(value: unknown, pathLabel: string): number {
+  const number = requireNumber(value, pathLabel);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a positive integer`);
   }
   return number;
 }

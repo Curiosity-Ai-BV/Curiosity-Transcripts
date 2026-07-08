@@ -410,6 +410,8 @@ describe("desktop workspace shell", () => {
           message: "No Whisper model path is configured.",
           setupGuidance: "Enter a local Whisper model path, save it, then use Test path.",
           compatibilityNote: "Readability does not prove model compatibility.",
+          lastPathTest: null,
+          lastSuccessfulTranscription: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -458,6 +460,7 @@ describe("desktop workspace shell", () => {
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
           lastPathTest: null,
+          lastSuccessfulTranscription: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -511,6 +514,7 @@ describe("desktop workspace shell", () => {
             sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
             failureDetail: null,
           },
+          lastSuccessfulTranscription: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -554,6 +558,64 @@ describe("desktop workspace shell", () => {
     expect(readiness.textContent?.toLowerCase()).not.toContain("is compatible");
   });
 
+  it("shows last successful Whisper transcription evidence separately from path evidence", () => {
+    const setupGuidance = whisperSetupGuidanceForPath(
+      "/models/ggml-base.en.bin",
+      validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
+    );
+    const snapshot = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: "/models/ggml-base.en.bin",
+      },
+      setupGuidance: {
+        ...setupGuidance,
+        whisper: {
+          ...setupGuidance.whisper,
+          message: "Whisper model path is readable and has completed transcription before.",
+          compatibilityNote:
+            "Last successful transcription is historical evidence for this local path, not a background compatibility check.",
+          lastSuccessfulTranscription: {
+            modelPath: "/models/ggml-base.en.bin",
+            usedAtMs: 1_700_000_005_000,
+            provider: "local-whisper",
+            modelName: "ggml-base.en.bin",
+            meetingId: "meeting-1",
+            modelRunId: "run-1",
+            transcriptVersionId: "version-1",
+            segmentCount: 2,
+            fileSizeBytes: 16,
+            modifiedAtMs: 1_700_000_004_000,
+          },
+        },
+      },
+      settings: {
+        whisperModelPath: "/models/ggml-base.en.bin",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Last explicit Test path: Valid at 2023-11-14T22:13:21.000Z")).toBeInTheDocument();
+    expect(within(readiness).getByText("Last successful transcription at 2023-11-14T22:13:25.000Z")).toBeInTheDocument();
+    expect(within(readiness).getByText("Provider: local-whisper")).toBeInTheDocument();
+    expect(within(readiness).getByText("Meeting: meeting-1")).toBeInTheDocument();
+    expect(within(readiness).getByText("Model run: run-1")).toBeInTheDocument();
+    expect(within(readiness).getByText("Transcript version: version-1")).toBeInTheDocument();
+    expect(within(readiness).getByText("Transcript: 2 segments")).toBeInTheDocument();
+    expect(within(readiness).getByText("Model modified: 2023-11-14T22:13:24.000Z")).toBeInTheDocument();
+    expect(
+      within(readiness).getByText(
+        "Last successful transcription is historical evidence for this local path, not a background compatibility check.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows missing Ollama model evidence with the deterministic pull command", () => {
     const snapshot = {
       ...connectedSnapshot({
@@ -577,6 +639,7 @@ describe("desktop workspace shell", () => {
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
           lastPathTest: validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
+          lastSuccessfulTranscription: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -630,6 +693,7 @@ describe("desktop workspace shell", () => {
           setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
           compatibilityNote: "Readability does not prove model compatibility.",
           lastPathTest: validWhisperPathTestEvidence("/models/ggml-base.en.bin"),
+          lastSuccessfulTranscription: null,
         },
         ollama: {
           state: "ConfiguredNotChecked",
@@ -3157,6 +3221,7 @@ function whisperSetupGuidanceForPath(
       setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
       compatibilityNote: "Readability does not prove model compatibility.",
       lastPathTest,
+      lastSuccessfulTranscription: null,
     },
   };
 }

@@ -6,7 +6,7 @@ use curiosity_domain::{
     ProcessingJob, RecordingSession, RecordingSource, SourceChannel, TranscriptSegment,
     TranscriptVersion,
 };
-use curiosity_store::{ArtifactManifest, Store};
+use curiosity_store::{ArtifactManifest, Store, WhisperTranscriptionCompatibilityEvidence};
 use rusqlite::Connection;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -352,6 +352,39 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
         0
     );
     assert!(store.search_meetings("delete").expect("search").is_empty());
+}
+
+#[test]
+fn delete_meeting_clears_whisper_transcription_evidence_for_deleted_meeting() {
+    let root = test_root("delete-clears-whisper-evidence");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+    store
+        .save_whisper_transcription_compatibility_evidence(
+            &WhisperTranscriptionCompatibilityEvidence {
+                model_path: "/models/ggml-base.en.bin".to_string(),
+                used_at_ms: 1_700_000_003_000,
+                provider: "local-whisper".to_string(),
+                model_name: "ggml-base.en.bin".to_string(),
+                meeting_id: "meeting-1".to_string(),
+                model_run_id: "meeting-1-run-1".to_string(),
+                transcript_version_id: "meeting-1-version-1".to_string(),
+                segment_count: 1,
+                file_size_bytes: 16,
+                modified_at_ms: 1_700_000_004_000,
+            },
+        )
+        .expect("save compatibility evidence");
+
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert_eq!(
+        store
+            .app_settings()
+            .expect("settings")
+            .whisper_transcription_compatibility_evidence,
+        None
+    );
 }
 
 #[test]
