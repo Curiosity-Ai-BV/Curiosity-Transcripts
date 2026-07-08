@@ -155,9 +155,18 @@ on vulnerable crates and reports informational warning advisories. The desktop
 lockfile has been updated from `plist` 1.9.0 to 1.10.0 so its transitive
 `quick-xml` dependency is on the fixed 0.41.0 line.
 
-CodeQL, SBOM, and license output remain later Phase 2 hardening unless
-implemented in separate slices. `cargo deny` is not part of the current advisory
-gate.
+Current CodeQL code scanning status: `.github/workflows/codeql.yml` runs
+advanced CodeQL setup on push, pull request, and a weekly schedule for exactly
+Rust and JavaScript/TypeScript. Both matrix entries use `build-mode: none` to
+create CodeQL databases without duplicating CI build/test cost. Workflow
+permissions stay minimal for this slice: `contents: read` for checkout and
+`security-events: write` for code scanning upload. This slice is visibility-only
+because it does not add branch-protection or alert triage policy; those
+enforcement decisions remain release governance work.
+
+SBOM, license output, and secret scanning expectations remain later Phase 2
+hardening unless implemented in separate slices. `cargo deny` is not part of the
+current advisory gate.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes
 per-meeting privacy data state: private audio storage path, captured raw-audio

@@ -16,8 +16,13 @@ Desktop npm dependencies must pass `npm audit --audit-level=high` after
 update automation present. Rust dependencies must pass `cargo audit` at the
 repository root and from `apps/desktop/src-tauri`; warning-class RustSec
 advisories should be recorded for dependency triage even when no vulnerable
-crate is present. CodeQL, SBOM, and license output are still future hardening
-gates unless a later slice adds them; `cargo deny` is not part of this gate.
+crate is present. CodeQL scans Rust and JavaScript/TypeScript on push, pull
+request, and a weekly schedule with `build-mode: none` to avoid duplicating CI
+build/test cost; confirm code scanning alerts are visible before treating a
+build as a release candidate. CodeQL visibility does not replace
+branch-protection or alert triage policy. SBOM, license output, and secret
+scanning expectations are still future hardening gates unless a later slice adds
+them; `cargo deny` is not part of this gate.
 
 ## Manual Smoke Items
 

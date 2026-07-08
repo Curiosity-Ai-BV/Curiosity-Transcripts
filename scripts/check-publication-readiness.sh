@@ -30,6 +30,7 @@ check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
+check_file ".github/workflows/codeql.yml"
 check_file ".github/workflows/pages.yml"
 check_file ".github/workflows/release.yml"
 
@@ -75,6 +76,9 @@ require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Pha
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
+require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
+require_text docs/production-readiness-roadmap.md 'SBOM, license output, and secret scanning expectations remain later Phase 2' 'remaining Phase 2 security automation scope'
+require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
 require_text docs/release-candidate-checklist.md 'Clean-user install' 'clean-user install release-candidate smoke item'
@@ -95,6 +99,8 @@ require_text docs/release-candidate-checklist.md 'Uninstall and private-data han
 require_text docs/release-candidate-checklist.md 'JSON, Markdown, and SRT' 'current release-candidate export formats'
 require_text docs/release-candidate-checklist.md 'At-rest disclosure' 'at-rest disclosure release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'encryption-at-rest is not implemented in v1' 'release notes at-rest encryption disclosure'
+require_text docs/release-candidate-checklist.md 'CodeQL scans Rust and JavaScript/TypeScript' 'CodeQL release-candidate visibility expectation'
+require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
 require_text docs/at-rest-data-strategy.md 'app-private local storage' 'v1 app-private storage decision'
 require_text docs/at-rest-data-strategy.md 'encryption-at-rest is not implemented yet' 'v1 encryption-at-rest non-implementation'
@@ -234,6 +240,69 @@ require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publica
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
 require_text .github/workflows/ci.yml 'check-release-workflow\.js' 'GitHub Release workflow validation CI gate'
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/codeql.yml";
+const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+const expected = `name: CodeQL
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "21 4 * * 2"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (\${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: \${{ matrix.language }}
+          build-mode: \${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:\${{ matrix.language }}"
+`;
+let ok = true;
+
+function fail(message) {
+  console.error(`::error file=${file}::${message}`);
+  ok = false;
+}
+
+if (text !== expected) {
+  fail(
+    "CodeQL workflow must match the approved Rust and JavaScript/TypeScript advanced setup; update this readiness guard with any intentional workflow change",
+  );
+}
+
+process.exit(ok ? 0 : 1);
+NODE
+then
+  failures=1
+fi
 require_text .github/dependabot.yml 'package-ecosystem: "npm"' 'Dependabot npm update automation'
 require_text .github/dependabot.yml 'directory: "/apps/desktop"' 'Dependabot desktop npm directory'
 require_text .github/dependabot.yml 'package-ecosystem: "cargo"' 'Dependabot cargo update automation'
