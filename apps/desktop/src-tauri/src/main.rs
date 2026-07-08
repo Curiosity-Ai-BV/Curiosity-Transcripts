@@ -29,7 +29,8 @@ use curiosity_domain::{
     TranscriptVersion,
 };
 use curiosity_store::{
-    AppSettings, CompletedAudioArtifact, PendingDeleteFinalizationReport, RecoverableArtifact, Store,
+    AppSettings, CompletedAudioArtifact, PendingDeleteFinalizationReport, RecoverableArtifact,
+    Store,
 };
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
@@ -856,6 +857,7 @@ fn desktop_snapshot_for_app_root_with_state(
         selected_meeting_id,
         recording: recording_snapshot(app_root, command_state),
         model: model_status_from_settings(&settings),
+        setup_guidance: setup_guidance_from_settings(&settings),
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
@@ -3415,6 +3417,100 @@ fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
     }
 }
 
+fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidanceView {
+    FirstRunSetupGuidanceView {
+        whisper: whisper_setup_guidance_from_settings(settings),
+        ollama: ollama_setup_guidance_from_settings(settings),
+    }
+}
+
+fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
+    let configured_path = resolved_whisper_model_path(settings);
+    if configured_path.trim().is_empty() {
+        return WhisperSetupGuidanceView {
+            state: "MissingPath".to_string(),
+            configured_path,
+            message: "No Whisper model path is configured.".to_string(),
+            setup_guidance:
+                "Enter a local Whisper model path in Settings, save it, then use Test path."
+                    .to_string(),
+            compatibility_note: "Readability does not prove model compatibility.".to_string(),
+        };
+    }
+
+    let path = PathBuf::from(configured_path.trim());
+    let unreadable = |message: String, setup_guidance: &str| WhisperSetupGuidanceView {
+        state: "UnreadablePath".to_string(),
+        configured_path: configured_path.clone(),
+        message,
+        setup_guidance: setup_guidance.to_string(),
+        compatibility_note: "Readability does not prove model compatibility.".to_string(),
+    };
+
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return unreadable(
+                format!("Whisper model path does not exist or cannot be inspected: {error}"),
+                "Check the saved path, choose a readable local Whisper model file, then use Test path.",
+            );
+        }
+    };
+    if !metadata.is_file() {
+        return unreadable(
+            "Whisper model path must point to a file.".to_string(),
+            "Choose a readable local Whisper model file, not a directory, then use Test path.",
+        );
+    }
+    if let Err(error) = std::fs::File::open(&path) {
+        return unreadable(
+            format!("Whisper model path is not readable: {error}"),
+            "Check file permissions, choose a readable local Whisper model file, then use Test path.",
+        );
+    }
+
+    WhisperSetupGuidanceView {
+        state: "ReadablePath".to_string(),
+        configured_path,
+        message: "Whisper model path is readable; compatibility is not verified.".to_string(),
+        setup_guidance:
+            "Use Test path for file evidence, then transcribe a sample to verify compatibility."
+                .to_string(),
+        compatibility_note: "Readability does not prove model compatibility.".to_string(),
+    }
+}
+
+fn ollama_setup_guidance_from_settings(settings: &AppSettings) -> OllamaSetupGuidanceView {
+    let base_url = settings.ollama_base_url.trim().to_string();
+    let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+    let validation_error = validate_local_ollama_model(&model)
+        .and_then(|_| local_ollama_endpoint(&base_url, "/api/tags").map(|_| ()))
+        .err();
+
+    let (state, message, setup_guidance) = if let Some(error) = validation_error {
+        (
+            "InvalidLocalConfiguration",
+            error.to_string(),
+            "Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+        )
+    } else {
+        (
+            "ConfiguredNotChecked",
+            "Ollama is configured for a local loopback URL and model.".to_string(),
+            "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+        )
+    };
+
+    OllamaSetupGuidanceView {
+        state: state.to_string(),
+        base_url,
+        model,
+        availability: "UnknownUntilTest".to_string(),
+        message,
+        setup_guidance: setup_guidance.to_string(),
+    }
+}
+
 fn resolved_whisper_model_path(settings: &AppSettings) -> String {
     let saved_path = settings.whisper_model_path.trim();
     if saved_path.is_empty() {
@@ -3933,6 +4029,7 @@ struct DesktopSnapshot {
     selected_meeting_id: Option<String>,
     recording: CommandRecordingDto,
     model: ModelStatus,
+    setup_guidance: FirstRunSetupGuidanceView,
     settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
@@ -3954,6 +4051,34 @@ struct CommandSurfaceState {
 struct ModelStatus {
     kind: String,
     configured_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FirstRunSetupGuidanceView {
+    whisper: WhisperSetupGuidanceView,
+    ollama: OllamaSetupGuidanceView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperSetupGuidanceView {
+    state: String,
+    configured_path: String,
+    message: String,
+    setup_guidance: String,
+    compatibility_note: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaSetupGuidanceView {
+    state: String,
+    base_url: String,
+    model: String,
+    availability: String,
+    message: String,
+    setup_guidance: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4881,6 +5006,126 @@ mod tests {
     }
 
     #[test]
+    fn desktop_snapshot_guides_missing_whisper_and_unchecked_ollama_without_probe_metadata() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "MissingPath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "No Whisper model path is configured."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "UnknownUntilTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["baseUrl"],
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(json["setupGuidance"]["ollama"]["model"], "qwen3.6:27b");
+        let ollama = json["setupGuidance"]["ollama"]
+            .as_object()
+            .expect("ollama guidance");
+        assert!(!ollama.contains_key("installedLocalModels"));
+        assert!(!ollama.contains_key("pullCommand"));
+        assert!(!json["setupGuidance"]["ollama"]
+            .to_string()
+            .contains("ollama pull"));
+        assert!(!json["setupGuidance"]["ollama"]
+            .to_string()
+            .to_lowercase()
+            .contains("download"));
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_guides_readable_whisper_as_unverified_without_hashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "ReadablePath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["configuredPath"],
+            model_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable; compatibility is not verified."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        assert!(!whisper.contains_key("sha256"));
+        assert!(!whisper.contains_key("fileSizeBytes"));
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_guides_existing_directory_whisper_path_as_unreadable_without_hashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_directory = root.join("not-a-model-file");
+        fs::create_dir_all(&model_directory).expect("model directory");
+        save_whisper_model_path_for_app_root(&root, model_directory.to_string_lossy().to_string())
+            .expect("save whisper");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "UnreadablePath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path must point to a file."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        assert!(!whisper.contains_key("sha256"));
+        assert!(!whisper.contains_key("fileSizeBytes"));
+        let readiness_copy = json["setupGuidance"]["whisper"].to_string().to_lowercase();
+        assert!(!readiness_copy.contains("is compatible"));
+        assert!(!readiness_copy.contains("compatibility is verified"));
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     #[cfg(not(feature = "system-audio-screencapturekit"))]
     fn system_audio_smoke_recording_reports_unavailable_without_fake_success() {
         let root = unique_test_root();
@@ -5404,8 +5649,8 @@ mod tests {
             ..Default::default()
         };
 
-        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
-            .expect("snapshot");
+        let snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &snapshot_state).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
         let reopened = open_store(&root).expect("reopen store");
 

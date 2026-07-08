@@ -43,6 +43,23 @@
         "ollamaModel": "qwen3.6:27b",
         "whisperModelPath": ""
       },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "",
+          "message": "No Whisper model path is configured.",
+          "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
+          "state": "MissingPath"
+        }
+      },
       "summaryJob": null,
       "transcription": null,
       "transcriptionJob": null
@@ -131,6 +148,23 @@
         "ollamaBaseUrl": "http://127.0.0.1:11434",
         "ollamaModel": "qwen3.6:27b",
         "whisperModelPath": ""
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "",
+          "message": "No Whisper model path is configured.",
+          "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
+          "state": "MissingPath"
+        }
       },
       "summaryJob": null,
       "transcription": null,

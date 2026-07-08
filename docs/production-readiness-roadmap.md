@@ -90,6 +90,12 @@ Goal: remove developer-only setup from the core user path.
 
 Deliverables:
 
+- Current Phase 1A status: the existing Settings pane now shows manual
+  first-run readiness guidance derived from saved settings. Whisper guidance
+  distinguishes missing, unreadable, and readable-but-unverified paths without
+  hashing during snapshot load. Ollama guidance shows the configured local
+  URL/model and keeps availability unknown until the user runs `Test Ollama`.
+  Model download/management and automatic Ollama pulls remain later work.
 - Add a first-run model setup flow for Whisper:
   model discovery, download or file selection, compatibility checks, hash/size
   recording, model health state, and recovery guidance for missing or invalid

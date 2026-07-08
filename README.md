@@ -106,12 +106,16 @@ Implemented MVP flows:
 - Checked-in desktop command/view contract fixture at
   `apps/desktop/contracts/desktop-command-view-contract.fixture.json`, guarded by
   Rust exact-equality and TS command adapter contract tests.
+- Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
+  missing/readable Whisper paths are typed, readable paths remain compatibility
+  unverified, and Ollama availability stays unknown until the user runs
+  `Test Ollama`.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
 Remaining gaps:
 
-- First-run model download/management UI for Whisper and Ollama.
+- Model download/management UI for Whisper and Ollama.
 - Richer privacy controls for retention, storage location, provider disclosure,
   and remaining exported files.
 - App-level encryption-at-rest and keychain-backed secret storage are not
@@ -145,9 +149,9 @@ For the production-readiness sequence, see
 
 Near-term product hardening:
 
-- Add first-run model setup for Whisper and Ollama, including model availability
-  states, hashes, and clear recovery guidance when a model is missing or
-  incompatible.
+- Build on the implemented Settings-pane manual readiness guidance with model
+  discovery, download/management, compatibility checks, and richer availability
+  states for Whisper and Ollama.
 - Finish per-meeting privacy controls for raw-audio retention, local-only versus
   hosted-provider use, storage location, and remaining exported files after
   deletion.
@@ -435,8 +439,9 @@ cd apps/desktop
 CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
 ```
 
-The desktop settings pane can save a local Whisper model path. If no path is
-saved, the desktop `transcribe_meeting` command falls back to
+The desktop settings pane can save a local Whisper model path and shows first-run
+readiness guidance for missing paths and readable-but-unverified files. If no
+path is saved, the desktop `transcribe_meeting` command falls back to
 `CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
 default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
 unavailable-backend state. If the effective model path is missing, the UI should
@@ -463,7 +468,8 @@ ollama pull qwen3.6:27b
 `http://127.0.0.1:11434` and `qwen3.6:27b`, and store settings are the runtime
 source of truth. The local Ollama path accepts localhost/loopback URLs only; use
 the hosted provider path, disclosure gate, and explicit secrets for any
-networked provider.
+networked provider. Snapshot readiness guidance does not probe Ollama; availability
+is unknown until the user runs the Settings pane's `Test Ollama` action.
 
 End-to-end expectation:
 

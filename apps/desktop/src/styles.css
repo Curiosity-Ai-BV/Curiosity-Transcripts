@@ -813,6 +813,49 @@ h3 {
   padding-bottom: 18px;
 }
 
+.model-readiness {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
+.readiness-item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--tone) 28%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tone) 7%, transparent);
+  padding: 10px;
+}
+
+.readiness-heading {
+  display: flex;
+  min-width: 0;
+}
+
+.readiness-item p,
+.readiness-item small {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.readiness-item small {
+  color: var(--muted);
+}
+
+.readiness-path {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
 .settings-form {
   border-bottom: 1px solid var(--line);
   padding-bottom: 18px;

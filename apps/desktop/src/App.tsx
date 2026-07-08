@@ -237,6 +237,9 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     ? mapCommandJobState(currentSnapshot.transcriptionJob)
     : null;
   const summaryJob = currentSnapshot.summaryJob ? mapCommandJobState(currentSnapshot.summaryJob) : null;
+  const setupGuidance = currentSnapshot.setupGuidance;
+  const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
+  const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama.state);
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
   const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
@@ -1136,6 +1139,29 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                 />
               ) : null}
             </div>
+            <div className="model-readiness" aria-label="Model readiness guidance">
+              <div className={`readiness-item ${whisperReadinessTone}`}>
+                <div className="readiness-heading">
+                  <StatusPill tone={whisperReadinessTone} label={whisperSetupLabel(setupGuidance.whisper.state)} />
+                </div>
+                <p>{setupGuidance.whisper.message}</p>
+                {setupGuidance.whisper.configuredPath ? (
+                  <span className="readiness-path">{setupGuidance.whisper.configuredPath}</span>
+                ) : null}
+                <p>{setupGuidance.whisper.setupGuidance}</p>
+                <small>{setupGuidance.whisper.compatibilityNote}</small>
+              </div>
+              <div className={`readiness-item ${ollamaReadinessTone}`}>
+                <div className="readiness-heading">
+                  <StatusPill tone={ollamaReadinessTone} label="Ollama availability unknown" />
+                </div>
+                <p>{setupGuidance.ollama.message}</p>
+                <span className="readiness-path">
+                  {setupGuidance.ollama.baseUrl} / {setupGuidance.ollama.model}
+                </span>
+                <p>{setupGuidance.ollama.setupGuidance}</p>
+              </div>
+            </div>
             <div className="settings-form" aria-label="Local settings">
               <label className="settings-field" htmlFor="whisper-model-path">
                 <span>Whisper model path</span>
@@ -1251,6 +1277,30 @@ export default function App({ snapshot, commandFacade }: AppProps) {
 
 function StatusPill({ tone, label }: { tone: Tone; label: string }) {
   return <span className={`status-pill ${tone}`}>{label}</span>;
+}
+
+function whisperSetupLabel(state: DesktopSnapshot["setupGuidance"]["whisper"]["state"]) {
+  if (state === "ReadablePath") {
+    return "Whisper path readable";
+  }
+  if (state === "UnreadablePath") {
+    return "Whisper path blocked";
+  }
+  return "Whisper path missing";
+}
+
+function whisperSetupTone(state: DesktopSnapshot["setupGuidance"]["whisper"]["state"]): Tone {
+  if (state === "ReadablePath") {
+    return "warn";
+  }
+  return "blocked";
+}
+
+function ollamaSetupTone(state: DesktopSnapshot["setupGuidance"]["ollama"]["state"]): Tone {
+  if (state === "InvalidLocalConfiguration") {
+    return "blocked";
+  }
+  return "warn";
 }
 
 function StatusLine({

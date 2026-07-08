@@ -341,6 +341,96 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("button", { name: "Save analysis" })).toBeEnabled();
   });
 
+  it("shows first-run readiness guidance for missing Whisper and unchecked Ollama without downloads", () => {
+    const snapshot = {
+      ...connectedSnapshot({
+        model: {
+          kind: "missing",
+          configuredPath: "",
+        },
+        settings: {
+          whisperModelPath: "",
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          ollamaModel: "qwen3.6:27b",
+          exportDirectory: null,
+        },
+      }),
+      setupGuidance: {
+        whisper: {
+          state: "MissingPath",
+          configuredPath: "",
+          message: "No Whisper model path is configured.",
+          setupGuidance: "Enter a local Whisper model path, save it, then use Test path.",
+          compatibilityNote: "Readability does not prove model compatibility.",
+        },
+        ollama: {
+          state: "ConfiguredNotChecked",
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+          availability: "UnknownUntilTest",
+          message: "Ollama is configured for a local loopback URL and model.",
+          setupGuidance: "Start Ollama manually, install the selected local model if needed, then run Test Ollama.",
+        },
+      },
+    } as never;
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("No Whisper model path is configured.")).toBeInTheDocument();
+    expect(within(readiness).getByText("Readability does not prove model compatibility.")).toBeInTheDocument();
+    expect(within(readiness).getByText("Ollama availability unknown")).toBeInTheDocument();
+    expect(within(readiness).getByText("http://127.0.0.1:11434 / qwen3.6:27b")).toBeInTheDocument();
+    expect(readiness.textContent?.toLowerCase()).not.toContain("download");
+    expect(readiness.textContent).not.toContain("SHA-256");
+    expect(readiness.textContent).not.toContain("Installed models:");
+    expect(readiness.textContent).not.toContain("ollama pull");
+  });
+
+  it("describes a readable Whisper path as readable but not compatibility-verified", () => {
+    const snapshot = {
+      ...connectedSnapshot({
+        model: {
+          kind: "ready",
+          configuredPath: "/models/ggml-base.en.bin",
+        },
+        settings: {
+          whisperModelPath: "/models/ggml-base.en.bin",
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          ollamaModel: "qwen3.6:27b",
+          exportDirectory: null,
+        },
+      }),
+      setupGuidance: {
+        whisper: {
+          state: "ReadablePath",
+          configuredPath: "/models/ggml-base.en.bin",
+          message: "Whisper model path is readable; compatibility is not verified.",
+          setupGuidance: "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          compatibilityNote: "Readability does not prove model compatibility.",
+        },
+        ollama: {
+          state: "ConfiguredNotChecked",
+          baseUrl: "http://127.0.0.1:11434",
+          model: "qwen3.6:27b",
+          availability: "UnknownUntilTest",
+          message: "Ollama is configured for a local loopback URL and model.",
+          setupGuidance: "Start Ollama manually, install the selected local model if needed, then run Test Ollama.",
+        },
+      },
+    } as never;
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const readiness = screen.getByLabelText("Model readiness guidance");
+    expect(within(readiness).getByText("Whisper path readable")).toBeInTheDocument();
+    expect(
+      within(readiness).getByText("Whisper model path is readable; compatibility is not verified."),
+    ).toBeInTheDocument();
+    expect(within(readiness).getByText("Readability does not prove model compatibility.")).toBeInTheDocument();
+    expect(readiness.textContent).not.toContain("SHA-256");
+  });
+
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
     const user = userEvent.setup();
 

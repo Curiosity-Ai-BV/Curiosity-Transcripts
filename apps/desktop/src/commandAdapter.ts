@@ -44,6 +44,32 @@ export interface ModelStatus {
   configuredPath: string;
 }
 
+export type WhisperSetupState = "MissingPath" | "UnreadablePath" | "ReadablePath";
+export type OllamaSetupState = "ConfiguredNotChecked" | "InvalidLocalConfiguration";
+export type OllamaAvailabilityState = "UnknownUntilTest";
+
+export interface WhisperSetupGuidance {
+  state: WhisperSetupState;
+  configuredPath: string;
+  message: string;
+  setupGuidance: string;
+  compatibilityNote: string;
+}
+
+export interface OllamaSetupGuidance {
+  state: OllamaSetupState;
+  baseUrl: string;
+  model: string;
+  availability: OllamaAvailabilityState;
+  message: string;
+  setupGuidance: string;
+}
+
+export interface FirstRunSetupGuidance {
+  whisper: WhisperSetupGuidance;
+  ollama: OllamaSetupGuidance;
+}
+
 export interface AppSettings {
   whisperModelPath: string;
   ollamaBaseUrl: string;
@@ -186,6 +212,7 @@ export interface DesktopSnapshot {
   selectedMeetingId: string | null;
   recording: CommandRecordingDto;
   model: ModelStatus;
+  setupGuidance: FirstRunSetupGuidance;
   settings: AppSettings;
   capture: CaptureStatus;
   transcription: TranscriptionCommandView | null;
@@ -327,6 +354,8 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   const model = requireContractRecord(root.model, "desktop_snapshot.model");
   requireEnum(model.kind, ["ready", "missing", "transcribing"], "desktop_snapshot.model.kind");
   requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
+
+  validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance");
 
   const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
   requireString(settings.whisperModelPath, "desktop_snapshot.settings.whisperModelPath");
@@ -750,6 +779,45 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       variant === "state-matrix"
         ? { kind: "transcribing", configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin" }
         : { kind: "missing", configuredPath: "" },
+    setupGuidance:
+      variant === "state-matrix"
+        ? {
+            whisper: {
+              state: "ReadablePath",
+              configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin",
+              message: "Whisper model path is readable; compatibility is not verified.",
+              setupGuidance:
+                "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+              compatibilityNote: "Readability does not prove model compatibility.",
+            },
+            ollama: {
+              state: "ConfiguredNotChecked",
+              baseUrl: "http://127.0.0.1:11434",
+              model: "qwen3.6:27b",
+              availability: "UnknownUntilTest",
+              message: "Ollama is configured for a local loopback URL and model.",
+              setupGuidance:
+                "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+            },
+          }
+        : {
+            whisper: {
+              state: "MissingPath",
+              configuredPath: "",
+              message: "No Whisper model path is configured.",
+              setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
+              compatibilityNote: "Readability does not prove model compatibility.",
+            },
+            ollama: {
+              state: "ConfiguredNotChecked",
+              baseUrl: "http://127.0.0.1:11434",
+              model: "qwen3.6:27b",
+              availability: "UnknownUntilTest",
+              message: "Ollama is configured for a local loopback URL and model.",
+              setupGuidance:
+                "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+            },
+          },
     settings: {
       whisperModelPath:
         variant === "state-matrix" ? "~/Library/Application Support/Curiosity/models/base.en.bin" : "",
@@ -800,6 +868,24 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       recovery_action: "Load the desktop command surface before recording.",
     },
     model: { kind: "missing", configuredPath: "" },
+    setupGuidance: {
+      whisper: {
+        state: "MissingPath",
+        configuredPath: "",
+        message: "No Whisper model path is configured.",
+        setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
+        compatibilityNote: "Readability does not prove model compatibility.",
+      },
+      ollama: {
+        state: "ConfiguredNotChecked",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "qwen3.6:27b",
+        availability: "UnknownUntilTest",
+        message: "Ollama is configured for a local loopback URL and model.",
+        setupGuidance:
+          "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+      },
+    },
     settings: {
       whisperModelPath: "",
       ollamaBaseUrl: "http://127.0.0.1:11434",
@@ -880,6 +966,17 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["recording", "recovery_action"],
   ["model", "kind"],
   ["model", "configuredPath"],
+  ["setupGuidance", "whisper", "state"],
+  ["setupGuidance", "whisper", "configuredPath"],
+  ["setupGuidance", "whisper", "message"],
+  ["setupGuidance", "whisper", "setupGuidance"],
+  ["setupGuidance", "whisper", "compatibilityNote"],
+  ["setupGuidance", "ollama", "state"],
+  ["setupGuidance", "ollama", "baseUrl"],
+  ["setupGuidance", "ollama", "model"],
+  ["setupGuidance", "ollama", "availability"],
+  ["setupGuidance", "ollama", "message"],
+  ["setupGuidance", "ollama", "setupGuidance"],
   ["settings", "whisperModelPath"],
   ["settings", "ollamaBaseUrl"],
   ["settings", "ollamaModel"],
@@ -1018,6 +1115,32 @@ function requireEnum<const T extends string>(
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be one of ${allowed.join(", ")}`);
   }
   return value as T;
+}
+
+function validateFirstRunSetupGuidance(value: unknown, pathLabel: string): void {
+  const guidance = requireContractRecord(value, pathLabel);
+  const whisper = requireContractRecord(guidance.whisper, `${pathLabel}.whisper`);
+  requireEnum(
+    whisper.state,
+    ["MissingPath", "UnreadablePath", "ReadablePath"],
+    `${pathLabel}.whisper.state`,
+  );
+  requireString(whisper.configuredPath, `${pathLabel}.whisper.configuredPath`);
+  requireString(whisper.message, `${pathLabel}.whisper.message`);
+  requireString(whisper.setupGuidance, `${pathLabel}.whisper.setupGuidance`);
+  requireString(whisper.compatibilityNote, `${pathLabel}.whisper.compatibilityNote`);
+
+  const ollama = requireContractRecord(guidance.ollama, `${pathLabel}.ollama`);
+  requireEnum(
+    ollama.state,
+    ["ConfiguredNotChecked", "InvalidLocalConfiguration"],
+    `${pathLabel}.ollama.state`,
+  );
+  requireString(ollama.baseUrl, `${pathLabel}.ollama.baseUrl`);
+  requireString(ollama.model, `${pathLabel}.ollama.model`);
+  requireEnum(ollama.availability, ["UnknownUntilTest"], `${pathLabel}.ollama.availability`);
+  requireString(ollama.message, `${pathLabel}.ollama.message`);
+  requireString(ollama.setupGuidance, `${pathLabel}.ollama.setupGuidance`);
 }
 
 function validateExportCommandState(value: unknown, pathLabel: string): void {

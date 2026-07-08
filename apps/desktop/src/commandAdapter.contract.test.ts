@@ -47,6 +47,48 @@ describe("desktop snapshot DTO contract", () => {
     },
   );
 
+  it("requires first-run setup guidance to be explicit in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete driftedBackendSnapshot.setupGuidance;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance");
+  });
+
+  it("guards setup guidance state and unknown Ollama availability in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      setupGuidance: {
+        ...backendSnapshot.setupGuidance,
+        whisper: {
+          ...backendSnapshot.setupGuidance.whisper,
+          state: "Compatible",
+        },
+        ollama: {
+          ...backendSnapshot.setupGuidance.ollama,
+          availability: "Available",
+        },
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.state");
+  });
+
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -255,6 +297,18 @@ describe("desktop snapshot DTO contract", () => {
             summary: "Local summary",
           },
           failure: null,
+        },
+      },
+    ],
+    [
+      "desktop_snapshot.setupGuidance.ollama.availability",
+      {
+        setupGuidance: {
+          ...getMockDesktopSnapshot().setupGuidance,
+          ollama: {
+            ...getMockDesktopSnapshot().setupGuidance.ollama,
+            availability: "Reachable",
+          },
         },
       },
     ],
