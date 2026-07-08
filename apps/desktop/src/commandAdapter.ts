@@ -76,6 +76,35 @@ export interface FirstRunSetupGuidance {
   ollama: OllamaSetupGuidance;
 }
 
+export type CalendarPermissionState = "NotRequested" | "Granted" | "Denied" | "Unavailable";
+export type CalendarAvailabilityState = "Unavailable" | "PermissionRequired" | "Ready";
+export type CalendarEventPrivacy = "Unknown" | "Public" | "Private";
+export type CalendarEventOverlapState = "None" | "Ambiguous" | "Overlapping";
+
+export interface CalendarContextEvent {
+  id: string;
+  title: string;
+  calendarTitle: string;
+  startsAtMs: number;
+  endsAtMs: number;
+  isAllDay: boolean;
+  isRecurring: boolean;
+  privacy: CalendarEventPrivacy;
+  overlapState: CalendarEventOverlapState;
+  attachable: boolean;
+  safetyNote: string;
+}
+
+export interface CalendarContext {
+  source: "AppleCalendar";
+  permissionState: CalendarPermissionState;
+  availabilityState: CalendarAvailabilityState;
+  message: string;
+  setupGuidance: string;
+  upcomingEvents: CalendarContextEvent[];
+  autoStartEnabled: false;
+}
+
 export interface AppSettings {
   whisperModelPath: string;
   ollamaBaseUrl: string;
@@ -241,6 +270,7 @@ export interface DesktopSnapshot {
   recording: CommandRecordingDto;
   model: ModelStatus;
   setupGuidance: FirstRunSetupGuidance;
+  calendarContext: CalendarContext;
   settings: AppSettings;
   capture: CaptureStatus;
   transcription: TranscriptionCommandView | null;
@@ -385,6 +415,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
 
   validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance");
+  validateCalendarContext(root.calendarContext, "desktop_snapshot.calendarContext");
 
   const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
   requireString(settings.whisperModelPath, "desktop_snapshot.settings.whisperModelPath");
@@ -871,6 +902,16 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
               lastConnectionTest: null,
             },
           },
+    calendarContext: {
+      source: "AppleCalendar",
+      permissionState: "NotRequested",
+      availabilityState: "Unavailable",
+      message: "Apple Calendar context is not connected.",
+      setupGuidance:
+        "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+      upcomingEvents: [],
+      autoStartEnabled: false,
+    },
     settings: {
       whisperModelPath:
         variant === "state-matrix" ? "~/Library/Application Support/Curiosity/models/base.en.bin" : "",
@@ -941,6 +982,16 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
           "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
         lastConnectionTest: null,
       },
+    },
+    calendarContext: {
+      source: "AppleCalendar",
+      permissionState: "Unavailable",
+      availabilityState: "Unavailable",
+      message: "Apple Calendar context is unavailable until desktop commands load.",
+      setupGuidance:
+        "Calendar context is read-only and recordings never start from calendar events automatically.",
+      upcomingEvents: [],
+      autoStartEnabled: false,
     },
     settings: {
       whisperModelPath: "",
@@ -1036,6 +1087,13 @@ const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
   ["setupGuidance", "ollama", "message"],
   ["setupGuidance", "ollama", "setupGuidance"],
   ["setupGuidance", "ollama", "lastConnectionTest"],
+  ["calendarContext", "source"],
+  ["calendarContext", "permissionState"],
+  ["calendarContext", "availabilityState"],
+  ["calendarContext", "message"],
+  ["calendarContext", "setupGuidance"],
+  ["calendarContext", "upcomingEvents"],
+  ["calendarContext", "autoStartEnabled"],
   ["settings", "whisperModelPath"],
   ["settings", "ollamaBaseUrl"],
   ["settings", "ollamaModel"],
@@ -1247,12 +1305,47 @@ function validateOllamaConnectionTestEvidence(value: unknown, pathLabel: string)
   requireNullableString(evidence.failureDetail, `${pathLabel}.failureDetail`);
 }
 
+function validateCalendarContext(value: unknown, pathLabel: string): void {
+  const context = requireContractRecord(value, pathLabel);
+  requireEnum(context.source, ["AppleCalendar"], `${pathLabel}.source`);
+  requireEnum(context.permissionState, ["NotRequested", "Granted", "Denied", "Unavailable"], `${pathLabel}.permissionState`);
+  requireEnum(context.availabilityState, ["Unavailable", "PermissionRequired", "Ready"], `${pathLabel}.availabilityState`);
+  requireString(context.message, `${pathLabel}.message`);
+  requireString(context.setupGuidance, `${pathLabel}.setupGuidance`);
+  requireFalse(context.autoStartEnabled, `${pathLabel}.autoStartEnabled`);
+  requireContractArray(context.upcomingEvents, `${pathLabel}.upcomingEvents`).forEach((event, index) => {
+    validateCalendarContextEvent(event, `${pathLabel}.upcomingEvents[${index}]`);
+  });
+}
+
+function validateCalendarContextEvent(value: unknown, pathLabel: string): void {
+  const event = requireContractRecord(value, pathLabel);
+  requireString(event.id, `${pathLabel}.id`);
+  requireString(event.title, `${pathLabel}.title`);
+  requireString(event.calendarTitle, `${pathLabel}.calendarTitle`);
+  requireNonNegativeInteger(event.startsAtMs, `${pathLabel}.startsAtMs`);
+  requireNonNegativeInteger(event.endsAtMs, `${pathLabel}.endsAtMs`);
+  requireBoolean(event.isAllDay, `${pathLabel}.isAllDay`);
+  requireBoolean(event.isRecurring, `${pathLabel}.isRecurring`);
+  requireEnum(event.privacy, ["Unknown", "Public", "Private"], `${pathLabel}.privacy`);
+  requireEnum(event.overlapState, ["None", "Ambiguous", "Overlapping"], `${pathLabel}.overlapState`);
+  requireBoolean(event.attachable, `${pathLabel}.attachable`);
+  requireString(event.safetyNote, `${pathLabel}.safetyNote`);
+}
+
 function requireNonNegativeInteger(value: unknown, pathLabel: string): number {
   const number = requireNumber(value, pathLabel);
   if (!Number.isInteger(number) || number < 0) {
     throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a non-negative integer`);
   }
   return number;
+}
+
+function requireFalse(value: unknown, pathLabel: string): false {
+  if (value !== false) {
+    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be false`);
+  }
+  return value;
 }
 
 function validateExportCommandState(value: unknown, pathLabel: string): void {

@@ -905,6 +905,7 @@ fn desktop_snapshot_for_app_root_with_state(
         recording: recording_snapshot(app_root, command_state),
         model: model_status_from_settings(&settings),
         setup_guidance: setup_guidance_from_settings(&settings),
+        calendar_context: calendar_context_snapshot(),
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
@@ -3620,6 +3621,18 @@ fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidance
     }
 }
 
+fn calendar_context_snapshot() -> CalendarContextView {
+    CalendarContextView {
+        source: "AppleCalendar".to_string(),
+        permission_state: "NotRequested".to_string(),
+        availability_state: "Unavailable".to_string(),
+        message: "Apple Calendar context is not connected.".to_string(),
+        setup_guidance: "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.".to_string(),
+        upcoming_events: Vec::new(),
+        auto_start_enabled: false,
+    }
+}
+
 fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
     let configured_path = resolved_whisper_model_path(settings);
     let last_path_test = matching_whisper_path_test_evidence(settings, &configured_path);
@@ -4269,6 +4282,7 @@ struct DesktopSnapshot {
     recording: CommandRecordingDto,
     model: ModelStatus,
     setup_guidance: FirstRunSetupGuidanceView,
+    calendar_context: CalendarContextView,
     settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
@@ -4320,6 +4334,34 @@ struct OllamaSetupGuidanceView {
     message: String,
     setup_guidance: String,
     last_connection_test: Option<OllamaConnectionTestEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarContextView {
+    source: String,
+    permission_state: String,
+    availability_state: String,
+    message: String,
+    setup_guidance: String,
+    upcoming_events: Vec<CalendarContextEventView>,
+    auto_start_enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarContextEventView {
+    id: String,
+    title: String,
+    calendar_title: String,
+    starts_at_ms: u64,
+    ends_at_ms: u64,
+    is_all_day: bool,
+    is_recurring: bool,
+    privacy: String,
+    overlap_state: String,
+    attachable: bool,
+    safety_note: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4712,6 +4754,17 @@ mod tests {
         assert_eq!(json["model"]["kind"], "missing");
         assert_eq!(json["capture"]["microphone"], "Ready");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
+        assert_eq!(json["calendarContext"]["source"], "AppleCalendar");
+        assert_eq!(json["calendarContext"]["permissionState"], "NotRequested");
+        assert_eq!(json["calendarContext"]["availabilityState"], "Unavailable");
+        assert_eq!(json["calendarContext"]["autoStartEnabled"], false);
+        assert_eq!(
+            json["calendarContext"]["upcomingEvents"]
+                .as_array()
+                .expect("upcoming calendar events")
+                .len(),
+            0
+        );
         assert_eq!(json["settings"]["ollamaBaseUrl"], "http://127.0.0.1:11434");
         assert_eq!(json["settings"]["ollamaModel"], "qwen3.6:27b");
         assert!(json["transcription"].is_null());

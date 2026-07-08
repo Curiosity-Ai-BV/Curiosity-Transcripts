@@ -2,6 +2,15 @@
   "cases": {
     "desktop_snapshot.empty": {
       "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "Unavailable",
+        "message": "Apple Calendar context is not connected.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
       "capture": {
         "microphone": "Ready",
         "systemAudio": "SystemAudioUnavailable"
@@ -67,6 +76,15 @@
     },
     "desktop_snapshot.transcribed_analyzed_meeting": {
       "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "Unavailable",
+        "message": "Apple Calendar context is not connected.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
       "capture": {
         "microphone": "Ready",
         "systemAudio": "SystemAudioUnavailable"
@@ -176,6 +194,15 @@
     },
     "desktop_snapshot.with_setup_evidence": {
       "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "Unavailable",
+        "message": "Apple Calendar context is not connected.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
       "capture": {
         "microphone": "Ready",
         "systemAudio": "SystemAudioUnavailable"

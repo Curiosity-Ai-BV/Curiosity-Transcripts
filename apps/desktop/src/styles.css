@@ -831,6 +831,13 @@ h3 {
   padding-bottom: 18px;
 }
 
+.calendar-context {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
 .readiness-item {
   display: grid;
   gap: 6px;
@@ -884,6 +891,26 @@ h3 {
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 12px;
+}
+
+.calendar-event-list {
+  display: grid;
+  gap: 6px;
+}
+
+.calendar-event-row {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--tone) 20%, var(--line));
+  padding-top: 6px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.calendar-event-row strong {
+  color: var(--text);
 }
 
 .settings-form {

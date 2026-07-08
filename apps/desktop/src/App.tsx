@@ -1,4 +1,5 @@
 import {
+  CalendarBlank,
   CheckCircle,
   DownloadSimple,
   FileText,
@@ -299,6 +300,8 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     : null;
   const summaryJob = currentSnapshot.summaryJob ? mapCommandJobState(currentSnapshot.summaryJob) : null;
   const setupGuidance = currentSnapshot.setupGuidance;
+  const calendarContext = currentSnapshot.calendarContext;
+  const calendarTone = calendarContextTone(calendarContext);
   const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
   const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama.state);
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
@@ -1317,6 +1320,12 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                 value={captureDetail(currentSnapshot.capture.systemAudio)}
                 tone={captureTone(currentSnapshot.capture.systemAudio)}
               />
+              <StatusLine
+                icon={<CalendarBlank size={18} weight="regular" />}
+                label={calendarContextLabel(calendarContext)}
+                value={calendarContext.message}
+                tone={calendarTone}
+              />
               {selectedMeeting ? (
                 <StatusLine
                   icon={<ShieldCheck size={18} weight="regular" />}
@@ -1395,6 +1404,29 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                     <small>Last explicit observation, not current availability.</small>
                   </div>
                 ) : null}
+              </div>
+            </div>
+            <div className="calendar-context" aria-label="Calendar context">
+              <div className={`readiness-item ${calendarTone}`}>
+                <div className="readiness-heading">
+                  <StatusPill tone={calendarTone} label={calendarContextLabel(calendarContext)} />
+                </div>
+                <p>{calendarContext.message}</p>
+                <p>{calendarContext.setupGuidance}</p>
+                {calendarContext.upcomingEvents.length > 0 ? (
+                  <div className="calendar-event-list">
+                    {calendarContext.upcomingEvents.map((event) => (
+                      <div key={event.id} className="calendar-event-row">
+                        <strong>{event.title}</strong>
+                        <span>{event.calendarTitle}</span>
+                        <small>{event.safetyNote}</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <small>No upcoming calendar events loaded.</small>
+                )}
+                <small>Auto-start disabled.</small>
               </div>
             </div>
             <div className="settings-form" aria-label="Local settings">
@@ -1573,6 +1605,32 @@ function ollamaSetupTone(state: DesktopSnapshot["setupGuidance"]["ollama"]["stat
     return "blocked";
   }
   return "warn";
+}
+
+function calendarContextLabel(context: DesktopSnapshot["calendarContext"]) {
+  if (context.permissionState === "Denied") {
+    return "Calendar access denied";
+  }
+  if (context.availabilityState === "Ready") {
+    return "Calendar context ready";
+  }
+  if (context.permissionState === "NotRequested") {
+    return "Calendar not connected";
+  }
+  return "Calendar unavailable";
+}
+
+function calendarContextTone(context: DesktopSnapshot["calendarContext"]): Tone {
+  if (context.permissionState === "Denied") {
+    return "blocked";
+  }
+  if (context.availabilityState === "Ready") {
+    return "ready";
+  }
+  if (context.availabilityState === "PermissionRequired" || context.permissionState === "NotRequested") {
+    return "warn";
+  }
+  return "muted";
 }
 
 function StatusLine({

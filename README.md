@@ -111,6 +111,9 @@ Implemented MVP flows:
   unverified, explicit `Test path` evidence is persisted when run, and Ollama
   availability stays unknown until the user runs `Test Ollama`, whose last
   explicit observation is persisted without becoming a background health check.
+- Read-only Apple Calendar context status in the desktop snapshot and settings
+  pane. The first slice does not request Calendar permission, fetch events,
+  attach meetings, or auto-start recordings.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
@@ -124,8 +127,8 @@ Remaining gaps:
   app-private storage decision and future keychain boundary.
 - Real-hardware release confidence for default, no-Whisper, and
   ScreenCaptureKit system-audio builds.
-- Calendar integration, starting with Apple Calendar context before cloud
-  calendar connectors.
+- Native Apple Calendar permission, event listing, safe manual attachment, and
+  later cloud calendar connectors.
 - Developer ID signed and notarized macOS DMG workflows exist; Apple signing
   credentials and expanded contributor onboarding/process docs remain.
 
@@ -164,9 +167,10 @@ Near-term product hardening:
 
 Calendar roadmap:
 
-- Add Apple Calendar first through a macOS-native provider. The first slice
-  should request permission, show upcoming events, suggest safe meeting context,
-  and let the user manually attach a recording to an event.
+- Build on the read-only Apple Calendar context seam with a macOS-native
+  provider. The next slices should request permission from an explicit user
+  action, show upcoming events, suggest safe meeting context, and let the user
+  manually attach a recording to an event.
 - Keep auto-start disabled until allowlist rules, ambiguous-event handling,
   private/all-day/recurring-event protections, and always-visible recording
   indicators are verified.

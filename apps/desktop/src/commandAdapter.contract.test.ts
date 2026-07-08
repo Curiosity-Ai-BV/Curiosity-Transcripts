@@ -166,6 +166,73 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.lastPathTest.testedAtMs");
   });
 
+  it("requires calendar context to be explicit and non-recording in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const missingCalendarContext = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete missingCalendarContext.calendarContext;
+    const missingFetchCommand: CommandFetcher = async () => missingCalendarContext as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: missingFetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext");
+
+    const autoStartDrift = {
+      ...backendSnapshot,
+      calendarContext: {
+        ...backendSnapshot.calendarContext,
+        autoStartEnabled: true,
+      },
+    };
+    const autoStartFetchCommand: CommandFetcher = async () => autoStartDrift as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: autoStartFetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext.autoStartEnabled");
+  });
+
+  it("guards calendar context event safety fields in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      calendarContext: {
+        ...backendSnapshot.calendarContext,
+        availabilityState: "Ready",
+        permissionState: "Granted",
+        upcomingEvents: [
+          {
+            id: "event-1",
+            title: "Planning Review",
+            calendarTitle: "Work",
+            startsAtMs: 1_700_000_000_000,
+            endsAtMs: 1_700_000_900_000,
+            isAllDay: false,
+            isRecurring: false,
+            privacy: "Secret",
+            overlapState: "None",
+            attachable: true,
+            safetyNote: "Manual attach allowed.",
+          },
+        ],
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext.upcomingEvents[0].privacy");
+  });
+
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {

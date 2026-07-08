@@ -546,6 +546,38 @@ describe("desktop workspace shell", () => {
     expect(readiness.textContent?.toLowerCase()).not.toContain("is compatible");
   });
 
+  it("shows read-only calendar context without disabling manual recording", () => {
+    const snapshot = connectedSnapshot({
+      recording: {
+        ...getMockDesktopSnapshot().recording,
+        meeting_id: "",
+        recording_id: null,
+        state: "Idle",
+        permission_state: "Ready",
+        recovery_action: "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+      },
+      calendarContext: {
+        source: "AppleCalendar",
+        permissionState: "NotRequested",
+        availabilityState: "Unavailable",
+        message: "Apple Calendar context is not connected.",
+        setupGuidance:
+          "Future Apple Calendar access will require an explicit permission action. Calendar events never start recordings automatically.",
+        upcomingEvents: [],
+        autoStartEnabled: false,
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    const calendarContext = screen.getByLabelText("Calendar context");
+    expect(within(calendarContext).getByText("Calendar not connected")).toBeInTheDocument();
+    expect(within(calendarContext).getByText("Apple Calendar context is not connected.")).toBeInTheDocument();
+    expect(within(calendarContext).getByText("No upcoming calendar events loaded.")).toBeInTheDocument();
+    expect(within(calendarContext).getByText("Auto-start disabled.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
+  });
+
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
     const user = userEvent.setup();
 
