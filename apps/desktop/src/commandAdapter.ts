@@ -105,6 +105,18 @@ export interface CalendarContext {
   autoStartEnabled: false;
 }
 
+export interface MeetingCalendarAttachment {
+  source: "AppleCalendar";
+  eventId: string;
+  eventTitle: string;
+  calendarTitle: string;
+  startsAtMs: number;
+  endsAtMs: number;
+  privacy: CalendarEventPrivacy;
+  privacyConfirmed: boolean;
+  attachedAtMs: number;
+}
+
 export interface AppSettings {
   whisperModelPath: string;
   ollamaBaseUrl: string;
@@ -244,6 +256,7 @@ export interface MeetingView {
   };
   exportState: ExportCommandState;
   deleteState: DeleteCommandState;
+  calendarAttachment: MeetingCalendarAttachment | null;
   analysis: AnalysisDisclosureState | null;
 }
 
@@ -307,6 +320,11 @@ export interface DesktopCommandFacade {
   saveAnalysisSettings(args: { ollamaBaseUrl: string; ollamaModel: string }): Promise<DesktopSnapshot>;
   saveRawAudioRetentionPolicy(args: { rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy }): Promise<DesktopSnapshot>;
   requestAppleCalendarAccess(): Promise<DesktopSnapshot>;
+  attachCalendarEventContext(args: {
+    meetingId: string;
+    eventId: string;
+    privacyConfirmed: boolean;
+  }): Promise<DesktopSnapshot>;
   testWhisperModelPath(args: { path: string }): Promise<WhisperModelPathTestResult>;
   testOllamaConnection(args: { baseUrl: string; model: string }): Promise<OllamaConnectionTestResult>;
 }
@@ -368,6 +386,7 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
     requireBoolean(privacy.localOnly, `${meetingPath}.privacy.localOnly`);
     validateExportCommandState(meetingRecord.exportState, `${meetingPath}.exportState`);
     validateDeleteCommandState(meetingRecord.deleteState, `${meetingPath}.deleteState`);
+    validateMeetingCalendarAttachment(meetingRecord.calendarAttachment, `${meetingPath}.calendarAttachment`);
     requireContractArray(meetingRecord.segments, `${meetingPath}.segments`).forEach(
       (segment, segmentIndex) => {
         const segmentPath = `${meetingPath}.segments[${segmentIndex}]`;
@@ -1018,7 +1037,10 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
   };
 }
 
-function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" | "deleteState">): MeetingView {
+function meeting(
+  input: Omit<MeetingView, "status" | "privacy" | "exportState" | "deleteState" | "calendarAttachment"> &
+    Partial<Pick<MeetingView, "calendarAttachment">>,
+): MeetingView {
   return {
     ...input,
     status: "Complete",
@@ -1034,6 +1056,7 @@ function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" |
     deleteState: {
       state: "idle",
     },
+    calendarAttachment: input.calendarAttachment ?? null,
   };
 }
 
@@ -1125,6 +1148,7 @@ const REQUIRED_MEETING_PATHS: readonly ContractPath[] = [
   ["privacy", "localOnly"],
   ["exportState", "state"],
   ["deleteState", "state"],
+  ["calendarAttachment"],
   ["analysis"],
 ];
 
@@ -1147,7 +1171,9 @@ const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "export_meeting_json",
   "generate_summary",
   "cancel_summary",
+  "attach_calendar_event_context",
   "rename_meeting",
+  "request_apple_calendar_access",
   "save_analysis_settings",
   "save_raw_audio_retention_policy",
   "save_whisper_model_path",
@@ -1332,6 +1358,22 @@ function validateCalendarContextEvent(value: unknown, pathLabel: string): void {
   requireEnum(event.overlapState, ["None", "Ambiguous", "Overlapping"], `${pathLabel}.overlapState`);
   requireBoolean(event.attachable, `${pathLabel}.attachable`);
   requireString(event.safetyNote, `${pathLabel}.safetyNote`);
+}
+
+function validateMeetingCalendarAttachment(value: unknown, pathLabel: string): void {
+  if (value === null) {
+    return;
+  }
+  const attachment = requireContractRecord(value, pathLabel);
+  requireEnum(attachment.source, ["AppleCalendar"], `${pathLabel}.source`);
+  requireString(attachment.eventId, `${pathLabel}.eventId`);
+  requireString(attachment.eventTitle, `${pathLabel}.eventTitle`);
+  requireString(attachment.calendarTitle, `${pathLabel}.calendarTitle`);
+  requireNonNegativeInteger(attachment.startsAtMs, `${pathLabel}.startsAtMs`);
+  requireNonNegativeInteger(attachment.endsAtMs, `${pathLabel}.endsAtMs`);
+  requireEnum(attachment.privacy, ["Unknown", "Public", "Private"], `${pathLabel}.privacy`);
+  requireBoolean(attachment.privacyConfirmed, `${pathLabel}.privacyConfirmed`);
+  requireNonNegativeInteger(attachment.attachedAtMs, `${pathLabel}.attachedAtMs`);
 }
 
 function requireNonNegativeInteger(value: unknown, pathLabel: string): number {
@@ -1551,6 +1593,8 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
     saveRawAudioRetentionPolicy: ({ rawAudioRetentionPolicy }) =>
       snapshotCommand("save_raw_audio_retention_policy", { rawAudioRetentionPolicy }),
     requestAppleCalendarAccess: () => snapshotCommand("request_apple_calendar_access"),
+    attachCalendarEventContext: ({ meetingId, eventId, privacyConfirmed }) =>
+      snapshotCommand("attach_calendar_event_context", { meetingId, eventId, privacyConfirmed }),
     testWhisperModelPath: async ({ path }) => {
       const result = await fetchCommand<unknown>("test_whisper_model_path", { path });
       assertWhisperModelPathTestContract(result);

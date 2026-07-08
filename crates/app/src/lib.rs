@@ -14,7 +14,7 @@ use curiosity_domain::{
     AudioArtifact, Meeting, MeetingAnalysis, MeetingStatus, RecordingSession, RecordingSource,
     RecordingStatus,
 };
-use curiosity_store::{Store, StoreError};
+use curiosity_store::{MeetingCalendarContext, Store, StoreError};
 use serde::{Deserialize, Serialize};
 
 /// Result for recording commands that must return the current trust state on failure.
@@ -121,6 +121,33 @@ pub struct MeetingSummaryDto {
     pub ended_at_ms: Option<u64>,
     pub status: String,
     pub transcript_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CalendarEventAttachmentDto {
+    pub id: String,
+    pub title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub is_all_day: bool,
+    pub is_recurring: bool,
+    pub privacy: String,
+    pub overlap_state: String,
+    pub attachable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingCalendarContextDto {
+    pub source: String,
+    pub event_id: String,
+    pub event_title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub privacy: String,
+    pub privacy_confirmed: bool,
+    pub attached_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -287,6 +314,98 @@ pub fn rename_meeting_command(
     Ok(meeting_summary_dto(
         store.rename_meeting(meeting_id, title)?,
     ))
+}
+
+pub fn attach_calendar_event_context_command(
+    store: &Store,
+    meeting_id: &str,
+    event: CalendarEventAttachmentDto,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+) -> CommandResult<MeetingCalendarContextDto> {
+    validate_calendar_event_attachment(&event, privacy_confirmed)?;
+    let context = MeetingCalendarContext {
+        meeting_id: meeting_id.to_string(),
+        source: "AppleCalendar".to_string(),
+        event_id: event.id,
+        event_title: event.title,
+        calendar_title: event.calendar_title,
+        starts_at_ms: event.starts_at_ms,
+        ends_at_ms: event.ends_at_ms,
+        is_all_day: event.is_all_day,
+        is_recurring: event.is_recurring,
+        privacy: event.privacy,
+        overlap_state: event.overlap_state,
+        privacy_confirmed,
+        attached_at_ms,
+    };
+    store
+        .attach_meeting_calendar_context(&context)
+        .map(meeting_calendar_context_dto)
+        .map_err(Into::into)
+}
+
+fn validate_calendar_event_attachment(
+    event: &CalendarEventAttachmentDto,
+    privacy_confirmed: bool,
+) -> CommandResult<()> {
+    if !event.attachable {
+        return Err(calendar_attachment_error(
+            "Calendar event is not marked attachable by the desktop safety snapshot.",
+        ));
+    }
+    if event.id.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a stable event identifier.",
+        ));
+    }
+    if event.title.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a non-empty title.",
+        ));
+    }
+    if event.calendar_title.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a non-empty calendar title.",
+        ));
+    }
+    if event.starts_at_ms >= event.ends_at_ms {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires an unambiguous start and end time.",
+        ));
+    }
+    if event.is_all_day {
+        return Err(calendar_attachment_error(
+            "All-day calendar events cannot be attached as meeting context.",
+        ));
+    }
+    if event.is_recurring {
+        return Err(calendar_attachment_error(
+            "Recurring calendar events cannot be attached as meeting context.",
+        ));
+    }
+    if event.overlap_state != "None" {
+        return Err(calendar_attachment_error(
+            "Overlapping or ambiguous calendar events cannot be attached as meeting context.",
+        ));
+    }
+    match event.privacy.as_str() {
+        "Public" => Ok(()),
+        "Unknown" if privacy_confirmed => Ok(()),
+        "Unknown" => Err(calendar_attachment_error(
+            "Calendar event privacy is unknown; confirm it is safe before attaching.",
+        )),
+        "Private" => Err(calendar_attachment_error(
+            "Private calendar events cannot be attached as meeting context.",
+        )),
+        _ => Err(calendar_attachment_error(
+            "Calendar event attachment has an unsupported privacy classification.",
+        )),
+    }
+}
+
+fn calendar_attachment_error(message: &str) -> CommandError {
+    CommandError::Store(StoreError::InvariantViolation(message.to_string()))
 }
 
 pub fn correct_transcript_segment_command(
@@ -483,6 +602,22 @@ fn meeting_summary_dto(summary: curiosity_store::MeetingSummary) -> MeetingSumma
         ended_at_ms: summary.ended_at_ms,
         status: summary.status,
         transcript_state: summary.transcript_state,
+    }
+}
+
+fn meeting_calendar_context_dto(
+    context: curiosity_store::MeetingCalendarContext,
+) -> MeetingCalendarContextDto {
+    MeetingCalendarContextDto {
+        source: context.source,
+        event_id: context.event_id,
+        event_title: context.event_title,
+        calendar_title: context.calendar_title,
+        starts_at_ms: context.starts_at_ms,
+        ends_at_ms: context.ends_at_ms,
+        privacy: context.privacy,
+        privacy_confirmed: context.privacy_confirmed,
+        attached_at_ms: context.attached_at_ms,
     }
 }
 

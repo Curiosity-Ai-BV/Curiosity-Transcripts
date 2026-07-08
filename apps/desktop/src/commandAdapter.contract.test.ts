@@ -233,6 +233,37 @@ describe("desktop snapshot DTO contract", () => {
     ).rejects.toThrow("desktop_snapshot.calendarContext.upcomingEvents[0].privacy");
   });
 
+  it("requires meeting calendar attachments to use the explicit nullable contract", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      meetings: [
+        {
+          ...backendSnapshot.meetings[0],
+          calendarAttachment: {
+            source: "AppleCalendar",
+            eventId: "event-1",
+            eventTitle: "Design Review",
+            calendarTitle: "Work",
+            startsAtMs: 1_700_000_000_000,
+            endsAtMs: 1_700_000_900_000,
+            privacy: "Secret",
+            privacyConfirmed: false,
+            attachedAtMs: 1_700_000_100_000,
+          },
+        },
+      ],
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.meetings[0].calendarAttachment.privacy");
+  });
+
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -554,6 +585,11 @@ describe("typed desktop command facade", () => {
     await facade.saveAnalysisSettings({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" });
     await facade.saveRawAudioRetentionPolicy({ rawAudioRetentionPolicy: "DeleteAfterTranscription" });
     await facade.requestAppleCalendarAccess();
+    await facade.attachCalendarEventContext({
+      meetingId: "circuit-review",
+      eventId: "event-1",
+      privacyConfirmed: true,
+    });
     const whisperPathTest = await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
@@ -599,6 +635,10 @@ describe("typed desktop command facade", () => {
         args: { rawAudioRetentionPolicy: "DeleteAfterTranscription" },
       },
       { command: "request_apple_calendar_access", args: undefined },
+      {
+        command: "attach_calendar_event_context",
+        args: { meetingId: "circuit-review", eventId: "event-1", privacyConfirmed: true },
+      },
       { command: "test_whisper_model_path", args: { path: "/models/base.en.bin" } },
       {
         command: "test_ollama_connection",

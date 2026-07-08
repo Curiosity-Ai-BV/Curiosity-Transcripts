@@ -9,10 +9,11 @@ use curiosity_analysis::{
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
-    correct_transcript_segment_command, delete_meeting_command, export_meeting_command,
-    export_meeting_json_command, generate_summary_command_with_cancellation, list_meetings_dto,
-    meeting_detail_dto, rename_meeting_command, search_meetings_dto, AnalysisCommandDto,
-    AnalysisCommandState, AppPermissionState, CommandRecordingDto, CommandRecordingState,
+    attach_calendar_event_context_command, correct_transcript_segment_command,
+    delete_meeting_command, export_meeting_command, export_meeting_json_command,
+    generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
+    rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
+    AppPermissionState, CalendarEventAttachmentDto, CommandRecordingDto, CommandRecordingState,
     DeletedMeetingDto, ExportFormat, ExportedMeetingDto, MeetingAnalysisDto,
     MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
 };
@@ -76,6 +77,7 @@ fn main() {
         save_analysis_settings,
         save_raw_audio_retention_policy,
         request_apple_calendar_access,
+        attach_calendar_event_context,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -104,6 +106,7 @@ fn main() {
         save_analysis_settings,
         save_raw_audio_retention_policy,
         request_apple_calendar_access,
+        attach_calendar_event_context,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
@@ -492,6 +495,32 @@ fn request_apple_calendar_access(
 }
 
 #[tauri::command]
+fn attach_calendar_event_context(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    event_id: String,
+    privacy_confirmed: bool,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    attach_calendar_event_context_for_app_root(
+        &app_root,
+        &snapshot_state,
+        &meeting_id,
+        &event_id,
+        privacy_confirmed,
+        current_timestamp_ms(),
+    )
+}
+
+#[tauri::command]
 fn test_whisper_model_path(
     app: tauri::AppHandle,
     path: String,
@@ -869,6 +898,10 @@ fn desktop_snapshot_for_app_root_with_state(
             .map_err(|error| error.to_string())?
             .map(raw_audio_retention_policy_view)
             .unwrap_or(RawAudioRetentionPolicy::Retain);
+        let calendar_attachment = store
+            .meeting_calendar_context(&summary.meeting_id)
+            .map_err(|error| error.to_string())?
+            .map(MeetingCalendarAttachmentView::from_store);
         let transcript_text = detail
             .transcript_segments
             .iter()
@@ -920,6 +953,7 @@ fn desktop_snapshot_for_app_root_with_state(
                 .filter(|state| state.meeting_id.as_deref() == Some(summary.meeting_id.as_str()))
                 .cloned()
                 .unwrap_or_default(),
+            calendar_attachment,
             analysis: analysis.map(|analysis| AnalysisDisclosureState {
                 provider: analysis.provider,
                 model_name: analysis.model_name,
@@ -1125,6 +1159,68 @@ fn rename_meeting_for_app_root(
     rename_meeting_command(&store, meeting_id, title).map_err(|error| error.to_string())?;
     drop(store);
     desktop_snapshot_for_app_root_with_state(app_root, command_state)
+}
+
+fn attach_calendar_event_context_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    event_id: &str,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let events = calendar_context_snapshot(command_state.last_calendar_authorization_status)
+        .upcoming_events;
+    attach_calendar_event_context_for_app_root_with_events(
+        app_root,
+        command_state,
+        meeting_id,
+        event_id,
+        privacy_confirmed,
+        attached_at_ms,
+        events,
+    )
+}
+
+fn attach_calendar_event_context_for_app_root_with_events(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    event_id: &str,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+    events: Vec<CalendarContextEventView>,
+) -> Result<DesktopSnapshot, String> {
+    let event = events
+        .into_iter()
+        .find(|event| event.id == event_id)
+        .ok_or_else(|| "Calendar event is no longer available for attachment.".to_string())?;
+    let store = open_store(app_root)?;
+    attach_calendar_event_context_command(
+        &store,
+        meeting_id,
+        calendar_event_attachment_dto(event),
+        privacy_confirmed,
+        attached_at_ms,
+    )
+    .map_err(|error| error.to_string())?;
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, command_state)
+}
+
+fn calendar_event_attachment_dto(event: CalendarContextEventView) -> CalendarEventAttachmentDto {
+    CalendarEventAttachmentDto {
+        id: event.id,
+        title: event.title,
+        calendar_title: event.calendar_title,
+        starts_at_ms: event.starts_at_ms,
+        ends_at_ms: event.ends_at_ms,
+        is_all_day: event.is_all_day,
+        is_recurring: event.is_recurring,
+        privacy: event.privacy,
+        overlap_state: event.overlap_state,
+        attachable: event.attachable,
+    }
 }
 
 fn correct_transcript_segment_for_app_root(
@@ -3750,7 +3846,7 @@ fn calendar_context_from_authorization(
             "Granted",
             "Ready",
             granted_message.as_str(),
-            "Upcoming local events are read-only and not stored. Manual attachment remains disabled in this slice, and calendar events never start recordings automatically.",
+            "Upcoming local events stay read-only until you explicitly attach one as meeting context. Calendar events never start recordings automatically.",
         ),
         AppleCalendarAuthorizationStatus::WriteOnly => (
             "Unavailable",
@@ -3838,7 +3934,7 @@ fn finalize_calendar_context_events(
 
     for (draft, overlap_state) in drafts.iter_mut().zip(overlap_states) {
         draft.event.overlap_state = overlap_state.to_string();
-        draft.event.attachable = false;
+        draft.event.attachable = calendar_event_can_attach(draft);
         draft.event.safety_note = calendar_event_safety_note(draft);
     }
 
@@ -3885,10 +3981,20 @@ fn calendar_event_safety_note(draft: &CalendarContextEventDraft) -> String {
         return "Private event; attachment is disabled.".to_string();
     }
     if event.privacy == "Unknown" {
-        return "Privacy classification is unavailable from EventKit; attachment is disabled."
+        return "Privacy classification is unavailable from EventKit; confirm this event title is safe before attaching."
             .to_string();
     }
-    "Manual attachment is not enabled in this slice.".to_string()
+    "Ready for manual attachment. Calendar events never start recordings automatically.".to_string()
+}
+
+fn calendar_event_can_attach(draft: &CalendarContextEventDraft) -> bool {
+    let event = &draft.event;
+    draft.has_stable_identifier
+        && event.starts_at_ms < event.ends_at_ms
+        && !event.is_all_day
+        && !event.is_recurring
+        && event.overlap_state == "None"
+        && matches!(event.privacy.as_str(), "Public" | "Unknown")
 }
 
 #[cfg(test)]
@@ -5018,7 +5124,38 @@ struct MeetingView {
     privacy: MeetingPrivacy,
     export_state: ExportCommandState,
     delete_state: DeleteCommandState,
+    calendar_attachment: Option<MeetingCalendarAttachmentView>,
     analysis: Option<AnalysisDisclosureState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingCalendarAttachmentView {
+    source: String,
+    event_id: String,
+    event_title: String,
+    calendar_title: String,
+    starts_at_ms: u64,
+    ends_at_ms: u64,
+    privacy: String,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+}
+
+impl MeetingCalendarAttachmentView {
+    fn from_store(context: curiosity_store::MeetingCalendarContext) -> Self {
+        Self {
+            source: context.source,
+            event_id: context.event_id,
+            event_title: context.event_title,
+            calendar_title: context.calendar_title,
+            starts_at_ms: context.starts_at_ms,
+            ends_at_ms: context.ends_at_ms,
+            privacy: context.privacy,
+            privacy_confirmed: context.privacy_confirmed,
+            attached_at_ms: context.attached_at_ms,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -5356,7 +5493,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_event_finalization_blocks_unstable_and_unknown_privacy_events() {
+    fn calendar_event_finalization_blocks_unstable_and_requires_unknown_privacy_confirmation() {
         let mut missing_id = calendar_event_draft("synthetic", "Missing ID", 1_000, 2_000);
         missing_id.has_stable_identifier = false;
         let mut unknown_privacy = calendar_event_draft("event-2", "Normal Event", 3_000, 4_000);
@@ -5375,12 +5512,89 @@ mod tests {
         assert!(!events[0].attachable);
         assert!(events[0].safety_note.contains("identifier is unstable"));
         assert_eq!(events[1].overlap_state, "None");
-        assert!(!events[1].attachable);
+        assert!(events[1].attachable);
         assert!(events[1]
             .safety_note
-            .contains("Privacy classification is unavailable"));
+            .contains("confirm this event title is safe"));
         assert_eq!(events[2].overlap_state, "Ambiguous");
         assert_eq!(events[3].overlap_state, "Ambiguous");
+    }
+
+    #[test]
+    fn attach_calendar_event_context_persists_backend_resolved_event() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let mut unknown_privacy = calendar_event_draft("event-1", "Design Review", 2_000, 3_000);
+        unknown_privacy.event.privacy = "Unknown".to_string();
+        let events = finalize_calendar_context_events(vec![unknown_privacy]);
+        let snapshot_state = DesktopCommandSnapshotState::default();
+        let snapshot = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "event-1",
+            true,
+            4_000,
+            events,
+        )
+        .expect("attach calendar event");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["eventId"],
+            "event-1"
+        );
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["eventTitle"],
+            "Design Review"
+        );
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["privacyConfirmed"],
+            true
+        );
+    }
+
+    #[test]
+    fn attach_calendar_event_context_rejects_unavailable_or_unsafe_events() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let snapshot_state = DesktopCommandSnapshotState::default();
+        let missing_error = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "missing-event",
+            true,
+            4_000,
+            Vec::new(),
+        )
+        .expect_err("missing backend event should reject");
+        assert!(missing_error.contains("no longer available"));
+
+        let mut recurring = calendar_event_draft("event-1", "Recurring", 2_000, 3_000);
+        recurring.event.is_recurring = true;
+        let unsafe_events = finalize_calendar_context_events(vec![recurring]);
+        let unsafe_error = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "event-1",
+            true,
+            4_000,
+            unsafe_events,
+        )
+        .expect_err("unsafe backend event should reject");
+        assert!(unsafe_error.contains("not marked attachable"));
     }
 
     #[test]

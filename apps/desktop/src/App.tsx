@@ -1,5 +1,6 @@
 import {
   CalendarBlank,
+  CalendarPlus,
   CheckCircle,
   DownloadSimple,
   FileText,
@@ -75,6 +76,7 @@ type PendingCommand =
   | "save-analysis"
   | "save-retention"
   | "request-calendar"
+  | "attach-calendar"
   | null;
 
 type ThemeMode = "dark" | "light";
@@ -750,6 +752,19 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
     );
   }
 
+  function attachCalendarEvent(event: DesktopSnapshot["calendarContext"]["upcomingEvents"][number]) {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("attach-calendar", (commands) =>
+      commands.attachCalendarEventContext({
+        meetingId: selectedMeeting.id,
+        eventId: event.id,
+        privacyConfirmed: event.privacy === "Unknown",
+      }),
+    );
+  }
+
   const busyCommandTitle = "A desktop command is already running.";
   const startButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
@@ -1078,6 +1093,14 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                   ) : null}
                   {localProcessingState ? (
                     <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={localProcessingState.label} value={localProcessingState.detail} tone={localProcessingState.tone} />
+                  ) : null}
+                  {selectedMeeting.calendarAttachment ? (
+                    <StatusLine
+                      icon={<CalendarBlank size={18} weight="regular" />}
+                      label="Calendar context"
+                      value={formatMeetingCalendarAttachment(selectedMeeting.calendarAttachment)}
+                      tone="ready"
+                    />
                   ) : null}
                   <StatusLine icon={<FileText size={18} weight="regular" />} label={exportState.label} value={exportState.detail} tone={exportState.tone} />
                   <StatusLine icon={<Trash size={18} weight="regular" />} label={deleteState.label} value={deleteState.detail} tone={deleteState.tone} />
@@ -1431,6 +1454,28 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
                         <strong>{event.title}</strong>
                         <span>{formatCalendarEventMetadata(event)}</span>
                         <small>{event.safetyNote}</small>
+                        {event.attachable ? (
+                          <button
+                            type="button"
+                            className="button"
+                            disabled={!commandSurfaceReady || !selectedMeeting || commandBusy}
+                            title={
+                              !selectedMeeting
+                                ? "Select a meeting before attaching calendar context."
+                                : event.privacy === "Unknown"
+                                  ? "Confirm this unknown-privacy event is safe to store as meeting context."
+                                  : "Attach this event as meeting context."
+                            }
+                            onClick={() => attachCalendarEvent(event)}
+                          >
+                            <CalendarPlus size={16} weight="regular" />
+                            {pendingCommand === "attach-calendar"
+                              ? "Attaching"
+                              : event.privacy === "Unknown"
+                                ? "Confirm privacy and attach"
+                                : "Attach to meeting"}
+                          </button>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -1823,6 +1868,21 @@ function formatCalendarEventMetadata(event: DesktopSnapshot["calendarContext"]["
   ].filter(Boolean);
 
   return flags.join(" / ");
+}
+
+function formatMeetingCalendarAttachment(
+  attachment: NonNullable<DesktopSnapshot["meetings"][number]["calendarAttachment"]>,
+) {
+  const privacy =
+    attachment.privacy === "Unknown" && attachment.privacyConfirmed
+      ? "Unknown privacy confirmed"
+      : `${attachment.privacy} privacy`;
+  return [
+    attachment.eventTitle,
+    formatCalendarEventRange(attachment.startsAtMs, attachment.endsAtMs),
+    attachment.calendarTitle,
+    privacy,
+  ].join(" / ");
 }
 
 function formatCalendarEventRange(startsAtMs: number, endsAtMs: number) {

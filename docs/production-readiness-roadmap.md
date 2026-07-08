@@ -341,20 +341,26 @@ Goal: add calendar value without introducing silent recording risk.
 
 Deliverables:
 
-- Current Phase 6A/6B/6C status: the desktop snapshot and settings pane expose
+- Current Phase 6A/6B/6C/6D status: the desktop snapshot and settings pane expose
   a deterministic read-only Apple Calendar context state. The app can request
   Apple Calendar event access only from an explicit user action, using the
   macOS 14+ full-access API when available and EventKit's older explicit
   event-access prompt on the macOS 13 support floor. When access is granted, the
   app loads a bounded read-only list of upcoming local Apple Calendar events
-  behind the existing permission and availability states, marks private/unknown,
-  all-day, recurring, ambiguous, and overlapping event shapes non-attachable,
-  and hard-codes auto-start disabled in the Rust/TypeScript contract. This path
-  does not attach recordings to events, store calendar tokens, contact hosted
-  services, or add any calendar-triggered recording path.
-- Allow a user to manually attach a recording to a safe event for naming/context.
-- Add durable tests around manual attachment persistence, delete behavior, and
-  private/all-day/recurring/ambiguous/overlapping-event protections.
+  behind the existing permission and availability states. The user can manually
+  attach a backend-resolved event as persisted meeting context only when it has
+  stable timing, a stable identifier, no overlap ambiguity, and is not private,
+  all-day, or recurring. EventKit privacy is currently treated as `Unknown`, so
+  attachment requires an explicit user confirmation that the event title is safe
+  to store. Attached context is meeting-scoped private metadata and is removed
+  by the same delete/finalization path as other private meeting rows. This path
+  does not store calendar tokens, contact hosted services, sync calendars, or
+  add any calendar-triggered recording path, and auto-start remains hard-coded
+  disabled in the Rust/TypeScript contract.
+- Add broader calendar organization flows on top of the safe manual attachment
+  seam.
+- Continue durable tests around manual attachment persistence, delete behavior,
+  and private/all-day/recurring/ambiguous/overlapping-event protections.
 - Keep auto-start disabled until allowlists, ambiguous-event handling, and
   always-visible recording indicators are implemented and tested.
 

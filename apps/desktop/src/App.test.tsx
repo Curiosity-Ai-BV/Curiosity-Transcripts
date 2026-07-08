@@ -685,6 +685,77 @@ describe("desktop workspace shell", () => {
     expect(screen.getByRole("button", { name: "Start recording" })).toBeEnabled();
   });
 
+  it("attaches an explicitly confirmed safe Calendar event to the selected meeting", async () => {
+    const user = userEvent.setup();
+    const initial = connectedSnapshot({
+      calendarContext: {
+        source: "AppleCalendar",
+        permissionState: "Granted",
+        availabilityState: "Ready",
+        message: "Apple Calendar access is granted; 1 upcoming events loaded for manual review.",
+        setupGuidance:
+          "Upcoming local events are read-only until you explicitly attach one as meeting context.",
+        upcomingEvents: [
+          {
+            id: "event-1",
+            title: "Design Review",
+            calendarTitle: "Work",
+            startsAtMs: Date.UTC(2026, 6, 8, 9, 0),
+            endsAtMs: Date.UTC(2026, 6, 8, 10, 0),
+            isAllDay: false,
+            isRecurring: false,
+            privacy: "Unknown",
+            overlapState: "None",
+            attachable: true,
+            safetyNote:
+              "Privacy classification is unavailable from EventKit; confirm this event title is safe before attaching.",
+          },
+        ],
+        autoStartEnabled: false,
+      },
+    });
+    const attached = connectedSnapshot({
+      meetings: [
+        {
+          ...initial.meetings[0],
+          calendarAttachment: {
+            source: "AppleCalendar",
+            eventId: "event-1",
+            eventTitle: "Design Review",
+            calendarTitle: "Work",
+            startsAtMs: Date.UTC(2026, 6, 8, 9, 0),
+            endsAtMs: Date.UTC(2026, 6, 8, 10, 0),
+            privacy: "Unknown",
+            privacyConfirmed: true,
+            attachedAtMs: Date.UTC(2026, 6, 8, 8, 45),
+          },
+        },
+      ],
+      selectedMeetingId: initial.selectedMeetingId,
+      calendarContext: initial.calendarContext,
+    });
+    const attachCalendarEventContext = vi.fn(async () => attached);
+
+    render(
+      <App
+        snapshot={initial}
+        commandFacade={fakeCommandFacade({
+          attachCalendarEventContext,
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Confirm privacy and attach" }));
+
+    expect(attachCalendarEventContext).toHaveBeenCalledWith({
+      meetingId: "circuit-review",
+      eventId: "event-1",
+      privacyConfirmed: true,
+    });
+    expect(screen.getAllByText(/Design Review/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Unknown privacy confirmed/)).toBeInTheDocument();
+  });
+
   it("keeps local settings controls usable when desktop commands are unavailable", async () => {
     const user = userEvent.setup();
 
@@ -2762,6 +2833,7 @@ function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): Deskt
         message: "Apple Calendar access is granted; no upcoming events found in the next 24 hours.",
       },
     }),
+    attachCalendarEventContext: async () => snapshot,
     testWhisperModelPath: async () => ({
       state: "Valid",
       message: "Whisper model path is readable.",

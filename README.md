@@ -116,8 +116,12 @@ Implemented MVP flows:
   macOS 14+ path requests full Calendar event access, while the macOS 13 support
   floor uses EventKit's older explicit event-access prompt. When access is
   granted, the app loads a bounded read-only list of upcoming local Calendar
-  events for manual review, marks unsafe event shapes non-attachable, and still
-  does not attach meetings, store calendar data, or auto-start recordings.
+  events for manual review, marks unsafe event shapes non-attachable, and lets
+  the user manually attach a safe event as meeting context. Unknown EventKit
+  privacy requires an explicit confirmation before attachment. Private, all-day,
+  recurring, ambiguous, and overlapping events remain blocked. Calendar events
+  never auto-start recordings, and the app does not store calendar tokens or
+  sync hosted calendar data.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
@@ -131,7 +135,7 @@ Remaining gaps:
   app-private storage decision and future keychain boundary.
 - Real-hardware release confidence for default, no-Whisper, and
   ScreenCaptureKit system-audio builds.
-- Apple Calendar safe manual attachment and later cloud calendar connectors.
+- Later cloud calendar connectors.
 - Developer ID signed and notarized macOS DMG workflows exist; Apple signing
   credentials and expanded contributor onboarding/process docs remain.
 
@@ -170,9 +174,9 @@ Near-term product hardening:
 
 Calendar roadmap:
 
-- Build on the implemented Apple Calendar permission and read-only event-listing
-  seam by letting the user manually attach a recording to a safe event for
-  naming/context.
+- Build on the implemented Apple Calendar permission, read-only event listing,
+  and safe manual attachment seam with clearer calendar-driven organization
+  flows.
 - Keep auto-start disabled until allowlist rules, ambiguous-event handling,
   private/all-day/recurring-event protections, and always-visible recording
   indicators are verified.

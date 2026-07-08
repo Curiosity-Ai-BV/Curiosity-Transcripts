@@ -913,6 +913,11 @@ h3 {
   color: var(--text);
 }
 
+.calendar-event-row .button {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 .settings-form {
   border-bottom: 1px solid var(--line);
   padding-bottom: 18px;

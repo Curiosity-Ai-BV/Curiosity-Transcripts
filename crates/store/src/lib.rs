@@ -26,7 +26,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
 
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
 const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
 const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
@@ -212,6 +212,23 @@ pub struct MeetingSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeetingCalendarContext {
+    pub meeting_id: String,
+    pub source: String,
+    pub event_id: String,
+    pub event_title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub is_all_day: bool,
+    pub is_recurring: bool,
+    pub privacy: String,
+    pub overlap_state: String,
+    pub privacy_confirmed: bool,
+    pub attached_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeetingSearchResult {
     pub meeting_id: String,
     pub title: String,
@@ -342,6 +359,22 @@ impl Store {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 meeting_id TEXT NOT NULL,
                 path TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS meeting_calendar_context (
+                meeting_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                event_title TEXT NOT NULL,
+                calendar_title TEXT NOT NULL,
+                starts_at_ms INTEGER NOT NULL,
+                ends_at_ms INTEGER NOT NULL,
+                is_all_day INTEGER NOT NULL,
+                is_recurring INTEGER NOT NULL,
+                privacy TEXT NOT NULL,
+                overlap_state TEXT NOT NULL,
+                privacy_confirmed INTEGER NOT NULL,
+                attached_at_ms INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS model_runs (
@@ -904,8 +937,7 @@ impl Store {
                 SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
                 OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
                 |evidence| {
-                    evidence.base_url != ollama_base_url
-                        || evidence.requested_model != ollama_model
+                    evidence.base_url != ollama_base_url || evidence.requested_model != ollama_model
                 },
             )?;
             Ok(())
@@ -1840,6 +1872,89 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(files)
+    }
+
+    pub fn attach_meeting_calendar_context(
+        &self,
+        context: &MeetingCalendarContext,
+    ) -> StoreResult<MeetingCalendarContext> {
+        self.ensure_active_meeting_exists(&context.meeting_id)?;
+        self.conn.execute(
+            "
+            INSERT INTO meeting_calendar_context (
+                meeting_id, source, event_id, event_title, calendar_title,
+                starts_at_ms, ends_at_ms, is_all_day, is_recurring, privacy,
+                overlap_state, privacy_confirmed, attached_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(meeting_id) DO UPDATE SET
+                source = excluded.source,
+                event_id = excluded.event_id,
+                event_title = excluded.event_title,
+                calendar_title = excluded.calendar_title,
+                starts_at_ms = excluded.starts_at_ms,
+                ends_at_ms = excluded.ends_at_ms,
+                is_all_day = excluded.is_all_day,
+                is_recurring = excluded.is_recurring,
+                privacy = excluded.privacy,
+                overlap_state = excluded.overlap_state,
+                privacy_confirmed = excluded.privacy_confirmed,
+                attached_at_ms = excluded.attached_at_ms
+            ",
+            params![
+                context.meeting_id,
+                context.source,
+                context.event_id,
+                context.event_title,
+                context.calendar_title,
+                context.starts_at_ms,
+                context.ends_at_ms,
+                context.is_all_day,
+                context.is_recurring,
+                context.privacy,
+                context.overlap_state,
+                context.privacy_confirmed,
+                context.attached_at_ms
+            ],
+        )?;
+        self.meeting_calendar_context(&context.meeting_id)?
+            .ok_or_else(|| "calendar context attachment was not persisted".into())
+    }
+
+    pub fn meeting_calendar_context(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<MeetingCalendarContext>> {
+        self.conn
+            .query_row(
+                "
+                SELECT
+                    meeting_id, source, event_id, event_title, calendar_title,
+                    starts_at_ms, ends_at_ms, is_all_day, is_recurring, privacy,
+                    overlap_state, privacy_confirmed, attached_at_ms
+                FROM meeting_calendar_context
+                WHERE meeting_id = ?1
+                ",
+                params![meeting_id],
+                |row| {
+                    Ok(MeetingCalendarContext {
+                        meeting_id: row.get(0)?,
+                        source: row.get(1)?,
+                        event_id: row.get(2)?,
+                        event_title: row.get(3)?,
+                        calendar_title: row.get(4)?,
+                        starts_at_ms: row.get(5)?,
+                        ends_at_ms: row.get(6)?,
+                        is_all_day: row.get(7)?,
+                        is_recurring: row.get(8)?,
+                        privacy: row.get(9)?,
+                        overlap_state: row.get(10)?,
+                        privacy_confirmed: row.get(11)?,
+                        attached_at_ms: row.get(12)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn write_recoverable_artifact_manifest(
@@ -2907,6 +3022,7 @@ impl Store {
                 OR EXISTS(SELECT 1 FROM transcript_versions WHERE meeting_id = ?1)
                 OR EXISTS(SELECT 1 FROM model_runs WHERE meeting_id = ?1)
                 OR EXISTS(SELECT 1 FROM processing_jobs WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM meeting_calendar_context WHERE meeting_id = ?1)
                 OR EXISTS(SELECT 1 FROM meeting_search WHERE meeting_id = ?1)
                 OR EXISTS(
                     SELECT 1 FROM transcript_segment_edits
@@ -2950,6 +3066,10 @@ impl Store {
         )?;
         self.conn.execute(
             "DELETE FROM processing_jobs WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM meeting_calendar_context WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
         self.conn.execute(
@@ -3596,7 +3716,10 @@ fn is_pending_sha256(sha256: &str) -> bool {
 }
 
 fn is_lower_hex_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {

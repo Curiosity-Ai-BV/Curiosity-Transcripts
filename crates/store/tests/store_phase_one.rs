@@ -6,8 +6,8 @@ use curiosity_domain::{
     RawAudioRetentionPolicy, RecordingSession, RecordingSource, RecordingStatus,
 };
 use curiosity_store::{
-    ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
-    WriteStatus,
+    ArtifactManifest, DeleteReport, MeetingCalendarContext, RecoverableArtifact, RepairConflict,
+    RepairStatus, Store, WriteStatus,
 };
 use rusqlite::Connection;
 
@@ -86,7 +86,7 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 4);
+    assert_eq!(store.schema_version().expect("schema version"), 5);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(audio_artifacts)")
@@ -132,7 +132,7 @@ fn migrate_adds_recording_session_retention_policy_default_for_legacy_rows() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 4);
+    assert_eq!(store.schema_version().expect("schema version"), 5);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(recording_sessions)")
@@ -150,6 +150,123 @@ fn migrate_adds_recording_session_retention_policy_default_for_legacy_rows() {
         )
         .expect("legacy row policy");
     assert_eq!(policy, "Retain");
+}
+
+#[test]
+fn calendar_context_attachment_round_trips_and_replaces_per_meeting() {
+    let root = test_root("calendar-context-round-trip");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+
+    let first = calendar_context("meeting-1", "event-1", "Design Review", 1_500);
+    store
+        .attach_meeting_calendar_context(&first)
+        .expect("attach first event");
+    let mut replacement = calendar_context("meeting-1", "event-2", "Roadmap Review", 2_500);
+    replacement.privacy = "Unknown".to_string();
+    replacement.privacy_confirmed = true;
+    store
+        .attach_meeting_calendar_context(&replacement)
+        .expect("replace attached event");
+    drop(store);
+
+    let reopened = Store::open(&db_path, root).expect("reopen store");
+    reopened.migrate().expect("migrate reopened");
+    assert_eq!(
+        reopened
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        Some(replacement)
+    );
+}
+
+#[test]
+fn calendar_context_attachment_requires_active_meeting() {
+    let root = test_root("calendar-context-active-meeting");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    let error = store
+        .attach_meeting_calendar_context(&calendar_context(
+            "missing-meeting",
+            "event-1",
+            "Planning",
+            1_500,
+        ))
+        .expect_err("missing meeting should reject attachment");
+    assert!(error.to_string().contains("meeting not found or deleted"));
+}
+
+#[test]
+fn delete_meeting_removes_calendar_context_attachment() {
+    let root = test_root("calendar-context-delete");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    store
+        .attach_meeting_calendar_context(&calendar_context(
+            "meeting-1",
+            "event-1",
+            "Design Review",
+            1_500,
+        ))
+        .expect("attach event");
+
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert_eq!(
+        store
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        None
+    );
+}
+
+#[test]
+fn pending_delete_finalization_removes_leftover_calendar_context_attachment() {
+    let root = test_root("calendar-context-pending-delete");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    store
+        .attach_meeting_calendar_context(&calendar_context(
+            "meeting-1",
+            "event-1",
+            "Design Review",
+            1_500,
+        ))
+        .expect("attach event");
+    drop(store);
+
+    let conn = Connection::open(&db_path).expect("open raw connection");
+    conn.execute(
+        "UPDATE meetings SET status = 'Deleted', deleted_at_ms = 1 WHERE id = 'meeting-1'",
+        [],
+    )
+    .expect("mark pending delete");
+    drop(conn);
+
+    let reopened = Store::open(&db_path, root).expect("reopen store");
+    reopened.migrate().expect("migrate reopened");
+    let reports = reopened
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reopened
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        None
+    );
 }
 
 #[test]
@@ -178,6 +295,29 @@ fn recording_session_retention_policy_round_trips() {
             .expect("retention policy"),
         RawAudioRetentionPolicy::DeleteAfterTranscription
     );
+}
+
+fn calendar_context(
+    meeting_id: &str,
+    event_id: &str,
+    event_title: &str,
+    starts_at_ms: u64,
+) -> MeetingCalendarContext {
+    MeetingCalendarContext {
+        meeting_id: meeting_id.to_string(),
+        source: "AppleCalendar".to_string(),
+        event_id: event_id.to_string(),
+        event_title: event_title.to_string(),
+        calendar_title: "Work".to_string(),
+        starts_at_ms,
+        ends_at_ms: starts_at_ms + 1_800_000,
+        is_all_day: false,
+        is_recurring: false,
+        privacy: "Public".to_string(),
+        overlap_state: "None".to_string(),
+        privacy_confirmed: false,
+        attached_at_ms: starts_at_ms + 500,
+    }
 }
 
 #[test]

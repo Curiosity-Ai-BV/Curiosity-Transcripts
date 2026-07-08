@@ -83,7 +83,9 @@ fn app_settings_persist_setup_test_evidence_and_clear_only_mismatched_settings()
         tested_at_ms: 1_700_000_001_000,
         state: "Valid".to_string(),
         file_size_bytes: Some(16),
-        sha256: Some("2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf".to_string()),
+        sha256: Some(
+            "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf".to_string(),
+        ),
         failure_detail: None,
     };
     let ollama_evidence = OllamaConnectionTestEvidence {
