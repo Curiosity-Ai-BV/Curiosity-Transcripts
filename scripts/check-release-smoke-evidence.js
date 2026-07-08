@@ -515,6 +515,20 @@ function validateFilledModelSetup(evidence, errors) {
       (value) => sha256Pattern.test(value),
       "a 64-hex SHA-256 checksum",
     );
+
+    const whisperFileSizeLabel = "modelSetup.whisper.fileSizeBytes";
+    const whisperFileSizeBytes = valueAt(evidence, ["modelSetup", "whisper", "fileSizeBytes"]);
+    if (!Number.isInteger(whisperFileSizeBytes) || whisperFileSizeBytes <= 0) {
+      errors.push(`${whisperFileSizeLabel} must be a positive integer number`);
+    }
+
+    requireFilledStringFormat(
+      errors,
+      evidence,
+      ["modelSetup", "whisper", "pathTestEvidence"],
+      meaningfulString,
+      "meaningful non-placeholder path-test evidence",
+    );
   }
 }
 
@@ -1014,6 +1028,39 @@ function runSelfTests() {
     "modelSetup.whisper.sha256",
   );
 
+  const zeroByteWhisperModel = createStrictPassedFixture();
+  zeroByteWhisperModel.modelSetup.whisper.fileSizeBytes = 0;
+  expectRejected(
+    "filled evidence zero-byte Whisper model",
+    validateEvidence(zeroByteWhisperModel),
+    "modelSetup.whisper.fileSizeBytes",
+  );
+
+  const stringWhisperModelSize = createStrictPassedFixture();
+  stringWhisperModelSize.modelSetup.whisper.fileSizeBytes = "147";
+  expectRejected(
+    "filled evidence string Whisper model size",
+    validateEvidence(stringWhisperModelSize),
+    "modelSetup.whisper.fileSizeBytes",
+  );
+
+  const weakWhisperPathTestEvidence = createStrictPassedFixture();
+  weakWhisperPathTestEvidence.modelSetup.whisper.pathTestEvidence = "ok";
+  expectRejected(
+    "filled evidence weak Whisper path test evidence",
+    validateEvidence(weakWhisperPathTestEvidence),
+    "modelSetup.whisper.pathTestEvidence",
+  );
+
+  const placeholderWhisperPathTestEvidence = createStrictPassedFixture();
+  placeholderWhisperPathTestEvidence.modelSetup.whisper.pathTestEvidence =
+    "TEMPLATE_WHISPER_PATH_TEST_EVIDENCE_OR_PENDING";
+  expectRejected(
+    "filled evidence placeholder Whisper path test evidence",
+    validateEvidence(placeholderWhisperPathTestEvidence),
+    "modelSetup.whisper.pathTestEvidence",
+  );
+
   const passedItemWithoutEvidence = createStrictPassedFixture();
   passedItemWithoutEvidence.manualItems[0].evidence = {
     observations: [],
@@ -1076,6 +1123,15 @@ function runSelfTests() {
   expectAccepted(
     "allow-incomplete draft evidence with pending statuses",
     validateEvidence(createAllowIncompleteDraftFixture(), { allowIncomplete: true }),
+  );
+
+  const allowIncompleteDraftWithPendingWhisperEvidence = createAllowIncompleteDraftFixture();
+  allowIncompleteDraftWithPendingWhisperEvidence.modelSetup.whisper.sha256 = "pending";
+  allowIncompleteDraftWithPendingWhisperEvidence.modelSetup.whisper.fileSizeBytes = "pending";
+  allowIncompleteDraftWithPendingWhisperEvidence.modelSetup.whisper.pathTestEvidence = "pending";
+  expectAccepted(
+    "allow-incomplete draft evidence with pending Whisper metadata",
+    validateEvidence(allowIncompleteDraftWithPendingWhisperEvidence, { allowIncomplete: true }),
   );
 
   expectFileIncludes(
