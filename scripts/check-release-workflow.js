@@ -65,6 +65,7 @@ const requiredReadmeText = [
   "Versioning Rules",
   "SemVer",
   "vMAJOR.MINOR.PATCH",
+  "bash scripts/check-publication-readiness.sh",
   "apps/desktop/package.json",
   "apps/desktop/package-lock.json",
   "Cargo.toml",
@@ -76,6 +77,7 @@ const requiredReadmeText = [
 ];
 
 const requiredBuildScriptText = [
+  "bash scripts/check-publication-readiness.sh",
   "npm ci",
   "npm run test",
   "tauri build --features system-audio-screencapturekit --bundles app --ci",
@@ -100,6 +102,7 @@ const requiredPackageScriptText = [
 const requiredDmgDocsText = [
   "APPLE_CERTIFICATE_P12_BASE64",
   "APPLE_API_KEY_ID",
+  "bash scripts/check-publication-readiness.sh",
   "Developer ID signed and notarized",
   "hdiutil verify",
   "stapler validate",
@@ -146,6 +149,20 @@ function exactRunStepLine(text, command) {
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     if (lines[index].trim() === `run: ${command}`) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function firstShellCommandLine(text, matches) {
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue;
+    }
+    if (matches(trimmed)) {
       return index;
     }
   }
@@ -207,6 +224,40 @@ for (const text of requiredReadmeText) {
 for (const text of requiredBuildScriptText) {
   if (!buildScript.includes(text)) {
     fail("scripts/build-macos-dmg.sh", `Missing required release build script content: ${text}`);
+  }
+}
+
+const buildScriptPublicationReadinessLine = firstShellCommandLine(
+  buildScript,
+  (line) => line === "bash scripts/check-publication-readiness.sh",
+);
+const buildScriptGuardedCommands = [
+  ["npm ci", firstShellCommandLine(buildScript, (line) => line === "npm ci")],
+  ["desktop tests", firstShellCommandLine(buildScript, (line) => line === "npm run test")],
+  [
+    "Tauri build",
+    firstShellCommandLine(buildScript, (line) =>
+      line.startsWith("npm exec -- tauri build --features system-audio-screencapturekit --bundles app --ci"),
+    ),
+  ],
+  [
+    "DMG packaging",
+    firstShellCommandLine(buildScript, (line) =>
+      /^(CURIOSITY_SKIP_DMG_SIGN=1\s+)?"\$ROOT_DIR\/scripts\/package-macos-dmg\.sh"/.test(line),
+    ),
+  ],
+];
+
+for (const [label, guardedLine] of buildScriptGuardedCommands) {
+  if (
+    buildScriptPublicationReadinessLine === -1 ||
+    guardedLine === -1 ||
+    buildScriptPublicationReadinessLine >= guardedLine
+  ) {
+    fail(
+      "scripts/build-macos-dmg.sh",
+      `Publication readiness must run before ${label} in direct DMG builds`,
+    );
   }
 }
 

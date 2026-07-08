@@ -310,6 +310,9 @@ ScreenCaptureKit system-audio feature enabled, then package it into a DMG:
 ./scripts/build-macos-dmg.sh
 ```
 
+Direct DMG builds run `bash scripts/check-publication-readiness.sh` before
+desktop dependency install, tests, Tauri build, and packaging.
+
 When Developer ID signing credentials are not available, local ad-hoc signed
 verification can use:
 

@@ -19,18 +19,19 @@ From the repository root:
 
 The script runs:
 
-1. `npm ci` in `apps/desktop`.
-2. The desktop Vitest suite.
-3. `tauri build` with `system-audio-screencapturekit` enabled and the macOS
+1. `bash scripts/check-publication-readiness.sh` from the repository root.
+2. `npm ci` in `apps/desktop`.
+3. The desktop Vitest suite.
+4. `tauri build` with `system-audio-screencapturekit` enabled and the macOS
    `.app` bundle target.
-4. `hdiutil create` against a staging folder containing the `.app` bundle and
+5. `hdiutil create` against a staging folder containing the `.app` bundle and
    an `/Applications` symlink.
-5. `codesign` seals the `.app` bundle with Developer ID when credentials are
+6. `codesign` seals the `.app` bundle with Developer ID when credentials are
    available, otherwise with an ad-hoc local signature.
-6. `hdiutil verify` against the produced DMG.
-7. `notarytool` submits the signed DMG and `stapler` attaches the notarization
+7. `hdiutil verify` against the produced DMG.
+8. `notarytool` submits the signed DMG and `stapler` attaches the notarization
    ticket when notarization credentials are available.
-8. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
+9. A read-only attach of the DMG to confirm `Curiosity Transcripts.app` exists
    and passes strict code-signature verification before the script reports
    success. Notarized builds also run `stapler validate` and Gatekeeper
    assessment checks.

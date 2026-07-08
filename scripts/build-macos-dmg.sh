@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP_DIR="$ROOT_DIR/apps/desktop"
 
+cd "$ROOT_DIR"
+bash scripts/check-publication-readiness.sh
+
 cd "$DESKTOP_DIR"
 
 npm ci
