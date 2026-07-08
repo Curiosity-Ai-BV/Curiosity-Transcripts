@@ -28,6 +28,7 @@ done
 check_file "site/index.html"
 check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
+check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
@@ -77,7 +78,10 @@ require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'
 require_text docs/production-readiness-roadmap.md 'TS command adapter contract tests consume the same fixture' 'Phase 5A TS command adapter contract consumption'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
-require_text docs/production-readiness-roadmap.md 'SBOM, license output, and secret scanning expectations remain later Phase 2' 'remaining Phase 2 security automation scope'
+require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
+require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
+require_text docs/production-readiness-roadmap.md 'legal license allowlist' 'non-allowlist supply-chain boundary'
+require_text docs/production-readiness-roadmap.md 'later Phase 2' 'remaining secret scanning scope'
 require_text docs/production-readiness-roadmap.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/macos-dmg-release.md 'docs/release-candidate-checklist\.md' 'release-candidate checklist link from release docs'
 require_text docs/release-candidate-checklist.md 'check-tauri-security\.js' 'Tauri renderer CSP release-candidate gate'
@@ -101,6 +105,10 @@ require_text docs/release-candidate-checklist.md 'At-rest disclosure' 'at-rest d
 require_text docs/release-candidate-checklist.md 'encryption-at-rest is not implemented in v1' 'release notes at-rest encryption disclosure'
 require_text docs/release-candidate-checklist.md 'CodeQL scans Rust and JavaScript/TypeScript' 'CodeQL release-candidate visibility expectation'
 require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
+require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-chain-artifacts\.js' 'supply-chain artifact release-candidate command'
+require_text docs/release-candidate-checklist.md 'release-artifacts/supply-chain' 'supply-chain artifact output path'
+require_text docs/release-candidate-checklist.md 'metadata/reporting check' 'supply-chain metadata/reporting boundary'
+require_text docs/release-candidate-checklist.md 'Secret scanning remains' 'remaining secret scanning release-candidate scope'
 require_text docs/release-candidate-checklist.md 'arm64' 'arm64 release-candidate architecture'
 require_text docs/at-rest-data-strategy.md 'app-private local storage' 'v1 app-private storage decision'
 require_text docs/at-rest-data-strategy.md 'encryption-at-rest is not implemented yet' 'v1 encryption-at-rest non-implementation'
@@ -236,6 +244,104 @@ require_text .github/workflows/ci.yml 'librsvg2-dev' 'Tauri Linux SVG dependency
 require_text .github/workflows/ci.yml 'npm run test' 'desktop test CI gate'
 require_text .github/workflows/ci.yml 'npm run build' 'desktop build CI gate'
 require_text .github/workflows/ci.yml 'npm audit --audit-level=high' 'desktop npm audit CI gate'
+if ! node --check scripts/generate-supply-chain-artifacts.js >/dev/null; then
+  failures=1
+fi
+if ! node <<'NODE'
+const fs = require("fs");
+
+const file = ".github/workflows/ci.yml";
+const text = fs.readFileSync(file, "utf8");
+const steps = [];
+let current = null;
+let inJobs = false;
+let currentJob = null;
+
+for (const line of text.split(/\r?\n/)) {
+  if (/^jobs:\s*$/.test(line)) {
+    inJobs = true;
+    continue;
+  }
+  if (inJobs) {
+    const jobMatch = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (jobMatch) {
+      if (current) {
+        steps.push(current);
+        current = null;
+      }
+      currentJob = jobMatch[1];
+    }
+  }
+  const match = line.match(/^ {6}- name:\s*(.+?)\s*$/);
+  if (match) {
+    if (current) {
+      steps.push(current);
+    }
+    current = { name: match[1], job: currentJob, index: steps.length, lines: [line] };
+  } else if (current) {
+    current.lines.push(line);
+  }
+}
+
+if (current) {
+  steps.push(current);
+}
+
+let ok = true;
+
+function fail(message) {
+  console.error(`::error file=${file}::${message}`);
+  ok = false;
+}
+
+function requireStep(name) {
+  const step = steps.find((candidate) => candidate.name === name);
+  if (!step) {
+    fail(`Missing CI step: ${name}`);
+  }
+  return step;
+}
+
+function hasLine(step, pattern) {
+  return step?.lines.some((line) => pattern.test(line)) ?? false;
+}
+
+const installDesktop = requireStep("Install desktop dependencies");
+const generate = requireStep("Generate supply-chain artifacts");
+const upload = requireStep("Upload supply-chain artifacts");
+
+if (!hasLine(generate, /^\s*run:\s*node scripts\/generate-supply-chain-artifacts\.js\s*$/)) {
+  fail("Generate supply-chain artifacts step must run node scripts/generate-supply-chain-artifacts.js");
+}
+if (!hasLine(upload, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
+  fail("Upload supply-chain artifacts step must use actions/upload-artifact@v4");
+}
+if (!hasLine(upload, /^\s*name:\s*supply-chain-artifacts\s*$/)) {
+  fail("Upload supply-chain artifacts step must name the artifact supply-chain-artifacts");
+}
+if (!hasLine(upload, /^\s*path:\s*release-artifacts\/supply-chain\s*$/)) {
+  fail("Upload supply-chain artifacts step must upload release-artifacts/supply-chain");
+}
+if (!hasLine(upload, /^\s*if-no-files-found:\s*error\s*$/)) {
+  fail("Upload supply-chain artifacts step must fail when artifacts are missing");
+}
+if (installDesktop?.job !== generate?.job || installDesktop?.job !== upload?.job) {
+  fail("desktop npm install, supply-chain generation, and supply-chain upload steps must be in the same CI job");
+}
+if (
+  installDesktop &&
+  generate &&
+  upload &&
+  (installDesktop.index > generate.index || generate.index > upload.index)
+) {
+  fail("Supply-chain artifact generation must run after desktop npm install and before upload");
+}
+
+process.exit(ok ? 0 : 1);
+NODE
+then
+  failures=1
+fi
 require_text .github/workflows/ci.yml 'check-publication-readiness\.sh' 'publication readiness CI gate'
 require_text .github/workflows/ci.yml 'check-pages-site\.js' 'Pages site validation CI gate'
 require_text .github/workflows/ci.yml 'check-pages-workflow\.js' 'Pages workflow validation CI gate'
@@ -310,6 +416,17 @@ require_text .github/dependabot.yml 'directory: "/"' 'Dependabot root cargo dire
 require_text .github/dependabot.yml 'directory: "/apps/desktop/src-tauri"' 'Dependabot desktop Tauri cargo directory'
 require_text .github/dependabot.yml 'package-ecosystem: "github-actions"' 'Dependabot GitHub Actions update automation'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-tauri-security\.js; then' 'Tauri renderer CSP publication readiness gate'
+require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
+require_text scripts/generate-supply-chain-artifacts.js 'cargo metadata --locked --format-version 1' 'root Cargo locked metadata command'
+require_text scripts/generate-supply-chain-artifacts.js 'aarch64-apple-darwin' 'arm64 macOS Cargo metadata target filter'
+require_text scripts/generate-supply-chain-artifacts.js 'filter-platform' 'Cargo metadata platform filter'
+require_text scripts/generate-supply-chain-artifacts.js 'delete sbom\.serialNumber' 'npm SBOM serial number normalization'
+require_text scripts/generate-supply-chain-artifacts.js 'delete sbom\.metadata\.timestamp' 'npm SBOM timestamp normalization'
+require_text scripts/generate-supply-chain-artifacts.js 'apps/desktop/src-tauri/Cargo\.toml' 'desktop Tauri Cargo metadata command'
+require_text scripts/generate-supply-chain-artifacts.js 'license_file' 'Cargo license_file fallback'
+require_text scripts/generate-supply-chain-artifacts.js 'root-cargo-\$\{releaseRustTarget\}-license-metadata\.json' 'root Cargo license metadata artifact'
+require_text scripts/generate-supply-chain-artifacts.js 'desktop-tauri-cargo-\$\{releaseRustTarget\}-license-metadata\.json' 'desktop Tauri Cargo license metadata artifact'
+require_text scripts/generate-supply-chain-artifacts.js 'release-artifacts", "supply-chain' 'supply-chain artifact output directory'
 require_text .github/workflows/pages.yml 'macos-26' 'macOS 26 runner for ScreenCaptureKit DMG build'
 require_text .github/workflows/pages.yml 'downloads/Curiosity-Transcripts-latest\.dmg' 'stable Pages DMG download path'
 require_text .github/workflows/release.yml 'gh release upload' 'versioned GitHub Release asset upload'

@@ -164,9 +164,21 @@ permissions stay minimal for this slice: `contents: read` for checkout and
 because it does not add branch-protection or alert triage policy; those
 enforcement decisions remain release governance work.
 
-SBOM, license output, and secret scanning expectations remain later Phase 2
-hardening unless implemented in separate slices. `cargo deny` is not part of the
-current advisory gate.
+Current supply-chain artifact status: CI runs
+`node scripts/generate-supply-chain-artifacts.js` after desktop `npm ci` and
+uploads `release-artifacts/supply-chain` with `actions/upload-artifact@v4` and
+`if-no-files-found: error`. The build-only artifact set contains the
+`apps/desktop` npm CycloneDX application SBOM, an npm lockfile license metadata
+report, and deterministic Cargo license metadata reports derived from locked
+`cargo metadata --filter-platform aarch64-apple-darwin` for both the root
+workspace and `apps/desktop/src-tauri`, matching the first public arm64 macOS
+release target. The script normalizes npm SBOM timestamp and serial-number
+fields so repeated runs are stable. It fails if npm lockfile packages lack
+license or license-file metadata, or if any Cargo package in the filtered graphs
+lacks both `license` and `license_file`. This is a metadata/reporting gate, not
+a legal license allowlist. Secret scanning expectations remain later Phase 2
+hardening unless implemented in a separate slice. `cargo deny`, Rust CycloneDX
+tooling, `cargo-about`, and license allowlists are not part of the current gate.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes
 per-meeting privacy data state: private audio storage path, captured raw-audio

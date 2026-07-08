@@ -119,6 +119,16 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Generate supply-chain artifacts
+        run: node scripts/generate-supply-chain-artifacts.js
+
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-artifacts
+          path: release-artifacts/supply-chain
+          if-no-files-found: error
+
       - name: Audit desktop npm dependencies
         working-directory: apps/desktop
         run: npm audit --audit-level=high

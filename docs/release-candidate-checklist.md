@@ -20,9 +20,16 @@ crate is present. CodeQL scans Rust and JavaScript/TypeScript on push, pull
 request, and a weekly schedule with `build-mode: none` to avoid duplicating CI
 build/test cost; confirm code scanning alerts are visible before treating a
 build as a release candidate. CodeQL visibility does not replace
-branch-protection or alert triage policy. SBOM, license output, and secret
-scanning expectations are still future hardening gates unless a later slice adds
-them; `cargo deny` is not part of this gate.
+branch-protection or alert triage policy. Supply-chain artifact generation must
+run through `node scripts/generate-supply-chain-artifacts.js`; CI uploads
+`release-artifacts/supply-chain`, including the desktop npm CycloneDX
+application SBOM, npm lockfile license metadata report, and deterministic Cargo
+license metadata reports filtered to `aarch64-apple-darwin` for both Rust
+dependency graphs. The script normalizes npm SBOM timestamp and serial-number
+fields so repeated runs are stable. Treat this as a metadata/reporting check,
+not a legal license allowlist. Secret scanning remains later Phase 2 work, and
+`cargo deny`, Rust CycloneDX tooling, `cargo-about`, and license allowlists are
+not part of this gate.
 
 ## Manual Smoke Items
 
