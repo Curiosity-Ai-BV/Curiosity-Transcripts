@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use curiosity_domain::{JobKind, JobStatus, Meeting, ProcessingJob};
+use curiosity_domain::{JobKind, JobStatus, Meeting, MeetingStatus, ProcessingJob};
 use curiosity_store::{Store, StoreResult};
 use rusqlite::Connection;
 
@@ -400,6 +400,78 @@ fn recover_active_transcription_jobs_only_recovers_transcription_workers_without
         store
             .processing_job("job-summary")
             .expect("summary job")
+            .status,
+        JobStatus::Running
+    );
+}
+
+#[test]
+fn recover_active_transcription_jobs_skips_deleted_and_deleted_at_meetings() {
+    let root = test_root("recover-skips-deleted-meetings");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-kept", "Keep", 1_000))
+        .expect("insert kept meeting");
+    store
+        .insert_meeting(&Meeting::new_manual(
+            "meeting-deleted-status",
+            "Deleted",
+            2_000,
+        ))
+        .expect("insert status deleted meeting");
+    store
+        .update_meeting_status("meeting-deleted-status", MeetingStatus::Deleted, None)
+        .expect("mark status deleted meeting");
+    let mut deleted_at_meeting = Meeting::new_manual("meeting-deleted-at", "Deleted At", 3_000);
+    deleted_at_meeting.deleted_at_ms = Some(3_500);
+    store
+        .insert_meeting(&deleted_at_meeting)
+        .expect("insert deleted-at meeting");
+
+    let mut kept_job = ProcessingJob::new(
+        "job-kept",
+        "meeting-kept",
+        JobKind::Transcribe,
+        JobStatus::Running,
+    );
+    kept_job.started_at_ms = Some(1_100);
+    store.insert_processing_job(&kept_job).expect("kept job");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "job-deleted-status",
+            "meeting-deleted-status",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("status deleted job");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "job-deleted-at",
+            "meeting-deleted-at",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("deleted-at job");
+
+    let recovered = store
+        .recover_active_transcription_jobs(2_100, "worker missing after restart")
+        .expect("recover active transcription jobs");
+
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, "job-kept");
+    assert_eq!(recovered[0].status, JobStatus::Recovery);
+    assert_eq!(
+        store
+            .processing_job("job-deleted-status")
+            .expect("status deleted job")
+            .status,
+        JobStatus::Running
+    );
+    assert_eq!(
+        store
+            .processing_job("job-deleted-at")
+            .expect("deleted-at job")
             .status,
         JobStatus::Running
     );

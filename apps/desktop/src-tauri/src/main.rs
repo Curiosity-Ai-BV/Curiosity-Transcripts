@@ -28,7 +28,9 @@ use curiosity_domain::{
     ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
     TranscriptVersion,
 };
-use curiosity_store::{AppSettings, CompletedAudioArtifact, RecoverableArtifact, Store};
+use curiosity_store::{
+    AppSettings, CompletedAudioArtifact, PendingDeleteFinalizationReport, RecoverableArtifact, Store,
+};
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
 use curiosity_transcription::{
@@ -729,11 +731,17 @@ fn desktop_snapshot_for_app_root_with_state(
     app_root: &Path,
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
-    let store = if command_state.active_recording.is_some() {
-        open_store(app_root)?
+    let (store, finalized_deletes) = if command_state.active_recording.is_some() {
+        (open_store(app_root)?, Vec::new())
+    } else if command_state.last_delete.is_some() {
+        (open_store_with_startup_repair(app_root)?, Vec::new())
     } else {
-        open_store_with_startup_repair(app_root)?
+        open_store_with_startup_repair_report(app_root)?
     };
+    let finalized_delete_state = finalized_deletes
+        .into_iter()
+        .last()
+        .map(delete_command_state_from_pending_finalization);
     let recovered_transcription_job =
         if command_state.active_recording.is_none() && command_state.transcription_job.is_none() {
             store
@@ -859,29 +867,47 @@ fn desktop_snapshot_for_app_root_with_state(
             .clone()
             .or(recovered_transcription_job),
         export_command: command_state.last_export.clone().unwrap_or_default(),
-        delete_command: command_state.last_delete.clone().unwrap_or_default(),
+        delete_command: command_state
+            .last_delete
+            .clone()
+            .or(finalized_delete_state)
+            .unwrap_or_default(),
         analysis_command: command_state.last_analysis.clone(),
         summary_job: command_state.summary_job.clone().or(recovered_summary_job),
     })
 }
 
 fn open_store(app_root: &Path) -> Result<Store, String> {
-    open_store_for_app_root(app_root, false)
+    open_store_for_app_root(app_root, false).map(|(store, _)| store)
 }
 
 fn open_store_with_startup_repair(app_root: &Path) -> Result<Store, String> {
+    open_store_with_startup_repair_report(app_root).map(|(store, _)| store)
+}
+
+fn open_store_with_startup_repair_report(
+    app_root: &Path,
+) -> Result<(Store, Vec<PendingDeleteFinalizationReport>), String> {
     open_store_for_app_root(app_root, true)
 }
 
-fn open_store_for_app_root(app_root: &Path, repair_startup: bool) -> Result<Store, String> {
+fn open_store_for_app_root(
+    app_root: &Path,
+    repair_startup: bool,
+) -> Result<(Store, Vec<PendingDeleteFinalizationReport>), String> {
     std::fs::create_dir_all(app_root).map_err(|error| error.to_string())?;
     let store = Store::open(app_root.join("curiosity.sqlite3"), app_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
-    if repair_startup {
+    let finalized_deletes = if repair_startup {
         store.repair_startup().map_err(|error| error.to_string())?;
-    }
-    Ok(store)
+        store
+            .finalize_pending_delete_intents()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    Ok((store, finalized_deletes))
 }
 
 fn app_settings_for_app_root(app_root: &Path) -> Result<AppSettings, String> {
@@ -4221,6 +4247,24 @@ impl DeleteCommandState {
     }
 }
 
+fn delete_command_state_from_pending_finalization(
+    report: PendingDeleteFinalizationReport,
+) -> DeleteCommandState {
+    DeleteCommandState::deleted(DeletedMeetingDto {
+        meeting_id: report.meeting_id,
+        deleted_private_artifacts: paths_to_strings(report.deleted_private_artifacts),
+        skipped_private_artifacts: paths_to_strings(report.skipped_private_artifacts),
+        remaining_exports: paths_to_strings(report.exported_files_outside_app_control),
+    })
+}
+
+fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AnalysisDisclosureState {
@@ -5256,6 +5300,123 @@ mod tests {
         assert_eq!(json["deleteCommand"]["state"], "deleted");
         assert_eq!(json["deleteCommand"]["remainingExports"][0], exported_path);
         assert!(PathBuf::from(exported_path).exists());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_finalizes_pending_delete_intent_and_reports_cleanup() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Pending Delete",
+            "delete this transcript",
+        );
+        let export_snapshot =
+            export_meeting_json_for_app_root(&root, &mut command_state, "meeting-1")
+                .expect("export meeting");
+        let export_json = serde_json::to_value(&export_snapshot).expect("serialize export");
+        let exported_path = export_json["exportCommand"]["path"]
+            .as_str()
+            .expect("export path")
+            .to_string();
+        let private_path = root.join("meetings/meeting-1/audio/imported.wav");
+        let manifest_path = root.join("meetings/meeting-1/manifest.json");
+        let store = open_store(&root).expect("open store");
+        store
+            .write_recoverable_artifact_manifest(
+                "meeting-1",
+                "meeting-1-session-1",
+                "meeting-1-artifact-1",
+                "meetings/meeting-1/audio/imported.wav",
+                "sha256:meeting-1",
+            )
+            .expect("write recoverable manifest");
+        store
+            .tombstone_audio_artifact("meeting-1-artifact-1")
+            .expect("tombstone artifact");
+        store
+            .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+            .expect("mark meeting deleted");
+
+        let snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &command_state.snapshot_state())
+                .expect("snapshot finalizes pending delete");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(!private_path.exists());
+        assert!(!manifest_path.exists());
+        assert!(PathBuf::from(&exported_path).exists());
+        assert_eq!(json["deleteCommand"]["state"], "deleted");
+        assert_eq!(json["deleteCommand"]["meetingId"], "meeting-1");
+        assert_eq!(json["deleteCommand"]["remainingExports"][0], exported_path);
+        let deleted_artifact = json["deleteCommand"]["deletedPrivateArtifacts"][0]
+            .as_str()
+            .expect("deleted private artifact");
+        assert!(deleted_artifact.ends_with("meetings/meeting-1/audio/imported.wav"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .all(|meeting| meeting["id"] != "meeting-1"));
+        let reopened = open_store(&root).expect("reopen store");
+        assert_eq!(reopened.count("audio_artifacts").expect("artifacts"), 0);
+        assert_eq!(
+            reopened
+                .count("recording_sessions")
+                .expect("recording sessions"),
+            0
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_with_active_recording_does_not_recover_deleted_meeting_summary_job() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(
+                "meeting-1",
+                "Deleted worker",
+                1_700_000_000_000,
+            ))
+            .expect("insert meeting");
+        store
+            .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+            .expect("mark meeting deleted");
+        let mut job = ProcessingJob::new(
+            "job-deleted-meeting",
+            "meeting-1",
+            JobKind::Summarize,
+            JobStatus::Running,
+        );
+        job.started_at_ms = Some(1_700_000_001_000);
+        store.insert_processing_job(&job).expect("insert job");
+        let snapshot_state = DesktopCommandSnapshotState {
+            active_recording: Some(ActiveDesktopRecordingSnapshot {
+                meeting_id: "active-meeting".to_string(),
+                recording_id: "active-recording".to_string(),
+                captures_system_audio: false,
+            }),
+            ..Default::default()
+        };
+
+        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
+            .expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(
+            reopened
+                .processing_job("job-deleted-meeting")
+                .expect("deleted meeting job")
+                .status,
+            JobStatus::Running
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

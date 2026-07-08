@@ -722,11 +722,15 @@ impl Store {
     ) -> StoreResult<Vec<ProcessingJob>> {
         let mut stmt = self.conn.prepare(
             "
-            SELECT id
+            SELECT processing_jobs.id
             FROM processing_jobs
-            WHERE kind = ?1
-              AND status = 'Running'
-            ORDER BY started_at_ms DESC, id DESC
+            JOIN meetings
+              ON meetings.id = processing_jobs.meeting_id
+            WHERE processing_jobs.kind = ?1
+              AND processing_jobs.status = 'Running'
+              AND meetings.status != 'Deleted'
+              AND meetings.deleted_at_ms IS NULL
+            ORDER BY processing_jobs.started_at_ms DESC, processing_jobs.id DESC
             ",
         )?;
         let job_ids = stmt
@@ -1606,17 +1610,7 @@ impl Store {
     }
 
     pub fn delete_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
-        let mut report = DeleteReport::default();
-
-        let mut exports = self
-            .conn
-            .prepare("SELECT path FROM exported_files WHERE meeting_id = ?1 ORDER BY path")?;
-        report.exported_files_outside_app_control = exports
-            .query_map(params![meeting_id], |row| {
-                Ok(PathBuf::from(row.get::<_, String>(0)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(exports);
+        let mut report = self.delete_report_for_meeting(meeting_id)?;
 
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let result = self.mark_meeting_delete_intent_in_transaction(meeting_id);
@@ -1633,7 +1627,40 @@ impl Store {
             }
         }
 
-        for artifact_path in self.private_artifacts_for_delete(meeting_id)? {
+        let private_artifacts = self.private_artifacts_for_delete(meeting_id)?;
+        self.finalize_deleted_meeting_cleanup(meeting_id, private_artifacts, &mut report)?;
+        Ok(report)
+    }
+
+    pub fn finalize_pending_delete_intents(
+        &self,
+    ) -> StoreResult<Vec<PendingDeleteFinalizationReport>> {
+        let meeting_ids = self.deleted_meeting_ids()?;
+        let mut reports = Vec::new();
+        for meeting_id in meeting_ids {
+            let private_artifacts = self.private_artifacts_for_delete(&meeting_id)?;
+            let has_private_rows = self.private_rows_remain_for_delete(&meeting_id)?;
+            let has_private_manifest = self.private_manifest_exists(&meeting_id)?;
+            if private_artifacts.is_empty() && !has_private_rows && !has_private_manifest {
+                continue;
+            }
+
+            let mut report = self.delete_report_for_meeting(&meeting_id)?;
+            self.finalize_deleted_meeting_cleanup(&meeting_id, private_artifacts, &mut report)?;
+            reports.push(PendingDeleteFinalizationReport::from_delete_report(
+                meeting_id, report,
+            ));
+        }
+        Ok(reports)
+    }
+
+    fn finalize_deleted_meeting_cleanup(
+        &self,
+        meeting_id: &str,
+        private_artifacts: Vec<String>,
+        report: &mut DeleteReport,
+    ) -> StoreResult<()> {
+        for artifact_path in private_artifacts {
             let Some(path) = self.private_app_path(&artifact_path) else {
                 report
                     .skipped_private_artifacts
@@ -1663,7 +1690,7 @@ impl Store {
         self.delete_private_manifests(meeting_id)?;
         report.deleted_private_artifacts.sort();
         report.skipped_private_artifacts.sort();
-        Ok(report)
+        Ok(())
     }
 
     pub fn meeting_deleted(&self, meeting_id: &str) -> StoreResult<bool> {
@@ -2354,6 +2381,33 @@ impl Store {
         Ok(())
     }
 
+    fn delete_report_for_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
+        let mut report = DeleteReport::default();
+        let mut exports = self
+            .conn
+            .prepare("SELECT path FROM exported_files WHERE meeting_id = ?1 ORDER BY path")?;
+        report.exported_files_outside_app_control = exports
+            .query_map(params![meeting_id], |row| {
+                Ok(PathBuf::from(row.get::<_, String>(0)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(report)
+    }
+
+    fn deleted_meeting_ids(&self) -> StoreResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id FROM meetings
+            WHERE status = 'Deleted' OR deleted_at_ms IS NOT NULL
+            ORDER BY id
+            ",
+        )?;
+        let meeting_ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(meeting_ids)
+    }
+
     fn mark_meeting_delete_intent_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
         self.conn.execute(
             "UPDATE meetings SET status = 'Deleted', deleted_at_ms = COALESCE(deleted_at_ms, 0) WHERE id = ?1",
@@ -2394,6 +2448,31 @@ impl Store {
         Ok(artifacts)
     }
 
+    fn private_rows_remain_for_delete(&self, meeting_id: &str) -> StoreResult<bool> {
+        let remains = self.conn.query_row(
+            "
+            SELECT CASE WHEN
+                EXISTS(SELECT 1 FROM recording_sessions WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM analysis_results WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM transcript_segments WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM transcript_versions WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM model_runs WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM processing_jobs WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM meeting_search WHERE meeting_id = ?1)
+                OR EXISTS(
+                    SELECT 1 FROM transcript_segment_edits
+                    WHERE transcript_version_id IN (
+                        SELECT id FROM transcript_versions WHERE meeting_id = ?1
+                    )
+                )
+            THEN 1 ELSE 0 END
+            ",
+            params![meeting_id],
+            |row| row.get::<_, u8>(0),
+        )?;
+        Ok(remains != 0)
+    }
+
     fn delete_private_meeting_rows(&self, meeting_id: &str) -> StoreResult<()> {
         self.conn.execute(
             "
@@ -2421,6 +2500,14 @@ impl Store {
             params![meeting_id],
         )?;
         self.conn.execute(
+            "DELETE FROM processing_jobs WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM meeting_search WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
             "
             DELETE FROM audio_artifacts
             WHERE recording_session_id IN (
@@ -2434,6 +2521,25 @@ impl Store {
             params![meeting_id],
         )?;
         Ok(())
+    }
+
+    fn private_manifest_exists(&self, meeting_id: &str) -> StoreResult<bool> {
+        for manifest_path in manifest_paths(&self.app_root)? {
+            let manifest = ArtifactManifest::read(&manifest_path)?;
+            if manifest.meeting_id != meeting_id {
+                continue;
+            }
+            let Some(relative_path) = manifest_path.strip_prefix(&self.app_root).ok() else {
+                continue;
+            };
+            if self
+                .private_app_path(&relative_path.to_string_lossy())
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn delete_private_manifests(&self, meeting_id: &str) -> StoreResult<()> {
@@ -2627,6 +2733,25 @@ pub struct DeleteReport {
     pub deleted_private_artifacts: Vec<PathBuf>,
     pub skipped_private_artifacts: Vec<PathBuf>,
     pub exported_files_outside_app_control: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingDeleteFinalizationReport {
+    pub meeting_id: String,
+    pub deleted_private_artifacts: Vec<PathBuf>,
+    pub skipped_private_artifacts: Vec<PathBuf>,
+    pub exported_files_outside_app_control: Vec<PathBuf>,
+}
+
+impl PendingDeleteFinalizationReport {
+    fn from_delete_report(meeting_id: String, report: DeleteReport) -> Self {
+        Self {
+            meeting_id,
+            deleted_private_artifacts: report.deleted_private_artifacts,
+            skipped_private_artifacts: report.skipped_private_artifacts,
+            exported_files_outside_app_control: report.exported_files_outside_app_control,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
