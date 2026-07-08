@@ -593,6 +593,83 @@ describe("desktop snapshot DTO contract", () => {
     expect(snapshot.model.kind).toBe("untested");
   });
 
+  it("accepts unsupported Whisper model readiness without treating legacy valid evidence as ready", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: null,
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.model.kind).toBe("unsupported");
+    expect(snapshot.setupGuidance.whisper.state).toBe("UnsupportedFile");
+    expect(snapshot.setupGuidance.whisper.lastPathTest).toBeNull();
+  });
+
+  it("rejects unsupported Whisper model snapshots with stale successful-transcription evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: null,
+            lastSuccessfulTranscription: {
+              modelPath: "/models/notes.txt",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "notes.txt",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(
+      "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files",
+    );
+  });
+
   it.each([
     ["missing evidence", null, "desktop_snapshot.setupGuidance.whisper.lastPathTest"],
     [

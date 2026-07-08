@@ -48,11 +48,11 @@ export interface CommandSurfaceState {
 }
 
 export interface ModelStatus {
-  kind: "ready" | "missing" | "untested" | "transcribing";
+  kind: "ready" | "missing" | "untested" | "unsupported" | "transcribing";
   configuredPath: string;
 }
 
-export type WhisperSetupState = "MissingPath" | "UnreadablePath" | "ReadablePath";
+export type WhisperSetupState = "MissingPath" | "UnreadablePath" | "UnsupportedFile" | "ReadablePath";
 export type OllamaSetupState = "ConfiguredNotChecked" | "InvalidLocalConfiguration";
 export type OllamaAvailabilityState =
   | "UnknownUntilTest"
@@ -489,12 +489,12 @@ export function assertDesktopSnapshotContract(value: unknown): asserts value is 
   const model = requireContractRecord(root.model, "desktop_snapshot.model");
   const modelKind = requireEnum(
     model.kind,
-    ["ready", "missing", "untested", "transcribing"],
+    ["ready", "missing", "untested", "unsupported", "transcribing"],
     "desktop_snapshot.model.kind",
   );
   const configuredModelPath = requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
 
-  validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance", configuredModelPath);
+  validateFirstRunSetupGuidance(root.setupGuidance, "desktop_snapshot.setupGuidance", configuredModelPath, modelKind);
   validateWhisperModelReadinessEvidence(modelKind, configuredModelPath, root.setupGuidance);
   validateModelSetupOptions(root.modelSetupOptions, "desktop_snapshot.modelSetupOptions");
   validateCalendarContext(root.calendarContext, "desktop_snapshot.calendarContext");
@@ -717,6 +717,13 @@ export function mapModelStatus(model: ModelStatus): StatusView {
       label: "Whisper path untested",
       tone: "blocked",
       detail: "Run Test path for the saved model file before transcription.",
+    };
+  }
+  if (model.kind === "unsupported") {
+    return {
+      label: "Whisper file unsupported",
+      tone: "blocked",
+      detail: "Choose a supported .bin or .gguf Whisper model file before transcription.",
     };
   }
   if (model.kind === "transcribing") {
@@ -1406,12 +1413,17 @@ function requireEnum<const T extends string>(
   return value as T;
 }
 
-function validateFirstRunSetupGuidance(value: unknown, pathLabel: string, configuredModelPath: string): void {
+function validateFirstRunSetupGuidance(
+  value: unknown,
+  pathLabel: string,
+  configuredModelPath: string,
+  modelKind: ModelStatus["kind"],
+): void {
   const guidance = requireContractRecord(value, pathLabel);
   const whisper = requireContractRecord(guidance.whisper, `${pathLabel}.whisper`);
-  requireEnum(
+  const whisperState = requireEnum(
     whisper.state,
-    ["MissingPath", "UnreadablePath", "ReadablePath"],
+    ["MissingPath", "UnreadablePath", "UnsupportedFile", "ReadablePath"],
     `${pathLabel}.whisper.state`,
   );
   const whisperConfiguredPath = requireString(whisper.configuredPath, `${pathLabel}.whisper.configuredPath`);
@@ -1429,6 +1441,15 @@ function validateFirstRunSetupGuidance(value: unknown, pathLabel: string, config
     `${pathLabel}.whisper.lastSuccessfulTranscription`,
     configuredModelPath,
   );
+  if (
+    modelKind === "unsupported" &&
+    whisperState === "UnsupportedFile" &&
+    whisper.lastSuccessfulTranscription !== null
+  ) {
+    throw new Error(
+      `desktop_snapshot contract drift: expected ${pathLabel}.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files`,
+    );
+  }
 
   const ollama = requireContractRecord(guidance.ollama, `${pathLabel}.ollama`);
   requireEnum(
@@ -1570,7 +1591,7 @@ function validateWhisperModelReadinessEvidence(
   const evidencePath = "desktop_snapshot.setupGuidance.whisper.lastPathTest";
   const evidenceValue = whisper.lastPathTest;
 
-  if (modelKind !== "ready" && modelKind !== "untested") {
+  if (modelKind !== "ready" && modelKind !== "untested" && modelKind !== "unsupported") {
     return;
   }
 

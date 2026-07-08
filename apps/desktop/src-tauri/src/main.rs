@@ -3234,6 +3234,14 @@ fn whisper_transcription_readiness_failure(
             "Choose a readable local Whisper model file, save it, run Test path, then retry transcription.",
         ));
     }
+    if !is_supported_whisper_model_file_path(Path::new(trimmed_path)) {
+        return Some(transcription_failed(
+            meeting_id,
+            "unsupported_model_file",
+            "Saved Whisper model path must use a supported .bin or .gguf file.",
+            "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file, save it, then retry transcription.",
+        ));
+    }
     if !whisper_path_test_evidence_proves_current_readiness(
         trimmed_path,
         &settings.whisper_path_test_evidence,
@@ -3877,7 +3885,7 @@ fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
     let kind = if configured_path.trim().is_empty() || !path.is_file() {
         "missing"
     } else if !is_supported_whisper_model_file_path(&path) {
-        "untested"
+        "unsupported"
     } else if whisper_path_test_evidence_proves_current_readiness(
         &configured_path,
         &settings.whisper_path_test_evidence,
@@ -4459,10 +4467,17 @@ fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupG
         );
     }
     if !is_supported_whisper_model_file_path(&path) {
-        return unreadable(
-            "Whisper model path must use a supported .bin or .gguf file.".to_string(),
-            "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then use Test path.",
-        );
+        return WhisperSetupGuidanceView {
+            state: "UnsupportedFile".to_string(),
+            configured_path,
+            message: "Whisper model path must use a supported .bin or .gguf file.".to_string(),
+            setup_guidance:
+                "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file."
+                    .to_string(),
+            compatibility_note: "Test path only accepts .bin and .gguf model files.".to_string(),
+            last_path_test,
+            last_successful_transcription,
+        };
     }
     if let Err(error) = std::fs::File::open(&path) {
         return unreadable(
@@ -4648,6 +4663,9 @@ fn matching_whisper_transcription_compatibility_evidence(
     configured_path: &str,
 ) -> Option<WhisperTranscriptionCompatibilityEvidence> {
     let configured_path = configured_path.trim();
+    if !is_supported_whisper_model_file_path(Path::new(configured_path)) {
+        return None;
+    }
     settings
         .whisper_transcription_compatibility_evidence
         .as_ref()
@@ -8911,6 +8929,132 @@ mod tests {
             .as_str()
             .expect("setup guidance")
             .contains("Run Test path"));
+        assert_eq!(json["transcriptionJob"], serde_json::Value::Null);
+        assert!(store
+            .active_transcription_job_for_meeting("meeting-1")
+            .expect("active job")
+            .is_none());
+        assert!(store
+            .transcript_segments("meeting-1")
+            .expect("transcript segments")
+            .is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn unsupported_saved_whisper_paths_are_typed_blocked_and_ignore_legacy_valid_evidence() {
+        for file_name in ["notes.txt", "extensionless"] {
+            let root = unique_test_root();
+            fs::create_dir_all(&root).expect("test root");
+            let model_path = root.join(file_name);
+            let model_bytes = b"not a whisper model";
+            fs::write(&model_path, model_bytes).expect("unsupported model path");
+            let model_path_string = model_path.to_string_lossy().to_string();
+            save_whisper_model_path_for_app_root(&root, model_path_string.clone())
+                .expect("save unsupported whisper path");
+            let modified_at_ms =
+                file_modified_at_ms(&fs::metadata(&model_path).expect("model metadata"))
+                    .expect("model modified time");
+            let store = open_store(&root).expect("open store");
+            store
+                .save_whisper_path_test_evidence(&WhisperPathTestEvidence {
+                    tested_path: model_path_string.clone(),
+                    tested_at_ms: 1_700_000_001_000,
+                    state: "Valid".to_string(),
+                    file_size_bytes: Some(model_bytes.len() as u64),
+                    sha256: Some(format!("{:x}", Sha256::digest(model_bytes))),
+                    failure_detail: None,
+                })
+                .expect("legacy path-test evidence");
+            store
+                .save_whisper_transcription_compatibility_evidence(
+                    &WhisperTranscriptionCompatibilityEvidence {
+                        model_path: model_path_string.clone(),
+                        used_at_ms: 1_700_000_002_000,
+                        provider: "local-whisper".to_string(),
+                        model_name: file_name.to_string(),
+                        meeting_id: "meeting-1".to_string(),
+                        model_run_id: "run-1".to_string(),
+                        transcript_version_id: "version-1".to_string(),
+                        segment_count: 1,
+                        file_size_bytes: model_bytes.len() as u64,
+                        modified_at_ms,
+                    },
+                )
+                .expect("legacy transcription compatibility evidence");
+            drop(store);
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("desktop snapshot");
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+            assert_eq!(json["model"]["kind"], "unsupported");
+            assert_eq!(json["setupGuidance"]["whisper"]["state"], "UnsupportedFile");
+            assert_eq!(
+                json["setupGuidance"]["whisper"]["lastPathTest"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"],
+                serde_json::Value::Null
+            );
+            assert!(json["setupGuidance"]["whisper"]["setupGuidance"]
+                .as_str()
+                .expect("setup guidance")
+                .contains(".bin or .gguf"));
+            assert!(!json["setupGuidance"]["whisper"]["setupGuidance"]
+                .as_str()
+                .expect("setup guidance")
+                .contains("Test path"));
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn transcribe_unsupported_saved_whisper_path_returns_typed_failure_without_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(
+                "meeting-1",
+                "Unsupported Whisper",
+                1_000,
+            ))
+            .expect("insert meeting");
+        drop(store);
+        let model_path = root.join("notes.txt");
+        fs::write(&model_path, b"not a whisper model").expect("unsupported model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save unsupported whisper");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        let snapshot = transcription_readiness_failure_snapshot_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            &settings,
+        )
+        .expect("readiness snapshot")
+        .expect("unsupported model should fail readiness");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store after failure");
+
+        assert_eq!(json["model"]["kind"], "unsupported");
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert_eq!(
+            json["transcription"]["failure"]["code"],
+            "unsupported_model_file"
+        );
+        assert!(json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains(".bin or .gguf"));
+        assert!(!json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Test path"));
         assert_eq!(json["transcriptionJob"], serde_json::Value::Null);
         assert!(store
             .active_transcription_job_for_meeting("meeting-1")

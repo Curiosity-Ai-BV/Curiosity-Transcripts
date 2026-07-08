@@ -235,6 +235,11 @@ describe("desktop command-state mapping", () => {
       tone: "blocked",
       detail: "Run Test path for the saved model file before transcription.",
     });
+    expect(mapModelStatus({ kind: "unsupported", configuredPath: "/models/notes.txt" })).toEqual({
+      label: "Whisper file unsupported",
+      tone: "blocked",
+      detail: "Choose a supported .bin or .gguf Whisper model file before transcription.",
+    });
   });
 
   it("filters search results by meeting title and transcript text", () => {
@@ -1819,6 +1824,32 @@ describe("desktop workspace shell", () => {
     expect(calls).toEqual([]);
   });
 
+  it("blocks transcription for unsupported Whisper files with choose-model guidance", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = unsupportedWhisperSnapshot("/models/notes.txt");
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async (args) => {
+        calls.push({ method: "transcribeMeeting", args });
+        return initial;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    const transcribe = screen.getByRole("button", { name: "Transcribe" });
+    expect(transcribe).toBeDisabled();
+    expect(transcribe).toHaveAttribute(
+      "title",
+      "Choose a supported .bin or .gguf Whisper model file before transcription.",
+    );
+    expect(screen.getAllByText("Whisper file unsupported").length).toBeGreaterThan(0);
+    expect(screen.queryByTitle("Run Test path for the saved Whisper model file before transcription.")).not.toBeInTheDocument();
+    await user.click(transcribe);
+
+    expect(calls).toEqual([]);
+  });
+
   it("renames the selected meeting through the desktop command", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
@@ -2920,6 +2951,40 @@ describe("desktop workspace shell", () => {
     expect(calls).toEqual([]);
   });
 
+  it("blocks retrying a transcription job for unsupported Whisper files with choose-model guidance", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const snapshot = unsupportedWhisperSnapshot("/models/extensionless", {
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async (args) => {
+        calls.push({ method: "transcribeMeeting", args });
+        return snapshot;
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    const retry = screen.getByRole("button", { name: "Retry transcription" });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute(
+      "title",
+      "Choose a supported .bin or .gguf Whisper model file before transcription.",
+    );
+    await user.click(retry);
+
+    expect(calls).toEqual([]);
+  });
+
   it("retries the selected meeting's retryable summary job without a cancel control", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
@@ -3277,6 +3342,31 @@ function whisperSetupGuidanceForPath(
       lastSuccessfulTranscription: null,
     },
   };
+}
+
+function unsupportedWhisperSnapshot(
+  path: string,
+  overrides: Partial<ReturnType<typeof getMockDesktopSnapshot>> = {},
+) {
+  return connectedSnapshot({
+    model: {
+      kind: "unsupported",
+      configuredPath: path,
+    },
+    setupGuidance: {
+      ...getMockDesktopSnapshot().setupGuidance,
+      whisper: {
+        state: "UnsupportedFile",
+        configuredPath: path,
+        message: "Whisper model path must use a supported .bin or .gguf file.",
+        setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+        compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+        lastPathTest: null,
+        lastSuccessfulTranscription: null,
+      },
+    },
+    ...overrides,
+  });
 }
 
 function fakeCommandFacade(overrides: Partial<DesktopCommandFacade> = {}): DesktopCommandFacade {

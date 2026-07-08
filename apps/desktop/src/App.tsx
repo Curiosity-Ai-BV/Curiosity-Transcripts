@@ -829,6 +829,8 @@ export default function App({ snapshot, commandFacade, filePicker }: AppProps) {
         ? "Select a meeting before transcription."
         : currentSnapshot.model.kind === "missing"
           ? "Choose a local Whisper model file before transcription."
+          : currentSnapshot.model.kind === "unsupported"
+            ? "Choose a supported .bin or .gguf Whisper model file before transcription."
           : currentSnapshot.model.kind === "untested"
             ? "Run Test path for the saved Whisper model file before transcription."
             : "Transcribe the selected meeting with the configured local Whisper model.";
@@ -1751,6 +1753,9 @@ function whisperSetupLabel(state: DesktopSnapshot["setupGuidance"]["whisper"]["s
   }
   if (state === "UnreadablePath") {
     return "Whisper path blocked";
+  }
+  if (state === "UnsupportedFile") {
+    return "Whisper file unsupported";
   }
   return "Whisper path missing";
 }
