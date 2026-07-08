@@ -390,7 +390,10 @@ assets, checklist, and public copy change together.
 Before treating a build as a release candidate, run the deterministic gates and
 the manual smoke checklist in `docs/release-candidate-checklist.md`. Tag
 workflows leave GitHub Releases as drafts until filled smoke evidence validates
-and a maintainer manually publishes the release.
+and a maintainer manually publishes the release. Manual publication also requires
+the release governance sign-off in that checklist; GitHub branch/tag protection
+and live CodeQL or secret-scanning alert state are external checks, not
+repo-local gates.
 
 ## License And Attribution
 

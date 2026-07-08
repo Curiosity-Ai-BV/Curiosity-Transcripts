@@ -80,6 +80,17 @@ protection, and alert triage policy remain release governance work unless
 configured separately. `cargo deny`, Rust CycloneDX tooling, `cargo-about`, and
 license allowlists are not part of this gate.
 
+## Release Governance Sign-Off
+
+Repo-local automation cannot verify GitHub branch protection, tag rulesets, or
+live code-scanning and secret-scanning alert state. Before manually publishing a
+draft release, record a governance sign-off that confirms protected `v*` tags
+and the intended release branch rules are active, CodeQL alerts have been
+triaged, Gitleaks and GitHub secret-scanning alerts have been triaged, and the
+person publishing the release is authorized to do so. Treat missing governance
+sign-off as a release blocker even when CI, signing, notarization, and filled
+manual smoke evidence pass.
+
 Coverage artifact visibility must run in CI before manual smoke starts. CI
 installs the Rust coverage helper with
 `cargo install cargo-llvm-cov --version 0.8.7 --locked`, and publication

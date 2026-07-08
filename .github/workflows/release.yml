@@ -125,6 +125,9 @@ jobs:
             echo "- This workflow leaves this GitHub Release as a draft until filled manual smoke evidence validates with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json."
             echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'
             echo
+            echo "Release governance sign-off:"
+            echo "- Before publishing, confirm protected v* tags and release branch rules are active, CodeQL alerts are triaged, Gitleaks and GitHub secret-scanning alerts are triaged, and the publisher is authorized. These are external checks; this workflow does not verify live GitHub settings or alert state."
+            echo
             echo "Privacy and storage disclosure:"
             echo "- App-level encryption-at-rest is not implemented in v1. App-private local data relies on OS and user-account file protections; user-owned source files and exports can remain outside the app delete boundary."
           } > "$release_notes"
