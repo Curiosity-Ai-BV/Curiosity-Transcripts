@@ -22,6 +22,27 @@ require_text() {
   fi
 }
 
+require_normalized_text() {
+  local file="$1"
+  local expected="$2"
+  local description="$3"
+
+  if [[ ! -f "$file" ]] || ! CHECK_FILE="$file" CHECK_EXPECTED="$expected" node <<'NODE'
+const fs = require("fs");
+
+const normalize = (value) => value.replace(/\s+/g, " ").trim();
+const file = process.env.CHECK_FILE;
+const expected = normalize(process.env.CHECK_EXPECTED ?? "");
+const actual = normalize(fs.readFileSync(file, "utf8"));
+
+process.exit(actual.includes(expected) ? 0 : 1);
+NODE
+  then
+    printf '::error file=%s::Expected %s\n' "$file" "$description" >&2
+    failures=1
+  fi
+}
+
 for file in LICENSE NOTICE ATTRIBUTION.md CONTRIBUTING.md SECURITY.md README.md; do
   check_file "$file"
 done
@@ -70,10 +91,9 @@ require_text docs/production-readiness-roadmap.md '`meeting_search` rows' 'Phase
 require_text docs/production-readiness-roadmap.md 'Job recovery skips deleted/deleted-at' 'Phase 2E deleted meeting job recovery guard'
 require_text docs/production-readiness-roadmap.md 'First public release architecture: arm64-only macOS DMG' 'first public release architecture decision'
 require_text docs/production-readiness-roadmap.md 'Current Phase 3B/3C/3D status: transcription and summary job start, cancel,' 'current durable transcription, summary, and feature-matrix status'
-require_text docs/production-readiness-roadmap.md 'CI now gates no-Whisper desktop tests and the' 'no-Whisper desktop CI feature-matrix status'
-require_text docs/production-readiness-roadmap.md 'ScreenCaptureKit system-audio feature compile path on macOS' 'ScreenCaptureKit feature compile macOS CI status'
+require_normalized_text docs/production-readiness-roadmap.md 'CI now gates no-Whisper desktop tests and the ScreenCaptureKit system-audio feature compile path on macOS' 'no-Whisper and ScreenCaptureKit feature-matrix CI status'
 require_text docs/production-readiness-roadmap.md 'Real-hardware smoke and release confidence remain manual/later work' 'real hardware release confidence remains later work'
-require_text docs/production-readiness-roadmap.md 'processing_jobs.*retry UX' 'durable job retry UX remains later work'
+require_text docs/production-readiness-roadmap.md 'retryable jobs now surface retry UX' 'durable job retry UX implementation status'
 require_text docs/production-readiness-roadmap.md 'Current Phase 5A status' 'Phase 5A command/view contract fixture status'
 require_text docs/production-readiness-roadmap.md 'desktop-command-view-contract\.fixture\.json' 'Phase 5A checked-in contract fixture path'
 require_text docs/production-readiness-roadmap.md 'Rust tests guard exact equality' 'Phase 5A Rust exact-equality guard'

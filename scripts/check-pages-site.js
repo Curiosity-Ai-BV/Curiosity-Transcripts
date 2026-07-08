@@ -10,8 +10,9 @@ const requiredText = [
   "microphone and system audio",
   "local Whisper",
   "Ollama",
-  "JSON export",
-  "Markdown and SRT are lower-level helpers",
+  "exports JSON, Markdown, and SRT from the",
+  "desktop app. JSON remains the deterministic integration format",
+  "Search and transcript export",
   "Developer ID signed and notarized arm64 macOS DMG",
   "https://curiosityai.nl",
   "downloads/Curiosity-Transcripts-latest.dmg",
@@ -19,8 +20,11 @@ const requiredText = [
 ];
 
 const forbiddenText = [
-  "Markdown, JSON, and SRT",
-  "plain Markdown, JSON, and SRT",
+  "Markdown and SRT are lower-level helpers",
+  "not desktop export",
+  "not desktop export buttons",
+  "until productized",
+  "provides JSON export from the desktop app today",
   "current unsigned macOS",
   "Signed and notarized distribution remains a separate release step",
   "Verify unsigned DMG before publishing",
