@@ -126,6 +126,9 @@ require_text docs/production-readiness-roadmap.md 'path/to/filled-evidence\.json
 require_text docs/production-readiness-roadmap.md 'not proof that smoke passed' 'smoke evidence validator does not overclaim manual smoke'
 require_text docs/production-readiness-roadmap.md 'hardware smoke remain manual and not yet completed' 'real hardware smoke remains manual'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
+require_text docs/production-readiness-roadmap.md 'Current GitHub Actions workflow syntax status' 'current GitHub Actions workflow syntax status'
+require_text docs/production-readiness-roadmap.md 'actionlint -color=false' 'actionlint roadmap command'
+require_text docs/production-readiness-roadmap.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint Linux artifact roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
 require_text docs/production-readiness-roadmap.md 'metadata/reporting gate' 'supply-chain metadata/reporting boundary'
@@ -175,6 +178,8 @@ require_text docs/release-candidate-checklist.md 'JSON, Markdown, and SRT' 'curr
 require_text docs/release-candidate-checklist.md 'At-rest disclosure' 'at-rest disclosure release-candidate smoke item'
 require_text docs/release-candidate-checklist.md 'encryption-at-rest is not implemented in v1' 'release notes at-rest encryption disclosure'
 require_text docs/release-candidate-checklist.md 'CodeQL scans Rust and JavaScript/TypeScript' 'CodeQL release-candidate visibility expectation'
+require_text docs/release-candidate-checklist.md 'actionlint -color=false' 'actionlint release-candidate workflow syntax command'
+require_text docs/release-candidate-checklist.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint release-candidate artifact'
 require_text docs/release-candidate-checklist.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
 require_text docs/release-candidate-checklist.md 'node scripts/generate-supply-chain-artifacts\.js' 'supply-chain artifact release-candidate command'
@@ -205,6 +210,10 @@ done
 
 require_text apps/desktop/src-tauri/Cargo.toml '^license = "Apache-2\.0"$' 'desktop backend Apache-2.0 license metadata'
 require_text .github/workflows/ci.yml 'cargo fmt --check' 'Rust formatting CI gate'
+require_text .github/workflows/ci.yml 'ACTIONLINT_VERSION: 1\.7\.12' 'pinned actionlint CI version'
+require_text .github/workflows/ci.yml 'ACTIONLINT_LINUX_AMD64_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' 'pinned actionlint CI checksum'
+require_text .github/workflows/ci.yml 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint CI artifact'
+require_text .github/workflows/ci.yml 'actionlint -color=false' 'GitHub Actions workflow syntax CI gate'
 require_text .github/workflows/ci.yml 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit CI installation'
 require_text .github/workflows/ci.yml 'cargo install cargo-llvm-cov --version 0\.8\.7 --locked' 'pinned cargo-llvm-cov CI installation'
 if ! node <<'NODE'
@@ -266,8 +275,112 @@ function hasLine(step, pattern) {
   return step?.lines.some((line) => pattern.test(line)) ?? false;
 }
 
-const install = requireStep("Install cargo-audit");
-if (!hasLine(install, /^\s*run:\s*cargo install cargo-audit --version 0\.22\.2 --locked\s*$/)) {
+function runBlockCommands(step) {
+  const runIndex = step?.lines.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line)) ?? -1;
+  if (runIndex === -1) {
+    return [];
+  }
+
+  return step.lines
+    .slice(runIndex + 1)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+function envBlockValues(step) {
+  const envIndex = step?.lines.findIndex((line) => /^\s*env:\s*$/.test(line)) ?? -1;
+  if (envIndex === -1) {
+    return new Map();
+  }
+
+  const values = new Map();
+  for (const line of step.lines.slice(envIndex + 1)) {
+    if (/^\s*run:/.test(line)) {
+      break;
+    }
+    const match = line.match(/^\s{10}([A-Za-z0-9_]+):\s*(.+?)\s*$/);
+    if (match) {
+      values.set(match[1], match[2]);
+    }
+  }
+  return values;
+}
+
+function requireExactRunCommands(step, expectedCommands, description) {
+  const commands = runBlockCommands(step);
+
+  if (commands.length !== expectedCommands.length) {
+    fail(`${description} must contain only the expected commands`);
+    return;
+  }
+
+  for (const [index, expected] of expectedCommands.entries()) {
+    if (commands[index] !== expected) {
+      fail(`${description} command ${index + 1} must be: ${expected}`);
+      return;
+    }
+  }
+}
+
+const installActionlint = requireStep("Install actionlint");
+const checkActionlint = requireStep("Check GitHub Actions workflow syntax");
+const publicationReadiness = requireStep("Check publication readiness");
+const pagesWorkflow = requireStep("Check GitHub Pages deployment workflow");
+const releaseWorkflow = requireStep("Check GitHub Release workflow");
+const installCargoAudit = requireStep("Install cargo-audit");
+const actionlintEnv = envBlockValues(installActionlint);
+if (actionlintEnv.get("ACTIONLINT_VERSION") !== "1.7.12") {
+  fail("Install actionlint step must pin ACTIONLINT_VERSION to 1.7.12");
+}
+if (
+  actionlintEnv.get("ACTIONLINT_LINUX_AMD64_SHA256") !==
+  "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+) {
+  fail("Install actionlint step must pin the Linux amd64 archive checksum");
+}
+if (actionlintEnv.get("ACTIONLINT_ARCHIVE") !== "actionlint_1.7.12_linux_amd64.tar.gz") {
+  fail("Install actionlint step must download actionlint_1.7.12_linux_amd64.tar.gz");
+}
+requireExactRunCommands(
+  installActionlint,
+  [
+    'curl -LfsS -o "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ACTIONLINT_ARCHIVE}"',
+    "printf '%s  %s\\n' \"$ACTIONLINT_LINUX_AMD64_SHA256\" \"$RUNNER_TEMP/$ACTIONLINT_ARCHIVE\" | sha256sum -c -",
+    'mkdir -p "$RUNNER_TEMP/actionlint"',
+    'tar -xzf "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" -C "$RUNNER_TEMP/actionlint" actionlint',
+    'echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"',
+  ],
+  "Install actionlint step",
+);
+if (!hasLine(checkActionlint, /^\s*run:\s*actionlint -color=false\s*$/)) {
+  fail("GitHub Actions workflow syntax step must run actionlint -color=false");
+}
+if (hasLine(checkActionlint, /^\s*continue-on-error\s*:/)) {
+  fail("GitHub Actions workflow syntax step must fail CI when actionlint fails");
+}
+if (hasLine(checkActionlint, /^\s*if:\s*/)) {
+  fail("GitHub Actions workflow syntax step must not be conditionally skipped");
+}
+if ([installActionlint, checkActionlint, publicationReadiness, pagesWorkflow, releaseWorkflow].some((step) => step?.job !== "checks")) {
+  fail("actionlint, publication readiness, and workflow-specific checks must run in the checks CI job");
+}
+if (
+  installActionlint &&
+  checkActionlint &&
+  publicationReadiness &&
+  pagesWorkflow &&
+  releaseWorkflow &&
+  (
+    installActionlint.index > checkActionlint.index ||
+    checkActionlint.index > publicationReadiness.index ||
+    publicationReadiness.index > pagesWorkflow.index ||
+    publicationReadiness.index > releaseWorkflow.index
+  )
+) {
+  fail("actionlint must run before publication readiness, and publication readiness must remain before workflow-specific Pages and GitHub Release checks");
+}
+
+if (!hasLine(installCargoAudit, /^\s*run:\s*cargo install cargo-audit --version 0\.22\.2 --locked\s*$/)) {
   fail("Install cargo-audit step must run cargo install cargo-audit --version 0.22.2 --locked");
 }
 
@@ -287,14 +400,14 @@ if (!hasLine(desktopAudit, /^\s*run:\s*cargo audit\s*$/)) {
   fail("Desktop Rust advisory audit step must run cargo audit");
 }
 
-if (install?.job !== rootAudit?.job || install?.job !== desktopAudit?.job) {
+if (installCargoAudit?.job !== rootAudit?.job || installCargoAudit?.job !== desktopAudit?.job) {
   fail("cargo-audit install, root audit, and desktop audit steps must be in the same CI job");
 }
 if (
-  install &&
+  installCargoAudit &&
   rootAudit &&
   desktopAudit &&
-  (install.index > rootAudit.index || install.index > desktopAudit.index)
+  (installCargoAudit.index > rootAudit.index || installCargoAudit.index > desktopAudit.index)
 ) {
   fail("Install cargo-audit step must run before root and desktop Rust advisory audit steps");
 }

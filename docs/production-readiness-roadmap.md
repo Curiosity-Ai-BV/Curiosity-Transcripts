@@ -33,9 +33,9 @@ Important existing strengths:
 - `crates/store` already owns SQLite migrations, FTS search, transcript
   versions, edit history, exports, analysis results, and a `processing_jobs`
   table.
-- CI runs publication checks, workflow checks, root Rust fmt/test/clippy,
-  desktop Rust fmt/test/clippy, fail-loud audio and Whisper smoke assertions,
-  desktop Vitest, and frontend build.
+- CI runs publication checks, actionlint workflow syntax checks, workflow
+  checks, root Rust fmt/test/clippy, desktop Rust fmt/test/clippy, fail-loud
+  audio and Whisper smoke assertions, desktop Vitest, and frontend build.
 - Release and Pages workflows build macOS DMGs with Developer ID signing and
   notarization paths, then verify disk image, app signature, stapling, and
   Gatekeeper checks before upload.
@@ -230,6 +230,15 @@ permissions stay minimal for this slice: `contents: read` for checkout and
 `security-events: write` for code scanning upload. This slice is visibility-only
 because it does not add branch-protection or alert triage policy; those
 enforcement decisions remain release governance work.
+
+Current GitHub Actions workflow syntax status: CI downloads the upstream
+`actionlint_1.7.12_linux_amd64.tar.gz` release artifact, verifies SHA-256
+`8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`, adds the
+verified binary to PATH, and runs `actionlint -color=false` before publication
+readiness and the repository-specific Pages/release workflow checkers. This uses
+the pinned upstream CLI artifact instead of Homebrew/npm/cargo or another
+GitHub Action so CI fixes both the version and checksum while publication
+readiness can reject drift; it still depends on GitHub release availability.
 
 Current supply-chain artifact status: CI runs
 `node scripts/generate-supply-chain-artifacts.js` after desktop `npm ci` and
@@ -476,6 +485,7 @@ cargo audit
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+actionlint -color=false
 (
   cd apps/desktop/src-tauri
   cargo audit

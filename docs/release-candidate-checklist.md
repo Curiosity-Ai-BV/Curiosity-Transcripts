@@ -50,8 +50,14 @@ crate is present. CodeQL scans Rust and JavaScript/TypeScript on push, pull
 request, and a weekly schedule with `build-mode: none` to avoid duplicating CI
 build/test cost; confirm code scanning alerts are visible before treating a
 build as a release candidate. CodeQL visibility does not replace
-branch-protection or alert triage policy. Supply-chain artifact generation must
-run through `node scripts/generate-supply-chain-artifacts.js`; CI uploads
+branch-protection or alert triage policy. GitHub Actions workflow syntax must
+pass in CI before manual smoke starts: CI verifies the upstream
+`actionlint_1.7.12_linux_amd64.tar.gz` archive checksum and runs
+`actionlint -color=false` before publication readiness and the
+workflow-specific Pages/release checks. Publication readiness rejects loosening
+the pinned actionlint version, checksum, artifact name, command, or ordering.
+Supply-chain artifact generation must run through
+`node scripts/generate-supply-chain-artifacts.js`; CI uploads
 `release-artifacts/supply-chain`, including the desktop npm CycloneDX
 application SBOM, npm lockfile license metadata report, and deterministic Cargo
 license metadata reports filtered to `aarch64-apple-darwin` for both Rust

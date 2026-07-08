@@ -12,6 +12,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_LINUX_AMD64_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_ARCHIVE: actionlint_1.7.12_linux_amd64.tar.gz
+        run: |
+          curl -LfsS -o "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ACTIONLINT_ARCHIVE}"
+          printf '%s  %s\n' "$ACTIONLINT_LINUX_AMD64_SHA256" "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" -C "$RUNNER_TEMP/actionlint" actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+
+      - name: Check GitHub Actions workflow syntax
+        run: actionlint -color=false
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
