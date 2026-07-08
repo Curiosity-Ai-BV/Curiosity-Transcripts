@@ -389,6 +389,7 @@ Rust LCOV reports to `release-artifacts/coverage/rust`, runs frontend Vitest V8
 coverage to `release-artifacts/coverage/frontend`, checks the reports with
 `node scripts/check-coverage-artifacts.js`, and uploads
 `release-artifacts/coverage`. The checker verifies LCOV source-path visibility
+and at least one positive `DA` line in each matching source record
 for `apps/desktop/src/App.tsx`, `apps/desktop/src/commandAdapter.ts`,
 `crates/store/src/lib.rs`, and `apps/desktop/src-tauri/src/main.rs`. This is a
 report-visibility gate with no global percentage threshold; not generated DTOs

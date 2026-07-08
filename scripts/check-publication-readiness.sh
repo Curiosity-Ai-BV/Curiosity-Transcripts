@@ -338,6 +338,9 @@ fi
 if ! node --check scripts/check-coverage-artifacts.js >/dev/null; then
   failures=1
 fi
+if ! node scripts/check-coverage-artifacts.js --self-test >/dev/null; then
+  failures=1
+fi
 if ! node --check scripts/check-release-smoke-evidence.js >/dev/null; then
   failures=1
 fi

@@ -72,8 +72,9 @@ must pass before CI uploads `release-artifacts/coverage`. Treat this as report
 visibility for critical seams, with no global percentage threshold. The checker
 expects LCOV source paths for `apps/desktop/src/App.tsx`,
 `apps/desktop/src/commandAdapter.ts`, `crates/store/src/lib.rs`, and
-`apps/desktop/src-tauri/src/main.rs`; it is not proof of generated DTOs, module
-splitting, or complete privacy/deletion/recovery coverage.
+`apps/desktop/src-tauri/src/main.rs`, each with at least one positive `DA` line
+in the matching source record; it is not proof of generated DTOs, module splitting,
+or complete privacy/deletion/recovery coverage.
 
 ## Manual Smoke Items
 
