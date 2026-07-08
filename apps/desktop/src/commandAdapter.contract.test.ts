@@ -47,6 +47,37 @@ describe("desktop snapshot DTO contract", () => {
     },
   );
 
+  it("accepts recovered and retryable command jobs with optional failure detail", async () => {
+    const backendSnapshot = {
+      ...getMockDesktopSnapshot(),
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      },
+      summaryJob: {
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => backendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).resolves.toEqual(backendSnapshot);
+  });
+
   it("requires first-run setup guidance to be explicit in snapshots", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {

@@ -231,9 +231,10 @@ user.
 Deliverables:
 
 - Current Phase 3B/3C/3D status: transcription and summary job start, cancel,
-  finish, and restart recovery now persist through `processing_jobs`; retry UX
-  remains later work. CI now gates no-Whisper desktop tests and the
-  ScreenCaptureKit system-audio feature compile path on macOS.
+  finish, and restart recovery now persist through `processing_jobs`; recovered
+  and retryable jobs now surface retry UX in the desktop shell. CI now gates
+  no-Whisper desktop tests and the ScreenCaptureKit system-audio feature compile
+  path on macOS.
 - Move transcription and summary job ownership from in-memory Tauri state into
   durable `processing_jobs` records.
 - Reconcile running/cancel-requested jobs on startup and mark them recovered,

@@ -293,18 +293,33 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     !selectedMeeting ||
     commandBusy ||
     selectedMeeting.segments.length === 0;
+  const canCancelTranscriptionJob = isActiveCommandJob(currentSnapshot.transcriptionJob);
+  const canCancelSummaryJob = isActiveCommandJob(currentSnapshot.summaryJob);
+  const canRetryTranscriptionJob = isSelectedRetryableJob(currentSnapshot.transcriptionJob, selectedMeeting?.id);
+  const canRetrySummaryJob = isSelectedRetryableJob(currentSnapshot.summaryJob, selectedMeeting?.id);
   const cancelTranscriptionDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.transcriptionJob ||
     (commandBusy && pendingCommand !== "transcribe") ||
-    currentSnapshot.transcriptionJob.state !== "Running" ||
+    !canCancelTranscriptionJob ||
     currentSnapshot.transcriptionJob.cancelRequested;
   const cancelSummaryDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.summaryJob ||
     (commandBusy && pendingCommand !== "summary") ||
-    currentSnapshot.summaryJob.state !== "Running" ||
+    !canCancelSummaryJob ||
     currentSnapshot.summaryJob.cancelRequested;
+  const retryTranscriptionDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !canRetryTranscriptionJob ||
+    commandBusy;
+  const retrySummaryDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !canRetrySummaryJob ||
+    selectedMeeting.segments.length === 0 ||
+    commandBusy;
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
@@ -1099,19 +1114,36 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                     value={transcriptionJob.detail}
                     tone={transcriptionJob.tone}
                   />
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={cancelTranscriptionDisabled}
-                    title={
-                      commandSurfaceReady
-                        ? "Request cancellation for the active transcription job."
-                        : commandUnavailableTitle
-                    }
-                    onClick={cancelTranscriptionJob}
-                  >
-                    {pendingCommand === "cancel-transcription" ? "Canceling transcription" : "Cancel transcription"}
-                  </button>
+                  {canCancelTranscriptionJob ? (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={cancelTranscriptionDisabled}
+                      title={
+                        commandSurfaceReady
+                          ? "Request cancellation for the active transcription job."
+                          : commandUnavailableTitle
+                      }
+                      onClick={cancelTranscriptionJob}
+                    >
+                      {pendingCommand === "cancel-transcription" ? "Canceling transcription" : "Cancel transcription"}
+                    </button>
+                  ) : null}
+                  {canRetryTranscriptionJob ? (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={retryTranscriptionDisabled}
+                      title={
+                        commandSurfaceReady
+                          ? "Retry transcription for the selected meeting."
+                          : commandUnavailableTitle
+                      }
+                      onClick={transcribeSelectedMeeting}
+                    >
+                      {pendingCommand === "transcribe" ? "Retrying transcription" : "Retry transcription"}
+                    </button>
+                  ) : null}
                 </>
               ) : null}
               {summaryJob ? (
@@ -1122,19 +1154,32 @@ export default function App({ snapshot, commandFacade }: AppProps) {
                     value={summaryJob.detail}
                     tone={summaryJob.tone}
                   />
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={cancelSummaryDisabled}
-                    title={
-                      commandSurfaceReady
-                        ? "Request cancellation for the active summary job."
-                        : commandUnavailableTitle
-                    }
-                    onClick={cancelSummaryJob}
-                  >
-                    {pendingCommand === "cancel-summary" ? "Canceling summary" : "Cancel summary"}
-                  </button>
+                  {canCancelSummaryJob ? (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={cancelSummaryDisabled}
+                      title={
+                        commandSurfaceReady
+                          ? "Request cancellation for the active summary job."
+                          : commandUnavailableTitle
+                      }
+                      onClick={cancelSummaryJob}
+                    >
+                      {pendingCommand === "cancel-summary" ? "Canceling summary" : "Cancel summary"}
+                    </button>
+                  ) : null}
+                  {canRetrySummaryJob ? (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={retrySummaryDisabled}
+                      title={summaryButtonTitle}
+                      onClick={generateSelectedSummary}
+                    >
+                      {pendingCommand === "summary" ? "Retrying summary" : "Retry summary"}
+                    </button>
+                  ) : null}
                 </>
               ) : null}
               <StatusLine
@@ -1425,6 +1470,22 @@ function snapshotHasActiveCommandJob(snapshot: DesktopSnapshot): boolean {
     snapshot.transcriptionJob?.state === "CancelRequested" ||
     snapshot.summaryJob?.state === "Running" ||
     snapshot.summaryJob?.state === "CancelRequested"
+  );
+}
+
+function isActiveCommandJob(job: DesktopSnapshot["transcriptionJob"]): boolean {
+  return job?.state === "Running" || job?.state === "CancelRequested";
+}
+
+function isSelectedRetryableJob(
+  job: DesktopSnapshot["transcriptionJob"],
+  selectedMeetingId: string | undefined,
+): boolean {
+  return Boolean(
+    job &&
+      selectedMeetingId &&
+      job.meetingId === selectedMeetingId &&
+      (job.state === "Failed" || job.state === "Recovery" || job.state === "Retry"),
   );
 }
 

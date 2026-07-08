@@ -1719,6 +1719,8 @@ struct CommandJobView {
     state: CommandJobState,
     cancel_requested: bool,
     started_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1733,6 +1735,8 @@ enum CommandJobState {
     CancelRequested,
     Complete,
     Failed,
+    Recovery,
+    Retry,
     Canceled,
 }
 
@@ -1756,6 +1760,7 @@ impl CommandJobView {
             state: CommandJobState::Running,
             cancel_requested: false,
             started_at_ms,
+            last_error: None,
         }
     }
 
@@ -2806,6 +2811,7 @@ fn command_job_from_processing_job(job: ProcessingJob) -> CommandJobView {
         state: command_job_state_from_processing_status(job.status, job.cancel_requested),
         cancel_requested: job.cancel_requested,
         started_at_ms: job.started_at_ms.unwrap_or_default(),
+        last_error: job.last_error,
     }
 }
 
@@ -2818,9 +2824,9 @@ fn command_job_state_from_processing_status(
         JobStatus::Running => CommandJobState::Running,
         JobStatus::Succeeded => CommandJobState::Complete,
         JobStatus::Canceled => CommandJobState::Canceled,
-        JobStatus::Queued | JobStatus::Failed | JobStatus::Retry | JobStatus::Recovery => {
-            CommandJobState::Failed
-        }
+        JobStatus::Recovery => CommandJobState::Recovery,
+        JobStatus::Retry => CommandJobState::Retry,
+        JobStatus::Queued | JobStatus::Failed => CommandJobState::Failed,
     }
 }
 
@@ -7616,7 +7622,11 @@ mod tests {
             .expect("durable recovered job");
 
         assert!(duplicate.contains(&started.id));
-        assert_ne!(json["transcriptionJob"]["state"], "Running");
+        assert_eq!(json["transcriptionJob"]["state"], "Recovery");
+        assert_eq!(
+            json["transcriptionJob"]["lastError"],
+            "transcription worker was not running after app restart"
+        );
         assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
         assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
 
@@ -7651,7 +7661,11 @@ mod tests {
             .expect("durable recovered job");
 
         assert_eq!(restarted_json["transcriptionJob"]["id"], started.id);
-        assert_eq!(restarted_json["transcriptionJob"]["state"], "Failed");
+        assert_eq!(restarted_json["transcriptionJob"]["state"], "Recovery");
+        assert_eq!(
+            restarted_json["transcriptionJob"]["lastError"],
+            "transcription worker was not running after app restart"
+        );
         assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
         assert!(
             recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,
@@ -8192,7 +8206,11 @@ mod tests {
 
         assert!(duplicate.contains(&started.id));
         assert_eq!(json["summaryJob"]["id"], started.id);
-        assert_ne!(json["summaryJob"]["state"], "Running");
+        assert_eq!(json["summaryJob"]["state"], "Recovery");
+        assert_eq!(
+            json["summaryJob"]["lastError"],
+            "summary worker was not running after app restart"
+        );
         assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
         assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
         assert_eq!(
@@ -8229,7 +8247,11 @@ mod tests {
             .expect("durable recovered summary job");
 
         assert_eq!(restarted_json["summaryJob"]["id"], started.id);
-        assert_eq!(restarted_json["summaryJob"]["state"], "Failed");
+        assert_eq!(restarted_json["summaryJob"]["state"], "Recovery");
+        assert_eq!(
+            restarted_json["summaryJob"]["lastError"],
+            "summary worker was not running after app restart"
+        );
         assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
         assert!(
             recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,

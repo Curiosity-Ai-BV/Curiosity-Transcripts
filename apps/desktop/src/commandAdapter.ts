@@ -205,9 +205,10 @@ export interface CommandJobView {
   id: string;
   kind: "Transcription" | "Summary";
   meetingId: string;
-  state: "Running" | "CancelRequested" | "Complete" | "Failed" | "Canceled";
+  state: "Running" | "CancelRequested" | "Complete" | "Failed" | "Recovery" | "Retry" | "Canceled";
   cancelRequested: boolean;
   startedAtMs: number;
+  lastError?: string | null;
 }
 
 export interface DesktopSnapshot {
@@ -482,6 +483,7 @@ export function mapTranscriptionState(state: TranscriptionCommandView | null): S
 
 export function mapCommandJobState(job: CommandJobView): StatusView {
   const kind = job.kind === "Transcription" ? "Transcription" : "Summary";
+  const retryGuidance = `Retry this ${kind.toLowerCase()} job when you are ready.`;
   if (job.state === "CancelRequested") {
     return {
       label: `${kind} cancel requested`,
@@ -500,7 +502,21 @@ export function mapCommandJobState(job: CommandJobView): StatusView {
     return {
       label: `${kind} failed`,
       tone: "blocked",
-      detail: `${job.meetingId} / ${job.id}`,
+      detail: job.lastError ?? `${job.meetingId} / ${job.id}`,
+    };
+  }
+  if (job.state === "Recovery") {
+    return {
+      label: `${kind} recovered`,
+      tone: "warn",
+      detail: job.lastError ?? retryGuidance,
+    };
+  }
+  if (job.state === "Retry") {
+    return {
+      label: `${kind} retryable`,
+      tone: "warn",
+      detail: job.lastError ?? retryGuidance,
     };
   }
   if (job.state === "Canceled") {
@@ -1251,9 +1267,12 @@ function validateCommandJobView(value: unknown, pathLabel: string): void {
   requireString(job.id, `${pathLabel}.id`);
   requireEnum(job.kind, ["Transcription", "Summary"], `${pathLabel}.kind`);
   requireString(job.meetingId, `${pathLabel}.meetingId`);
-  requireEnum(job.state, ["Running", "CancelRequested", "Complete", "Failed", "Canceled"], `${pathLabel}.state`);
+  requireEnum(job.state, ["Running", "CancelRequested", "Complete", "Failed", "Recovery", "Retry", "Canceled"], `${pathLabel}.state`);
   requireBoolean(job.cancelRequested, `${pathLabel}.cancelRequested`);
   requireNumber(job.startedAtMs, `${pathLabel}.startedAtMs`);
+  if (Object.prototype.hasOwnProperty.call(job, "lastError")) {
+    requireNullableString(job.lastError, `${pathLabel}.lastError`);
+  }
 }
 
 function validateAnalysisCommandView(value: unknown, pathLabel: string): void {

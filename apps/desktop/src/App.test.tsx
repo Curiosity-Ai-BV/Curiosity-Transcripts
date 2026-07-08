@@ -11,6 +11,7 @@ import {
   getUnavailableDesktopSnapshot,
   loadDesktopSnapshot,
   mapAnalysisDisclosure,
+  mapCommandJobState,
   mapDeleteState,
   mapExportState,
   mapModelStatus,
@@ -140,6 +141,39 @@ describe("desktop command-state mapping", () => {
       label: "Transcription failed",
       tone: "blocked",
       detail: "Whisper model is unavailable. Set CURIOSITY_WHISPER_MODEL.",
+    });
+  });
+
+  it("renders recovered durable command jobs with recovery detail", () => {
+    expect(
+      mapCommandJobState({
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      }),
+    ).toEqual({
+      label: "Transcription recovered",
+      tone: "warn",
+      detail: "transcription worker was not running after app restart",
+    });
+
+    expect(
+      mapCommandJobState({
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      }),
+    ).toEqual({
+      label: "Summary retryable",
+      tone: "warn",
+      detail: "Retry this summary job when you are ready.",
     });
   });
 
@@ -1704,6 +1738,126 @@ describe("desktop workspace shell", () => {
         args: { jobId: "summary-circuit-review-1700000002000" },
       },
     ]);
+  });
+
+  it("retries the selected meeting's recovered transcription job without a cancel control", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const snapshot = connectedSnapshot({
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      transcribeMeeting: async (args) => {
+        calls.push({ method: "transcribeMeeting", args });
+        return snapshot;
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    expect(screen.getByText("Transcription recovered")).toBeInTheDocument();
+    expect(screen.getByText("transcription worker was not running after app restart")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel transcription" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry transcription" }));
+
+    expect(calls).toEqual([{ method: "transcribeMeeting", args: { meetingId: "circuit-review" } }]);
+  });
+
+  it("retries the selected meeting's retryable summary job without a cancel control", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const snapshot = connectedSnapshot({
+      summaryJob: {
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      generateSummary: async (args) => {
+        calls.push({ method: "generateSummary", args });
+        return snapshot;
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    expect(screen.getByText("Summary retryable")).toBeInTheDocument();
+    expect(screen.getByText("Retry this summary job when you are ready.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel summary" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry summary" }));
+
+    expect(calls).toEqual([{ method: "generateSummary", args: { meetingId: "circuit-review" } }]);
+  });
+
+  it("keeps retry summary disabled when the selected meeting has no transcript segments", () => {
+    const snapshot = connectedSnapshot({
+      meetings: [
+        {
+          ...getMockDesktopSnapshot().meetings[0],
+          segments: [],
+          transcriptText: "",
+          transcriptState: "Unavailable",
+        },
+      ],
+      selectedMeetingId: "circuit-review",
+      summaryJob: {
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    expect(screen.getByRole("button", { name: "Retry summary" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Retry summary" })).toHaveAttribute(
+      "title",
+      "Generate a transcript before requesting a summary.",
+    );
+  });
+
+  it("does not show retry controls for another meeting's terminal retryable jobs", () => {
+    const snapshot = connectedSnapshot({
+      selectedMeetingId: "circuit-review",
+      transcriptionJob: {
+        id: "transcription-design-standup-1700000001000",
+        kind: "Transcription",
+        meetingId: "design-standup",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+      },
+      summaryJob: {
+        id: "summary-design-standup-1700000002000",
+        kind: "Summary",
+        meetingId: "design-standup",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={fakeCommandFacade()} />);
+
+    expect(screen.queryByRole("button", { name: "Retry transcription" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry summary" })).not.toBeInTheDocument();
   });
 
   it("keeps cancel enabled for a running transcription job while the matching command is pending", async () => {
