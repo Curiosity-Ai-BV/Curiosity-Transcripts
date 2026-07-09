@@ -3016,6 +3016,46 @@ describe("desktop workspace shell", () => {
     expect(screen.getAllByText(/ollama \/ qwen3.6:27b/i).length).toBeGreaterThan(0);
   });
 
+  it("keeps summary generation disabled when last Ollama test found a missing model", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const setupGuidance =
+      "Run `ollama pull qwen3.6:27b`, then run Test Ollama again. Availability is not checked in the background.";
+    const initial = connectedSnapshot({
+      setupGuidance: ollamaSetupGuidance({
+        availability: "MissingModelAtLastTest",
+        message:
+          "Last explicit Test Ollama reached Ollama, but qwen3.6:27b was missing. Summaries are unavailable until the selected local model is installed.",
+        setupGuidance,
+        lastConnectionTest: {
+          baseUrl: "http://127.0.0.1:11434",
+          requestedModel: "qwen3.6:27b",
+          testedAtMs: 1_700_000_003_000,
+          state: "Unavailable",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["gemma4:31b"],
+          pullCommand: "ollama pull qwen3.6:27b",
+          failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+        },
+      }),
+    });
+    const commandFacade = fakeCommandFacade({
+      generateSummary: async (args) => {
+        calls.push({ method: "generateSummary", args });
+        return initial;
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    const generate = screen.getByRole("button", { name: "Generate summary" });
+    expect(generate).toBeDisabled();
+    expect(generate).toHaveAttribute("title", setupGuidance);
+    await user.click(generate);
+
+    expect(calls).toEqual([]);
+  });
+
   it("saves a user correction for the selected transcript segment", async () => {
     const user = userEvent.setup();
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_003_000);
@@ -3321,6 +3361,53 @@ describe("desktop workspace shell", () => {
     await user.click(screen.getByRole("button", { name: "Retry summary" }));
 
     expect(calls).toEqual([{ method: "generateSummary", args: { meetingId: "circuit-review" } }]);
+  });
+
+  it("keeps retry summary disabled when last Ollama test could not confirm availability", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const setupGuidance =
+      "Ollama is unavailable: connection refused. Start Ollama with `ollama serve`, verify the local base URL, then run Test Ollama again. Availability is not checked in the background.";
+    const snapshot = connectedSnapshot({
+      setupGuidance: ollamaSetupGuidance({
+        availability: "UnavailableAtLastTest",
+        message: "Last explicit Test Ollama could not confirm local summary availability.",
+        setupGuidance,
+        lastConnectionTest: {
+          baseUrl: "http://127.0.0.1:11434",
+          requestedModel: "qwen3.6:27b",
+          testedAtMs: 1_700_000_004_000,
+          state: "Unavailable",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: null,
+          pullCommand: null,
+          failureDetail: "Ollama is unavailable: connection refused.",
+        },
+      }),
+      summaryJob: {
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      generateSummary: async (args) => {
+        calls.push({ method: "generateSummary", args });
+        return snapshot;
+      },
+    });
+
+    render(<App snapshot={snapshot} commandFacade={commandFacade} />);
+
+    const retry = screen.getByRole("button", { name: "Retry summary" });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAttribute("title", setupGuidance);
+    await user.click(retry);
+
+    expect(calls).toEqual([]);
   });
 
   it("keeps retry summary disabled when the selected meeting has no transcript segments", () => {

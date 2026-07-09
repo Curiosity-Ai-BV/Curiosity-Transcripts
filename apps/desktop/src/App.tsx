@@ -325,6 +325,9 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   const calendarTone = calendarContextTone(calendarContext);
   const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
   const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama);
+  const ollamaSummaryBlockGuidance = ollamaSummaryBlocked(setupGuidance.ollama)
+    ? setupGuidance.ollama.setupGuidance
+    : null;
   const whisperModelReady = currentSnapshot.model.kind === "ready";
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
@@ -383,7 +386,8 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     !commandSurfaceReady ||
     !selectedMeeting ||
     commandBusy ||
-    selectedMeeting.segments.length === 0;
+    selectedMeeting.segments.length === 0 ||
+    Boolean(ollamaSummaryBlockGuidance);
   const canCancelTranscriptionJob = isActiveCommandJob(currentSnapshot.transcriptionJob);
   const canCancelSummaryJob = isActiveCommandJob(currentSnapshot.summaryJob);
   const canRetryTranscriptionJob = isSelectedRetryableJob(currentSnapshot.transcriptionJob, selectedMeeting?.id);
@@ -411,6 +415,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     !selectedMeeting ||
     !canRetrySummaryJob ||
     selectedMeeting.segments.length === 0 ||
+    Boolean(ollamaSummaryBlockGuidance) ||
     commandBusy;
 
   async function runSnapshotCommand(
@@ -934,6 +939,8 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
         ? "Select a meeting before requesting a summary."
         : selectedMeeting.segments.length === 0
           ? "Generate a transcript before requesting a summary."
+          : ollamaSummaryBlockGuidance
+            ? ollamaSummaryBlockGuidance
           : "Generate a local Ollama summary for the selected meeting.";
   const isLightTheme = theme === "light";
   const themeButtonLabel = isLightTheme ? "Switch to dark mode" : "Switch to light mode";
@@ -1914,6 +1921,13 @@ function ollamaSetupTone(guidance: DesktopSnapshot["setupGuidance"]["ollama"]): 
     return "ready";
   }
   return "warn";
+}
+
+function ollamaSummaryBlocked(guidance: DesktopSnapshot["setupGuidance"]["ollama"]) {
+  return (
+    guidance.availability === "MissingModelAtLastTest" ||
+    guidance.availability === "UnavailableAtLastTest"
+  );
 }
 
 function calendarContextLabel(context: DesktopSnapshot["calendarContext"]) {

@@ -1632,14 +1632,32 @@ fn summary_readiness_failure_snapshot_for_app_root(
         let model = canonical_local_ollama_model_tag(&settings.ollama_model);
         let readiness = validate_local_ollama_model(&model)
             .and_then(|_| local_ollama_endpoint(&settings.ollama_base_url, "/api/generate"));
-        readiness.err().map(|error| {
-            analysis_failed(
+        if let Err(error) = readiness {
+            Some(analysis_failed(
                 meeting_id,
                 "invalid_analysis_settings",
                 &error.to_string(),
                 "Use a localhost or loopback Ollama URL and a local model tag, save it, run Test Ollama, then retry summary.",
-            )
-        })
+            ))
+        } else {
+            matching_ollama_connection_test_evidence(&settings).and_then(|evidence| {
+                let (_, availability, message, setup_guidance) =
+                    ollama_setup_guidance_from_last_test(&model, &evidence);
+                if matches!(
+                    availability,
+                    "MissingModelAtLastTest" | "UnavailableAtLastTest"
+                ) {
+                    Some(analysis_failed(
+                        meeting_id,
+                        "ollama_unavailable",
+                        &message,
+                        &setup_guidance,
+                    ))
+                } else {
+                    None
+                }
+            })
+        }
     };
     let Some(failure) = failure else {
         return Ok(None);
@@ -10808,6 +10826,168 @@ mod tests {
             assert_eq!(
                 store.count("processing_jobs").expect("processing jobs"),
                 0,
+                "{case}"
+            );
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn summary_job_start_preflights_missing_ollama_model_evidence_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
+            1_700_000_001_000,
+        )
+        .expect("persist missing-model Ollama evidence");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save matching analysis settings");
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("missing-model preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "ollama_unavailable"
+        );
+        assert!(json["analysisCommand"]["failure"]["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("qwen3.6:27b was missing"));
+        assert!(json["analysisCommand"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Run `ollama pull qwen3.6:27b`, then run Test Ollama again"));
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preflights_unavailable_ollama_evidence_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_http_error(500, r#"{"error":"tags unavailable"}"#),
+            1_700_000_001_000,
+        )
+        .expect("persist unavailable Ollama evidence");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save matching analysis settings");
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("unavailable preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "ollama_unavailable"
+        );
+        assert_eq!(
+            json["analysisCommand"]["failure"]["message"],
+            "Last explicit Test Ollama could not confirm local summary availability."
+        );
+        assert!(json["analysisCommand"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("then run Test Ollama again"));
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_allows_available_and_mismatched_ollama_evidence() {
+        for (case, evidence_base_url, tags_response) in [
+            (
+                "available-matching",
+                "http://127.0.0.1:11434",
+                r#"{"models":[{"name":"qwen3.6:27b"}]}"#,
+            ),
+            (
+                "missing-mismatched",
+                "http://127.0.0.1:11435",
+                r#"{"models":[{"name":"gemma4:31b"}]}"#,
+            ),
+        ] {
+            let root = unique_test_root();
+            let command_state = Mutex::new(DesktopCommandState::default());
+            seed_transcribed_meeting_with_private_artifact(
+                &root,
+                "meeting-1",
+                "Summary Planning",
+                "summarize this transcript",
+            );
+            test_ollama_connection_for_app_root(
+                &root,
+                evidence_base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+                &RecordingOllamaTransport::tags_response(tags_response),
+                1_700_000_001_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: persist Ollama evidence: {error}"));
+            save_analysis_settings_for_app_root(
+                &root,
+                "http://127.0.0.1:11434".to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .unwrap_or_else(|error| panic!("{case}: save analysis settings: {error}"));
+
+            let (job, snapshot) = start_summary_job_for_app_root(
+                &root,
+                &command_state,
+                "meeting-1",
+                1_700_000_002_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: start summary job: {error}"));
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            let store = open_store(&root).expect("reopen store");
+
+            assert!(job.is_some(), "{case}");
+            assert_eq!(json["summaryJob"]["state"], "Running", "{case}");
+            assert!(json["analysisCommand"].is_null(), "{case}");
+            assert_eq!(
+                store.count("processing_jobs").expect("processing jobs"),
+                1,
                 "{case}"
             );
 
