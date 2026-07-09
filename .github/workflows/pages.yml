@@ -1,10 +1,13 @@
 name: GitHub Pages
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      filled_smoke_evidence_validated:
+        description: "Confirm filled smoke evidence validates with: node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,7 +21,32 @@ concurrency:
 jobs:
   build-macos-dmg:
     runs-on: macos-26
+    environment:
+      name: macos-signing
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
+      - name: Require main branch for Pages publication
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Publishing the public latest DMG must run from refs/heads/main."
+          exit 1
+
+      - name: Confirm filled smoke evidence validation
+        if: ${{ inputs.filled_smoke_evidence_validated != true }}
+        run: |
+          echo "::error::Publishing the public latest DMG requires filled smoke evidence validated with: node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json"
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -29,29 +57,137 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
+      - name: Check publication readiness
+        run: bash scripts/check-publication-readiness.sh
+
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build ad-hoc signed macOS DMG
-        run: ./scripts/build-macos-dmg.sh --no-sign
+      - name: Configure Apple signing credentials
+        run: ./scripts/configure-apple-signing-ci.sh
+
+      - name: Build signed and notarized macOS DMG
+        run: ./scripts/build-macos-dmg.sh
 
       - name: Stage latest DMG artifact
+        env:
+          PAGES_REF_NAME: ${{ github.ref_name }}
+          PAGES_GIT_SHA: ${{ github.sha }}
+          PAGES_GIT_REF: ${{ github.ref }}
         run: |
-          mkdir -p pages-download
-          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
-          if [ -z "$dmg_path" ]; then
-            echo "::error::No DMG was produced"
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+
+          runner_arch="$(uname -m)"
+          if [ "$runner_arch" != "arm64" ]; then
+            echo "::error::Pages workflow names the DMG macos-aarch64 but the runner architecture is $runner_arch"
             exit 1
           fi
-          cp "$dmg_path" pages-download/Curiosity-Transcripts-latest.dmg
+
+          mkdir -p pages-download
+          dmg_path="apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_${version}_aarch64.dmg"
+          latest_asset="pages-download/Curiosity-Transcripts-latest.dmg"
+          provenance_path="pages-download/Curiosity-Transcripts-latest.provenance.json"
+          if [ ! -f "$dmg_path" ]; then
+            echo "::error::Expected DMG was not produced: $dmg_path"
+            exit 1
+          fi
+          cp "$dmg_path" "$latest_asset"
+
+          hdiutil verify pages-download/Curiosity-Transcripts-latest.dmg
+          hdiutil_verify_status="passed"
+          xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg
+          stapler_validation_status="passed"
+          spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg
+          dmg_gatekeeper_assessment_status="passed"
+          mount_dir="$(mktemp -d)"
+          cleanup_mount() {
+            if [ -n "${mount_dir:-}" ] && [ -d "$mount_dir" ]; then
+              hdiutil detach "$mount_dir" || true
+              rm -rf "$mount_dir"
+            fi
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach pages-download/Curiosity-Transcripts-latest.dmg -readonly -nobrowse -mountpoint "$mount_dir"
+          if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
+            echo "::error::Pages latest DMG is missing Curiosity Transcripts.app"
+            exit 1
+          fi
+          readonly_attach_app_presence_status="passed"
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          app_codesign_verification_status="passed"
+          spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
+          app_gatekeeper_assessment_status="passed"
+          hdiutil detach "$mount_dir"
+          rm -rf "$mount_dir"
+          mount_dir=""
+          trap - EXIT
+
+          checksum_line="$(shasum -a 256 "$latest_asset")"
+          checksum="${checksum_line%% *}"
+          printf '%s  %s\n' "$checksum" "$(basename "$latest_asset")" | tee "$latest_asset.sha256"
+
+          GITHUB_REF_NAME_VALUE="$PAGES_REF_NAME" \
+          GITHUB_SHA_VALUE="$PAGES_GIT_SHA" \
+          GITHUB_REF_VALUE="$PAGES_GIT_REF" \
+          RUNNER_ARCH="$runner_arch" \
+          DMG_ASSET_PATH="$latest_asset" \
+          DMG_SHA256="$checksum" \
+          HDIUTIL_VERIFY_STATUS="$hdiutil_verify_status" \
+          STAPLER_VALIDATION_STATUS="$stapler_validation_status" \
+          DMG_GATEKEEPER_ASSESSMENT_STATUS="$dmg_gatekeeper_assessment_status" \
+          READONLY_ATTACH_APP_PRESENCE_STATUS="$readonly_attach_app_presence_status" \
+          APP_CODESIGN_VERIFICATION_STATUS="$app_codesign_verification_status" \
+          APP_GATEKEEPER_ASSESSMENT_STATUS="$app_gatekeeper_assessment_status" \
+          PAGES_VERSION="$version" \
+          PROVENANCE_PATH="$provenance_path" \
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const provenance = {
+            "kind": "curiosity-transcripts-pages-latest-provenance",
+            "schema_version": 1,
+            "app": {
+              "name": "Curiosity Transcripts",
+              "version": process.env.PAGES_VERSION,
+            },
+            "pages_latest": {
+              "github_ref_name": process.env.GITHUB_REF_NAME_VALUE,
+              "github_sha": process.env.GITHUB_SHA_VALUE,
+              "github_ref": process.env.GITHUB_REF_VALUE,
+            },
+            "runner": {
+              "runner_architecture": process.env.RUNNER_ARCH,
+            },
+            "asset": {
+              "dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH),
+              "dmg_asset_path": process.env.DMG_ASSET_PATH,
+              "dmg_sha256": process.env.DMG_SHA256,
+            },
+            "verification": {
+              "hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS,
+              "stapler_validation": process.env.STAPLER_VALIDATION_STATUS,
+              "dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS,
+              "readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS,
+              "app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS,
+              "app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS,
+            },
+          };
+
+          fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
+          NODE
+          node scripts/check-release-provenance-artifact.js "$provenance_path"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: curiosity-transcripts-dmg
-          path: pages-download/Curiosity-Transcripts-latest.dmg
+          path: |
+            pages-download/Curiosity-Transcripts-latest.dmg
+            pages-download/Curiosity-Transcripts-latest.dmg.sha256
+            pages-download/Curiosity-Transcripts-latest.provenance.json
           if-no-files-found: error
 
   build-pages:
@@ -68,7 +204,14 @@ jobs:
           path: site/downloads
 
       - name: Verify Pages download path
-        run: test -s site/downloads/Curiosity-Transcripts-latest.dmg
+        run: |
+          test -s site/downloads/Curiosity-Transcripts-latest.dmg
+          test -s site/downloads/Curiosity-Transcripts-latest.dmg.sha256
+          test -s site/downloads/Curiosity-Transcripts-latest.provenance.json
+          (
+            cd site/downloads
+            shasum -a 256 -c Curiosity-Transcripts-latest.dmg.sha256
+          )
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

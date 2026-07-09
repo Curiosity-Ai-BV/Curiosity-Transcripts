@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window-default",
+  "description": "Allows the main Curiosity Transcripts window to use core Tauri APIs and open the native WAV file picker.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

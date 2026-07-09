@@ -1,32 +1,49 @@
+use std::io::{Read, Seek, SeekFrom};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+mod calendar;
+
+use crate::calendar::{
+    calendar_context_snapshot, request_apple_calendar_full_access,
+    AppleCalendarAuthorizationStatus, CalendarContextEventView, CalendarContextView,
+};
+#[cfg(test)]
+use crate::calendar::{calendar_event_draft, finalize_calendar_context_events};
 use curiosity_analysis::{
     recommended_analysis_model_presets, summary_json_schema, AnalysisClientError,
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
 };
 use curiosity_app::{
-    delete_meeting_command, export_meeting_json_command,
+    attach_calendar_event_context_command, correct_transcript_segment_command,
+    delete_meeting_command, export_meeting_command, export_meeting_json_command,
     generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
     rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
-    AppPermissionState, CommandRecordingDto, CommandRecordingState, DeletedMeetingDto,
-    ExportedMeetingDto, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
-    StorageLocationDto,
+    AppPermissionState, CalendarEventAttachmentDto, CommandRecordingDto, CommandRecordingState,
+    DeletedMeetingDto, ExportFormat, ExportedMeetingDto, MeetingAnalysisDto,
+    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
-    MacosMicrophoneWavRecording, ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus,
-    ScreenCaptureKitSystemAudioAdapter, StreamKind, SystemAudioAdapterStatus,
+    MacosMicrophoneWavRecording, ScreenCaptureKitSystemAudioAdapter, StreamKind,
+    SystemAudioAdapterStatus,
 };
+#[cfg(any(test, debug_assertions))]
+use curiosity_audio::{ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus};
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, Meeting, MeetingStatus, ModelRun, RecordingSession,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, ModelRun,
+    ProcessingJob, RawAudioRetentionPolicy as DomainRawAudioRetentionPolicy, RecordingSession,
     RecordingSource, RecordingStatus, SourceChannel, TranscriptVersion,
 };
-use curiosity_store::{AppSettings, CompletedAudioArtifact, RecoverableArtifact, Store};
+use curiosity_store::{
+    AppSettings, CompletedAudioArtifact, OllamaConnectionTestEvidence,
+    PendingDeleteFinalizationReport, RecoverableArtifact, Store, WhisperPathTestEvidence,
+    WhisperTranscriptionCompatibilityEvidence, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL,
+};
 #[cfg(feature = "whisper-rs")]
 use curiosity_transcription::RealWhisperBackend;
 use curiosity_transcription::{
@@ -34,11 +51,13 @@ use curiosity_transcription::{
     WhisperTranscriptionRequest,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 use url::Url;
 
 fn main() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DesktopCommandState::default()))
         .on_window_event(cancel_active_recording_on_window_close);
     #[cfg(any(test, debug_assertions))]
@@ -46,16 +65,22 @@ fn main() {
         desktop_snapshot,
         search_meetings,
         rename_meeting,
+        correct_transcript_segment,
+        export_meeting,
         export_meeting_json,
         delete_meeting,
         generate_summary,
         get_settings,
         save_whisper_model_path,
         save_analysis_settings,
+        save_raw_audio_retention_policy,
+        request_apple_calendar_access,
+        attach_calendar_event_context,
         test_whisper_model_path,
         test_ollama_connection,
         audio_smoke_status,
         system_audio_smoke_recording,
+        import_audio_file,
         start_microphone_recording,
         stop_microphone_recording,
         cancel_microphone_recording,
@@ -69,19 +94,21 @@ fn main() {
         desktop_snapshot,
         search_meetings,
         rename_meeting,
+        correct_transcript_segment,
+        export_meeting,
         export_meeting_json,
         delete_meeting,
         generate_summary,
-        get_settings,
         save_whisper_model_path,
         save_analysis_settings,
+        save_raw_audio_retention_policy,
+        request_apple_calendar_access,
+        attach_calendar_event_context,
         test_whisper_model_path,
         test_ollama_connection,
-        audio_smoke_status,
-        system_audio_smoke_recording,
+        import_audio_file,
         start_microphone_recording,
         stop_microphone_recording,
-        cancel_microphone_recording,
         transcribe_meeting,
         cancel_transcription,
         cancel_summary
@@ -191,6 +218,53 @@ fn rename_meeting(
 }
 
 #[tauri::command]
+fn correct_transcript_segment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    segment_id: String,
+    corrected_text: String,
+    edited_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    correct_transcript_segment_for_app_root(
+        &app_root,
+        &snapshot_state,
+        &meeting_id,
+        &segment_id,
+        &corrected_text,
+        edited_at_ms,
+    )
+}
+
+#[tauri::command]
+fn export_meeting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    format: ExportFormat,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let export_state = export_meeting_command_state_for_app_root(&app_root, &meeting_id, format)?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.last_export = Some(export_state);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
+}
+
+#[tauri::command]
 fn export_meeting_json(
     app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<DesktopCommandState>>,
@@ -258,7 +332,9 @@ fn generate_summary(
             return desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state);
         }
     };
-    spawn_summary_job(app, app_root, job, meeting_id);
+    if let Some(job) = job {
+        spawn_summary_job(app, app_root, job, meeting_id);
+    }
     Ok(snapshot)
 }
 
@@ -295,31 +371,35 @@ fn finish_summary_job_for_app_root(
         created_at_ms,
         || summary_job_cancel_requested(command_state, &job.id),
     );
+    let (finish_state, last_error) = finish_state_for_summary(&command);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
         match &command {
             Ok(Some(command)) => {
-                let finish_state = if command.state == AnalysisCommandState::Failed {
-                    CommandJobFinishState::Failed
-                } else {
-                    CommandJobFinishState::Complete
-                };
                 command_state.finish_summary_job(&job, finish_state);
                 command_state.last_analysis = Some(command.clone());
             }
             Ok(None) => {
-                command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+                command_state.finish_summary_job(&job, finish_state);
             }
             Err(_) => {
-                command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+                command_state.finish_summary_job(&job, finish_state);
             }
         }
         command_state.snapshot_state()
     };
+    persist_summary_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
     command?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<AppSettingsView, String> {
     let app_root = app
@@ -367,20 +447,114 @@ fn save_analysis_settings(
 }
 
 #[tauri::command]
-fn test_whisper_model_path(path: String) -> WhisperModelPathTestView {
-    test_whisper_model_path_value(&path)
+fn save_raw_audio_retention_policy(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    raw_audio_retention_policy: String,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    save_raw_audio_retention_policy_for_app_root(&app_root, raw_audio_retention_policy)?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
 #[tauri::command]
-fn test_ollama_connection(base_url: String, model: String) -> OllamaConnectionTestView {
-    test_ollama_connection_value(&base_url, &model, &UreqOllamaHttpTransport)
+fn request_apple_calendar_access(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let authorization_status = request_apple_calendar_full_access();
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        #[cfg(test)]
+        {
+            let mut command_state = command_state;
+            command_state.last_calendar_authorization_status = Some(authorization_status);
+            command_state.snapshot_state()
+        }
+        #[cfg(not(test))]
+        {
+            let _ = authorization_status;
+            command_state.snapshot_state()
+        }
+    };
+    desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
+#[tauri::command]
+fn attach_calendar_event_context(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    meeting_id: String,
+    event_id: String,
+    privacy_confirmed: bool,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.snapshot_state()
+    };
+    attach_calendar_event_context_for_app_root(
+        &app_root,
+        &snapshot_state,
+        &meeting_id,
+        &event_id,
+        privacy_confirmed,
+        current_timestamp_ms(),
+    )
+}
+
+#[tauri::command]
+fn test_whisper_model_path(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<WhisperModelPathTestView, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    test_whisper_model_path_for_app_root(&app_root, path, current_timestamp_ms())
+}
+
+#[tauri::command]
+fn test_ollama_connection(
+    app: tauri::AppHandle,
+    base_url: String,
+    model: String,
+) -> Result<OllamaConnectionTestView, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    test_ollama_connection_for_app_root(
+        &app_root,
+        base_url,
+        model,
+        &UreqOllamaHttpTransport,
+        current_timestamp_ms(),
+    )
+}
+
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn audio_smoke_status() -> AudioSmokeStatus {
     build_audio_smoke_status()
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn system_audio_smoke_recording(
     app: tauri::AppHandle,
@@ -408,10 +582,7 @@ fn start_microphone_recording(
         .map_err(|error| format!("resolve app data directory: {error}"))?;
     {
         let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        if command_state.active_recording.is_some() || command_state.starting_recording {
-            return Err("Stop the active recording before starting another one.".to_string());
-        }
-        command_state.starting_recording = true;
+        command_state.begin_recording_start()?;
     }
 
     let mut started_state = DesktopCommandState::default();
@@ -425,7 +596,7 @@ fn start_microphone_recording(
     );
     let snapshot_state = {
         let mut command_state = state.lock().map_err(|error| error.to_string())?;
-        command_state.starting_recording = false;
+        command_state.finish_recording_start();
         match result {
             Ok(_) => {
                 command_state.active_recording = started_state.active_recording.take();
@@ -474,6 +645,7 @@ fn stop_microphone_recording(
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn cancel_microphone_recording(
     app: tauri::AppHandle,
@@ -517,6 +689,14 @@ fn transcribe_meeting(
     let settings = app_settings_for_app_root(&app_root)?;
     let model_path = resolved_whisper_model_path(&settings);
     let model_name = model_name_for_path(&model_path);
+    if let Some(snapshot) = transcription_readiness_failure_snapshot_for_app_root(
+        &app_root,
+        state.inner(),
+        &meeting_id,
+        &settings,
+    )? {
+        return Ok(snapshot);
+    }
     let started_at_ms = current_timestamp_ms();
     let (job, snapshot) = match start_transcription_job_for_app_root(
         &app_root,
@@ -626,6 +806,44 @@ fn cancel_summary(
     cancel_summary_job_for_app_root(&app_root, state.inner(), &job_id)
 }
 
+#[tauri::command]
+fn import_audio_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<DesktopCommandState>>,
+    source_path: String,
+    title: Option<String>,
+) -> Result<DesktopSnapshot, String> {
+    let app_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data directory: {error}"))?;
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.begin_import_audio()?;
+        command_state.snapshot_state()
+    };
+    let result = import_audio_file_recording_for_app_root(
+        &app_root,
+        &snapshot_state,
+        source_path,
+        title,
+        current_timestamp_ms(),
+    );
+    let snapshot_state = {
+        let mut command_state = state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_import_audio();
+        if let Ok(recording) = &result {
+            command_state.last_recording = Some(recording.clone());
+            command_state.last_transcription = None;
+        }
+        command_state.snapshot_state()
+    };
+    match result {
+        Ok(_) => desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 fn desktop_snapshot_for_app_root(app_root: &Path) -> Result<DesktopSnapshot, String> {
     desktop_snapshot_for_app_root_with_state(app_root, &DesktopCommandSnapshotState::default())
@@ -635,10 +853,43 @@ fn desktop_snapshot_for_app_root_with_state(
     app_root: &Path,
     command_state: &DesktopCommandSnapshotState,
 ) -> Result<DesktopSnapshot, String> {
-    let store = if command_state.active_recording.is_some() {
-        open_store(app_root)?
+    let (store, finalized_deletes) = if command_state.active_recording.is_some() {
+        (open_store(app_root)?, Vec::new())
+    } else if command_state.last_delete.is_some() {
+        (open_store_with_startup_repair(app_root)?, Vec::new())
     } else {
-        open_store_with_startup_repair(app_root)?
+        open_store_with_startup_repair_report(app_root)?
+    };
+    let finalized_delete_state = finalized_deletes
+        .into_iter()
+        .last()
+        .map(delete_command_state_from_pending_finalization);
+    let recovered_transcription_job =
+        if command_state.active_recording.is_none() && command_state.transcription_job.is_none() {
+            store
+                .recover_active_transcription_jobs(
+                    current_timestamp_ms(),
+                    "transcription worker was not running after app restart",
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .next()
+                .map(command_job_from_processing_job)
+        } else {
+            None
+        };
+    let recovered_summary_job = if command_state.summary_job.is_none() {
+        store
+            .recover_active_summary_jobs(
+                current_timestamp_ms(),
+                "summary worker was not running after app restart",
+            )
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .next()
+            .map(command_job_from_processing_job)
+    } else {
+        None
     };
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let meeting_summaries = list_meetings_dto(&store).map_err(|error| error.to_string())?;
@@ -650,6 +901,15 @@ fn desktop_snapshot_for_app_root_with_state(
         let analysis = store
             .current_analysis_result(&summary.meeting_id)
             .map_err(|error| error.to_string())?;
+        let raw_audio_retention = store
+            .latest_recording_session_raw_audio_retention_policy_for_meeting(&summary.meeting_id)
+            .map_err(|error| error.to_string())?
+            .map(raw_audio_retention_policy_view)
+            .unwrap_or(RawAudioRetentionPolicy::Retain);
+        let calendar_attachment = store
+            .meeting_calendar_context(&summary.meeting_id)
+            .map_err(|error| error.to_string())?
+            .map(MeetingCalendarAttachmentView::from_store);
         let transcript_text = detail
             .transcript_segments
             .iter()
@@ -664,6 +924,7 @@ fn desktop_snapshot_for_app_root_with_state(
                 start_ms: segment.start_ms,
                 end_ms: segment.end_ms,
                 text: segment.text,
+                original_text: segment.original_text,
                 source_channel: segment.source_channel,
                 model_run_id: segment.model_run_id,
                 transcript_version_id: segment.transcript_version_id,
@@ -682,7 +943,7 @@ fn desktop_snapshot_for_app_root_with_state(
             privacy: MeetingPrivacy {
                 storage_label: "Private storage".to_string(),
                 storage_path: format!("meetings/{}/audio", summary.meeting_id),
-                raw_audio_retention: RawAudioRetentionPolicy::Retain,
+                raw_audio_retention,
                 local_only: analysis
                     .as_ref()
                     .map(|analysis| !analysis.network_used)
@@ -700,6 +961,7 @@ fn desktop_snapshot_for_app_root_with_state(
                 .filter(|state| state.meeting_id.as_deref() == Some(summary.meeting_id.as_str()))
                 .cloned()
                 .unwrap_or_default(),
+            calendar_attachment,
             analysis: analysis.map(|analysis| AnalysisDisclosureState {
                 provider: analysis.provider,
                 model_name: analysis.model_name,
@@ -726,37 +988,66 @@ fn desktop_snapshot_for_app_root_with_state(
         selected_meeting_id,
         recording: recording_snapshot(app_root, command_state),
         model: model_status_from_settings(&settings),
+        setup_guidance: setup_guidance_from_settings(&settings),
+        model_setup_options: model_setup_options(),
+        calendar_context: calendar_context_snapshot(
+            command_state.last_calendar_authorization_status,
+        ),
         settings: app_settings_view(settings),
         capture: CaptureStatus {
             microphone: microphone_capture_state(command_state),
             system_audio: system_audio_capture_state(command_state, has_system_audio_transcript),
         },
         transcription: command_state.last_transcription.clone(),
-        transcription_job: command_state.transcription_job.clone(),
+        transcription_job: command_state
+            .transcription_job
+            .clone()
+            .or(recovered_transcription_job),
         export_command: command_state.last_export.clone().unwrap_or_default(),
-        delete_command: command_state.last_delete.clone().unwrap_or_default(),
+        delete_command: command_state
+            .last_delete
+            .clone()
+            .or(finalized_delete_state)
+            .unwrap_or_default(),
         analysis_command: command_state.last_analysis.clone(),
-        summary_job: command_state.summary_job.clone(),
+        summary_job: command_state.summary_job.clone().or(recovered_summary_job),
     })
 }
 
 fn open_store(app_root: &Path) -> Result<Store, String> {
-    open_store_for_app_root(app_root, false)
+    open_store_for_app_root(app_root, false).map(|(store, _)| store)
 }
 
 fn open_store_with_startup_repair(app_root: &Path) -> Result<Store, String> {
+    open_store_with_startup_repair_report(app_root).map(|(store, _)| store)
+}
+
+fn open_store_with_startup_repair_report(
+    app_root: &Path,
+) -> Result<(Store, Vec<PendingDeleteFinalizationReport>), String> {
     open_store_for_app_root(app_root, true)
 }
 
-fn open_store_for_app_root(app_root: &Path, repair_startup: bool) -> Result<Store, String> {
+fn open_store_for_app_root(
+    app_root: &Path,
+    repair_startup: bool,
+) -> Result<(Store, Vec<PendingDeleteFinalizationReport>), String> {
     std::fs::create_dir_all(app_root).map_err(|error| error.to_string())?;
     let store = Store::open(app_root.join("curiosity.sqlite3"), app_root.to_path_buf())
         .map_err(|error| error.to_string())?;
     store.migrate().map_err(|error| error.to_string())?;
-    if repair_startup {
+    let finalized_deletes = if repair_startup {
         store.repair_startup().map_err(|error| error.to_string())?;
-    }
-    Ok(store)
+        store
+            .finalize_pending_raw_audio_retention_cleanup()
+            .map_err(|error| error.to_string())?;
+        store
+            .finalize_pending_delete_intents()
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+    Ok((store, finalized_deletes))
 }
 
 fn app_settings_for_app_root(app_root: &Path) -> Result<AppSettings, String> {
@@ -765,6 +1056,7 @@ fn app_settings_for_app_root(app_root: &Path) -> Result<AppSettings, String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(any(test, debug_assertions))]
 fn get_settings_for_app_root(app_root: &Path) -> Result<AppSettingsView, String> {
     app_settings_for_app_root(app_root).map(app_settings_view)
 }
@@ -785,12 +1077,91 @@ fn save_analysis_settings_for_app_root(
     ollama_base_url: String,
     ollama_model: String,
 ) -> Result<AppSettingsView, String> {
+    let ollama_base_url = match ollama_base_url.trim() {
+        "" => DEFAULT_OLLAMA_BASE_URL,
+        value => value,
+    };
+    let ollama_model = match ollama_model.trim() {
+        "" => DEFAULT_OLLAMA_MODEL,
+        value => value,
+    };
+    let ollama_model = canonical_local_ollama_model_tag(ollama_model);
+    validate_local_ollama_model(&ollama_model).map_err(|error| error.to_string())?;
+    local_ollama_endpoint(ollama_base_url, "/api/tags").map_err(|error| error.to_string())?;
     let store = open_store(app_root)?;
-    let ollama_model = canonical_local_ollama_model_tag(&ollama_model);
     store
-        .save_analysis_settings(&ollama_base_url, &ollama_model)
+        .save_analysis_settings(ollama_base_url, &ollama_model)
         .map(app_settings_view)
         .map_err(|error| error.to_string())
+}
+
+fn save_raw_audio_retention_policy_for_app_root(
+    app_root: &Path,
+    raw_audio_retention_policy: String,
+) -> Result<AppSettingsView, String> {
+    let store = open_store(app_root)?;
+    store
+        .save_raw_audio_retention_policy(&raw_audio_retention_policy)
+        .map(app_settings_view)
+        .map_err(|error| error.to_string())
+}
+
+fn test_whisper_model_path_for_app_root(
+    app_root: &Path,
+    path: String,
+    tested_at_ms: u64,
+) -> Result<WhisperModelPathTestView, String> {
+    let result = test_whisper_model_path_value(&path);
+    let evidence = WhisperPathTestEvidence {
+        tested_path: path.trim().to_string(),
+        tested_at_ms,
+        state: result.state.clone(),
+        file_size_bytes: result.file_size_bytes,
+        sha256: result.sha256.clone(),
+        failure_detail: if result.state == "Valid" {
+            None
+        } else {
+            Some(result.message.clone())
+        },
+    };
+    open_store(app_root)?
+        .save_whisper_path_test_evidence(&evidence)
+        .map_err(|error| format!("persist Whisper path test evidence: {error}"))?;
+    Ok(result)
+}
+
+fn test_ollama_connection_for_app_root<T>(
+    app_root: &Path,
+    base_url: String,
+    model: String,
+    transport: &T,
+    tested_at_ms: u64,
+) -> Result<OllamaConnectionTestView, String>
+where
+    T: OllamaHttpTransport,
+{
+    let result = test_ollama_connection_value(&base_url, &model, transport);
+    if local_ollama_endpoint(&base_url, "/api/tags").is_err() {
+        return Ok(result);
+    }
+    let evidence = OllamaConnectionTestEvidence {
+        base_url: base_url.trim().to_string(),
+        requested_model: canonical_local_ollama_model_tag(&model),
+        tested_at_ms,
+        state: result.state.clone(),
+        selected_local_model_tag: result.selected_local_model_tag.clone(),
+        installed_local_models: result.installed_local_models.clone(),
+        pull_command: result.pull_command.clone(),
+        failure_detail: if result.state == "Available" {
+            None
+        } else {
+            Some(result.message.clone())
+        },
+    };
+    open_store(app_root)?
+        .save_ollama_connection_test_evidence(&evidence)
+        .map_err(|error| format!("persist Ollama connection test evidence: {error}"))?;
+    Ok(result)
 }
 
 fn search_meetings_for_app_root(
@@ -813,6 +1184,101 @@ fn rename_meeting_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, command_state)
 }
 
+fn attach_calendar_event_context_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    event_id: &str,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let events =
+        calendar_context_snapshot(command_state.last_calendar_authorization_status).upcoming_events;
+    attach_calendar_event_context_for_app_root_with_events(
+        app_root,
+        command_state,
+        meeting_id,
+        event_id,
+        privacy_confirmed,
+        attached_at_ms,
+        events,
+    )
+}
+
+fn attach_calendar_event_context_for_app_root_with_events(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    event_id: &str,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+    events: Vec<CalendarContextEventView>,
+) -> Result<DesktopSnapshot, String> {
+    let event = events
+        .into_iter()
+        .find(|event| event.id == event_id)
+        .ok_or_else(|| "Calendar event is no longer available for attachment.".to_string())?;
+    let store = open_store(app_root)?;
+    attach_calendar_event_context_command(
+        &store,
+        meeting_id,
+        calendar_event_attachment_dto(event),
+        privacy_confirmed,
+        attached_at_ms,
+    )
+    .map_err(|error| error.to_string())?;
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, command_state)
+}
+
+fn calendar_event_attachment_dto(event: CalendarContextEventView) -> CalendarEventAttachmentDto {
+    CalendarEventAttachmentDto {
+        id: event.id,
+        title: event.title,
+        calendar_title: event.calendar_title,
+        starts_at_ms: event.starts_at_ms,
+        ends_at_ms: event.ends_at_ms,
+        is_all_day: event.is_all_day,
+        is_recurring: event.is_recurring,
+        privacy: event.privacy,
+        overlap_state: event.overlap_state,
+        attachable: event.attachable,
+    }
+}
+
+fn correct_transcript_segment_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    meeting_id: &str,
+    segment_id: &str,
+    corrected_text: &str,
+    edited_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let store = open_store(app_root)?;
+    correct_transcript_segment_command(
+        &store,
+        meeting_id,
+        segment_id,
+        corrected_text,
+        edited_at_ms,
+    )
+    .map_err(|error| error.to_string())?;
+    drop(store);
+    desktop_snapshot_for_app_root_with_state(app_root, command_state)
+}
+
+#[cfg(test)]
+fn export_meeting_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    meeting_id: &str,
+    format: ExportFormat,
+) -> Result<DesktopSnapshot, String> {
+    let export_state = export_meeting_command_state_for_app_root(app_root, meeting_id, format)?;
+    command_state.last_export = Some(export_state);
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
 #[cfg(test)]
 fn export_meeting_json_for_app_root(
     app_root: &Path,
@@ -828,12 +1294,25 @@ fn export_meeting_json_command_state_for_app_root(
     app_root: &Path,
     meeting_id: &str,
 ) -> Result<ExportCommandState, String> {
+    export_meeting_command_state_for_app_root(app_root, meeting_id, ExportFormat::Json)
+}
+
+fn export_meeting_command_state_for_app_root(
+    app_root: &Path,
+    meeting_id: &str,
+    format: ExportFormat,
+) -> Result<ExportCommandState, String> {
     let store = open_store(app_root)?;
     let settings = store.app_settings().map_err(|error| error.to_string())?;
     let export_root = export_root_for_settings(app_root, &settings);
-    let export_state = match export_meeting_json_command(&store, meeting_id, &export_root) {
+    let export_result = if format == ExportFormat::Json {
+        export_meeting_json_command(&store, meeting_id, &export_root)
+    } else {
+        export_meeting_command(&store, meeting_id, format, &export_root)
+    };
+    let export_state = match export_result {
         Ok(exported) => ExportCommandState::exported(exported),
-        Err(error) => ExportCommandState::failed(meeting_id, error.to_string()),
+        Err(error) => ExportCommandState::failed(meeting_id, format, error.to_string()),
     };
     Ok(export_state)
 }
@@ -982,35 +1461,93 @@ where
         model_name,
         created_at_ms,
         || summary_job_cancel_requested(command_state, &job.id),
-    )?;
+    );
+    let (finish_state, last_error) = finish_state_for_summary(&command);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-        if let Some(command) = command {
-            let finish_state = if command.state == AnalysisCommandState::Failed {
-                CommandJobFinishState::Failed
-            } else {
-                CommandJobFinishState::Complete
-            };
-            command_state.finish_summary_job(&job, finish_state);
-            command_state.last_analysis = Some(command);
-        } else {
-            command_state.finish_summary_job(&job, CommandJobFinishState::Canceled);
+        match &command {
+            Ok(Some(command)) => {
+                command_state.finish_summary_job(&job, finish_state);
+                command_state.last_analysis = Some(command.clone());
+            }
+            Ok(None) | Err(_) => {
+                command_state.finish_summary_job(&job, finish_state);
+            }
         }
         command_state.snapshot_state()
     };
+    persist_summary_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
+    command?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
 fn begin_summary_job_for_app_root(
-    _app_root: &Path,
+    app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
 ) -> Result<CommandJobView, String> {
-    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-    command_state
-        .begin_summary_job(meeting_id, started_at_ms)
-        .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))
+    let job = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .begin_summary_job(meeting_id, started_at_ms)
+            .map_err(|job| format!("{} already owns summary for {}", job.id, job.meeting_id))?
+    };
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    let active_job = match store.active_summary_job_for_meeting(meeting_id) {
+        Ok(active_job) => active_job,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            return Err(error.to_string());
+        }
+    };
+    if let Some(active_job) = active_job {
+        let recovered_job = match store
+            .recover_processing_job(
+                &active_job.id,
+                started_at_ms,
+                "summary worker was not running after app restart",
+            )
+            .and_then(|_| store.processing_job(&active_job.id))
+        {
+            Ok(recovered_job) => recovered_job,
+            Err(error) => {
+                let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+                command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+                return Err(error.to_string());
+            }
+        };
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.summary_job = Some(command_job_from_processing_job(recovered_job));
+        return Err(format!(
+            "{} already owns summary for {}",
+            active_job.id, active_job.meeting_id
+        ));
+    }
+
+    let durable_job = processing_job_from_command_job(&job);
+    if let Err(error) = store.insert_processing_job(&durable_job) {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+        return Err(error.to_string());
+    }
+
+    Ok(job)
 }
 
 fn start_summary_job_for_app_root(
@@ -1018,7 +1555,13 @@ fn start_summary_job_for_app_root(
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
-) -> Result<(CommandJobView, DesktopSnapshot), String> {
+) -> Result<(Option<CommandJobView>, DesktopSnapshot), String> {
+    if let Some(snapshot) =
+        summary_readiness_failure_snapshot_for_app_root(app_root, command_state, meeting_id)?
+    {
+        return Ok((None, snapshot));
+    }
+
     let job = begin_summary_job_for_app_root(app_root, command_state, meeting_id, started_at_ms)?;
     let snapshot_state = {
         let command_state = command_state.lock().map_err(|error| error.to_string())?;
@@ -1029,10 +1572,98 @@ fn start_summary_job_for_app_root(
         Err(error) => {
             let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
             command_state.finish_summary_job(&job, CommandJobFinishState::Failed);
+            let _ = persist_summary_job_finish(
+                app_root,
+                &job.id,
+                CommandJobFinishState::Failed,
+                started_at_ms,
+                Some(&error),
+            );
             return Err(error);
         }
     };
-    Ok((job, snapshot))
+    Ok((Some(job), snapshot))
+}
+
+fn summary_readiness_failure_snapshot_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+) -> Result<Option<DesktopSnapshot>, String> {
+    if command_state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .summary_job
+        .as_ref()
+        .is_some_and(CommandJobView::is_active)
+    {
+        return Ok(None);
+    }
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(_) => return Ok(None),
+    };
+    if store
+        .active_summary_job_for_meeting(meeting_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    let transcript_segments = store
+        .transcript_segments(meeting_id)
+        .map_err(|error| error.to_string())?;
+    let failure = if transcript_segments.is_empty() {
+        Some(analysis_failed(
+            meeting_id,
+            "no_transcript_segments",
+            "Generate a transcript before requesting a summary.",
+            "",
+        ))
+    } else {
+        let settings = store.app_settings().map_err(|error| error.to_string())?;
+        let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+        let readiness = validate_local_ollama_model(&model)
+            .and_then(|_| local_ollama_endpoint(&settings.ollama_base_url, "/api/generate"));
+        if let Err(error) = readiness {
+            Some(analysis_failed(
+                meeting_id,
+                "invalid_analysis_settings",
+                &error.to_string(),
+                "Use a localhost or loopback Ollama URL and a local model tag, save it, run Test Ollama, then retry summary.",
+            ))
+        } else {
+            matching_ollama_connection_test_evidence(&settings).and_then(|evidence| {
+                let (_, availability, message, setup_guidance) =
+                    ollama_setup_guidance_from_last_test(&model, &evidence);
+                if matches!(
+                    availability,
+                    "MissingModelAtLastTest" | "UnavailableAtLastTest"
+                ) {
+                    Some(analysis_failed(
+                        meeting_id,
+                        "ollama_unavailable",
+                        &message,
+                        &setup_guidance,
+                    ))
+                } else {
+                    None
+                }
+            })
+        }
+    };
+    let Some(failure) = failure else {
+        return Ok(None);
+    };
+
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.last_analysis = Some(failure);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state).map(Some)
 }
 
 fn cancel_summary_job_for_app_root(
@@ -1045,6 +1676,7 @@ fn cancel_summary_job_for_app_root(
         command_state.request_summary_cancel(job_id)?;
         command_state.snapshot_state()
     };
+    persist_summary_job_cancel_request(app_root, job_id)?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
@@ -1260,11 +1892,13 @@ fn dev_fixture_wav_bytes() -> Vec<u8> {
 struct DesktopCommandState {
     active_recording: Option<ActiveDesktopRecording>,
     starting_recording: bool,
+    importing_audio: bool,
     last_recording: Option<CommandRecordingDto>,
     last_transcription: Option<TranscriptionCommandView>,
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    last_calendar_authorization_status: Option<AppleCalendarAuthorizationStatus>,
     transcription_job: Option<CommandJobView>,
     summary_job: Option<CommandJobView>,
 }
@@ -1277,6 +1911,7 @@ impl DesktopCommandState {
                     meeting_id: recording.meeting_id.clone(),
                     recording_id: recording.recording_id.clone(),
                     captures_system_audio: recording.streams.contains(&StreamKind::SystemAudio),
+                    raw_audio_retention_policy: recording.raw_audio_retention_policy,
                 }
             }),
             last_recording: self.last_recording.clone(),
@@ -1284,6 +1919,7 @@ impl DesktopCommandState {
             last_export: self.last_export.clone(),
             last_delete: self.last_delete.clone(),
             last_analysis: self.last_analysis.clone(),
+            last_calendar_authorization_status: self.last_calendar_authorization_status,
             transcription_job: self.transcription_job.clone(),
             summary_job: self.summary_job.clone(),
         }
@@ -1294,6 +1930,39 @@ impl DesktopCommandState {
             .as_ref()
             .map(|recording| recording.meeting_id == meeting_id)
             .unwrap_or(false)
+    }
+
+    fn begin_recording_start(&mut self) -> Result<(), String> {
+        if self.active_recording.is_some() || self.starting_recording {
+            return Err("Stop the active recording before starting another one.".to_string());
+        }
+        if self.importing_audio {
+            return Err("Finish the active audio import before starting a recording.".to_string());
+        }
+        self.starting_recording = true;
+        Ok(())
+    }
+
+    fn finish_recording_start(&mut self) {
+        self.starting_recording = false;
+    }
+
+    fn begin_import_audio(&mut self) -> Result<(), String> {
+        if self.active_recording.is_some() {
+            return Err("Stop the active recording before importing audio.".to_string());
+        }
+        if self.starting_recording {
+            return Err("Finish recording startup before importing audio.".to_string());
+        }
+        if self.importing_audio {
+            return Err("Finish the active audio import before importing another WAV.".to_string());
+        }
+        self.importing_audio = true;
+        Ok(())
+    }
+
+    fn finish_import_audio(&mut self) {
+        self.importing_audio = false;
     }
 
     fn begin_transcription_job(
@@ -1359,6 +2028,7 @@ struct DesktopCommandSnapshotState {
     last_export: Option<ExportCommandState>,
     last_delete: Option<DeleteCommandState>,
     last_analysis: Option<AnalysisCommandView>,
+    last_calendar_authorization_status: Option<AppleCalendarAuthorizationStatus>,
     transcription_job: Option<CommandJobView>,
     summary_job: Option<CommandJobView>,
 }
@@ -1368,6 +2038,7 @@ struct ActiveDesktopRecordingSnapshot {
     meeting_id: String,
     recording_id: String,
     captures_system_audio: bool,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1379,6 +2050,8 @@ struct CommandJobView {
     state: CommandJobState,
     cancel_requested: bool,
     started_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1393,6 +2066,8 @@ enum CommandJobState {
     CancelRequested,
     Complete,
     Failed,
+    Recovery,
+    Retry,
     Canceled,
 }
 
@@ -1416,6 +2091,7 @@ impl CommandJobView {
             state: CommandJobState::Running,
             cancel_requested: false,
             started_at_ms,
+            last_error: None,
         }
     }
 
@@ -1503,6 +2179,7 @@ struct ActiveDesktopRecording {
     meeting_id: String,
     recording_id: String,
     streams: Vec<StreamKind>,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
@@ -1656,6 +2333,289 @@ impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
     }
 }
 
+#[cfg(test)]
+fn import_audio_file_for_app_root(
+    app_root: &Path,
+    command_state: &mut DesktopCommandState,
+    source_path: String,
+    title: Option<String>,
+    imported_at_ms: u64,
+) -> Result<DesktopSnapshot, String> {
+    let snapshot_state = command_state.snapshot_state();
+    let recording = import_audio_file_recording_for_app_root(
+        app_root,
+        &snapshot_state,
+        source_path,
+        title,
+        imported_at_ms,
+    )?;
+    command_state.last_recording = Some(recording);
+    command_state.last_transcription = None;
+    desktop_snapshot_for_app_root_with_state(app_root, &command_state.snapshot_state())
+}
+
+fn import_audio_file_recording_for_app_root(
+    app_root: &Path,
+    command_state: &DesktopCommandSnapshotState,
+    source_path: String,
+    title: Option<String>,
+    imported_at_ms: u64,
+) -> Result<CommandRecordingDto, String> {
+    if command_state.active_recording.is_some() {
+        return Err("Stop the active recording before importing audio.".to_string());
+    }
+
+    let source_path = validate_import_source_path(&source_path)?;
+    let sample_rate_hz = validate_wav_header(&source_path)?;
+    let meeting_id = format!("meeting-{imported_at_ms}");
+    let recording_id = format!("recording-{imported_at_ms}");
+    let title = title
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Imported WAV".to_string());
+    let relative_path = imported_artifact_relative_path(&meeting_id, &recording_id);
+    let temp_relative_path = imported_temp_artifact_relative_path(&meeting_id, &recording_id);
+    let destination_path = app_root.join(&relative_path);
+    let temp_destination_path = app_root.join(&temp_relative_path);
+    let session_dir = destination_path
+        .parent()
+        .ok_or_else(|| "Imported WAV destination path is invalid.".to_string())?
+        .to_path_buf();
+    let store = open_store(app_root)?;
+    let raw_audio_retention_policy = store
+        .app_settings()
+        .map_err(|error| error.to_string())?
+        .raw_audio_retention_policy;
+    let mut finalized_destination = false;
+
+    let import_result = (|| {
+        std::fs::create_dir_all(&session_dir).map_err(|error| {
+            format!("Imported WAV private directory could not be created: {error}")
+        })?;
+        if destination_path.exists() {
+            return Err("Imported WAV destination already exists.".to_string());
+        }
+        let _ = std::fs::remove_file(&temp_destination_path);
+        std::fs::copy(&source_path, &temp_destination_path).map_err(|error| {
+            format!("Imported WAV could not be copied to private storage: {error}")
+        })?;
+        let sha256 = sha256_for_readable_file(&temp_destination_path)
+            .map_err(|error| format!("Imported WAV private copy could not be hashed: {error}"))?;
+        std::fs::rename(&temp_destination_path, &destination_path).map_err(|error| {
+            format!("Imported WAV could not be finalized in private storage: {error}")
+        })?;
+        finalized_destination = true;
+
+        let mut meeting = Meeting::new_manual(&meeting_id, title, imported_at_ms);
+        let session = RecordingSession::start(
+            &recording_id,
+            &meeting_id,
+            RecordingSource::Imported,
+            imported_at_ms,
+            sample_rate_hz,
+        )
+        .with_raw_audio_retention_policy(raw_audio_retention_policy);
+        meeting
+            .start_recording(&session)
+            .map_err(|error| error.to_string())?;
+        let artifact = AudioArtifact::new_private(
+            imported_artifact_id(&recording_id),
+            &recording_id,
+            ArtifactKind::Imported,
+            &relative_path,
+            &sha256,
+        );
+        store
+            .insert_recording_start_with_artifacts(
+                &meeting,
+                &session,
+                std::slice::from_ref(&artifact),
+            )
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = store.complete_recording_session_with_artifacts(
+            &meeting_id,
+            &recording_id,
+            imported_at_ms,
+            RecordingSource::Imported,
+            &[CompletedAudioArtifact {
+                artifact_id: artifact.id,
+                sha256,
+            }],
+        ) {
+            let delete_error = store.delete_meeting(&meeting_id).err();
+            let mut message = error.to_string();
+            if let Some(delete_error) = delete_error {
+                message.push_str(&format!(
+                    ". Imported WAV row cleanup also failed: {delete_error}"
+                ));
+            }
+            return Err(message);
+        }
+
+        Ok::<(), String>(())
+    })();
+
+    if let Err(error) = import_result {
+        cleanup_imported_private_copy(
+            &destination_path,
+            &temp_destination_path,
+            &session_dir,
+            finalized_destination,
+        );
+        return Err(error);
+    }
+
+    Ok(recording_dto_with_retention(
+        &meeting_id,
+        Some(recording_id),
+        CommandRecordingState::Complete,
+        AppPermissionState::Ready,
+        microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy_view(raw_audio_retention_policy),
+        "Imported local WAV into private app storage.",
+    ))
+}
+
+fn validate_import_source_path(source_path: &str) -> Result<PathBuf, String> {
+    let trimmed = source_path.trim();
+    if trimmed.is_empty() {
+        return Err("WAV source path is required.".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err("WAV source file does not exist.".to_string());
+    }
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
+    if !metadata.is_file() {
+        return Err("WAV source path must be a file.".to_string());
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("wav"))
+        .unwrap_or(true)
+    {
+        return Err("WAV source file must have a .wav extension.".to_string());
+    }
+    Ok(path)
+}
+
+fn validate_wav_header(path: &Path) -> Result<u32, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("WAV source file is not readable: {error}"))?
+        .len();
+    let mut riff_header = [0_u8; 12];
+    file.read_exact(&mut riff_header)
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    if &riff_header[0..4] != b"RIFF" || &riff_header[8..12] != b"WAVE" {
+        return Err("WAV source file has an unsupported WAV header.".to_string());
+    }
+
+    let mut sample_rate_hz = None;
+    let mut has_data_chunk = false;
+    loop {
+        let mut chunk_header = [0_u8; 8];
+        match file.read_exact(&mut chunk_header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(_) => return Err("WAV source file has an unsupported WAV header.".to_string()),
+        }
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+        ensure_wav_chunk_payload_available(&mut file, chunk_size, file_len)?;
+        match &chunk_header[0..4] {
+            b"fmt " => {
+                if chunk_size < 16 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                let mut fmt = [0_u8; 16];
+                file.read_exact(&mut fmt)
+                    .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+                let audio_format = u16::from_le_bytes([fmt[0], fmt[1]]);
+                let sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
+                let bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
+                if !matches!(audio_format, 1 | 3) || sample_rate == 0 || bits_per_sample == 0 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                sample_rate_hz = Some(sample_rate);
+                seek_wav_chunk_remainder(&mut file, chunk_size - 16)?;
+            }
+            b"data" => {
+                if chunk_size == 0 {
+                    return Err("WAV source file has an unsupported WAV header.".to_string());
+                }
+                has_data_chunk = true;
+                seek_wav_chunk_remainder(&mut file, chunk_size)?;
+            }
+            _ => seek_wav_chunk_remainder(&mut file, chunk_size)?,
+        }
+        if chunk_size % 2 == 1 {
+            file.seek(SeekFrom::Current(1))
+                .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+        }
+    }
+
+    match (sample_rate_hz, has_data_chunk) {
+        (Some(sample_rate), true) => Ok(sample_rate),
+        _ => Err("WAV source file has an unsupported WAV header.".to_string()),
+    }
+}
+
+fn ensure_wav_chunk_payload_available(
+    file: &mut std::fs::File,
+    chunk_size: u64,
+    file_len: u64,
+) -> Result<(), String> {
+    let payload_start = file
+        .stream_position()
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    let padded_size = chunk_size
+        .checked_add(chunk_size % 2)
+        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
+    let payload_end = payload_start
+        .checked_add(padded_size)
+        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
+    if payload_end > file_len {
+        return Err("WAV source file has an unsupported WAV header.".to_string());
+    }
+    Ok(())
+}
+
+fn seek_wav_chunk_remainder(file: &mut std::fs::File, bytes: u64) -> Result<(), String> {
+    let offset = i64::try_from(bytes)
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    file.seek(SeekFrom::Current(offset))
+        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
+    Ok(())
+}
+
+fn cleanup_imported_private_copy(
+    destination_path: &Path,
+    temp_destination_path: &Path,
+    session_dir: &Path,
+    remove_final_destination: bool,
+) {
+    let _ = std::fs::remove_file(temp_destination_path);
+    if remove_final_destination {
+        let _ = std::fs::remove_file(destination_path);
+    }
+    let _ = std::fs::remove_dir(session_dir);
+    if let Some(audio_dir) = session_dir.parent() {
+        let _ = std::fs::remove_dir(audio_dir);
+    }
+    if let Some(meeting_dir) = session_dir.parent().and_then(Path::parent) {
+        let _ = std::fs::remove_dir(meeting_dir);
+    }
+}
+
 fn start_microphone_recording_for_app_root(
     app_root: &Path,
     command_state: &mut DesktopCommandState,
@@ -1670,6 +2630,10 @@ fn start_microphone_recording_for_app_root(
     }
 
     let store = open_store(app_root).map_err(MicrophoneStartFailure::persistence)?;
+    let raw_audio_retention_policy = store
+        .app_settings()
+        .map_err(|error| MicrophoneStartFailure::persistence(error.to_string()))?
+        .raw_audio_retention_policy;
     let meeting_id = format!("meeting-{started_at_ms}");
     let recording_id = format!("recording-{started_at_ms}");
     let title = title
@@ -1689,7 +2653,8 @@ fn start_microphone_recording_for_app_root(
         required_recording_source_for_streams(&streams),
         started_at_ms,
         sample_rate_hz,
-    );
+    )
+    .with_raw_audio_retention_policy(raw_audio_retention_policy);
     if let Err(error) = meeting.start_recording(&session) {
         return Err(metadata_persistence_failure(
             error.to_string(),
@@ -1730,18 +2695,20 @@ fn start_microphone_recording_for_app_root(
         ));
     }
 
-    let recording = recording_dto(
+    let recording = recording_dto_with_retention(
         &meeting_id,
         Some(recording_id.clone()),
         CommandRecordingState::Recording,
         AppPermissionState::Ready,
         microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy_view(raw_audio_retention_policy),
         "Recording locally to private app storage",
     );
     command_state.active_recording = Some(ActiveDesktopRecording {
         meeting_id,
         recording_id,
         streams,
+        raw_audio_retention_policy: raw_audio_retention_policy_view(raw_audio_retention_policy),
         recorder,
     });
     command_state.last_recording = Some(recording);
@@ -1846,6 +2813,7 @@ fn stop_active_microphone_recording(
 ) -> CommandRecordingDto {
     let meeting_id = active.meeting_id.clone();
     let recording_id = active.recording_id.clone();
+    let raw_audio_retention_policy = active.raw_audio_retention_policy;
     match complete_active_microphone_recording(app_root, active, ended_at_ms) {
         Ok(recording) => recording,
         Err(message) => {
@@ -1862,12 +2830,13 @@ fn stop_active_microphone_recording(
                     Some(ended_at_ms),
                 );
             }
-            recording_dto(
+            recording_dto_with_retention(
                 &meeting_id,
                 Some(recording_id),
                 CommandRecordingState::Interrupted,
                 recording_stop_permission_state(&message),
                 microphone_storage_path(&meeting_id),
+                raw_audio_retention_policy,
                 &format!("Recording could not be finalized: {message}"),
             )
         }
@@ -1882,6 +2851,7 @@ fn cancel_active_microphone_recording(
 ) -> CommandRecordingDto {
     let meeting_id = active.meeting_id.clone();
     let recording_id = active.recording_id.clone();
+    let raw_audio_retention_policy = active.raw_audio_retention_policy;
     let stop_error = active.recorder.stop(ended_at_ms).err();
     let message = match stop_error {
         Some(error) => format!("{reason}; recorder shutdown reported: {error}"),
@@ -1902,12 +2872,13 @@ fn cancel_active_microphone_recording(
         .join("manifest.json");
     let _ = std::fs::remove_file(manifest_path);
 
-    recording_dto(
+    recording_dto_with_retention(
         &meeting_id,
         Some(recording_id),
         CommandRecordingState::Interrupted,
         AppPermissionState::Ready,
         microphone_storage_path(&meeting_id),
+        raw_audio_retention_policy,
         &format!("Recording canceled before completion: {message}"),
     )
 }
@@ -1966,12 +2937,13 @@ fn complete_active_microphone_recording(
         "Finalized local microphone WAV artifact."
     };
 
-    Ok(recording_dto(
+    Ok(recording_dto_with_retention(
         &active.meeting_id,
         Some(active.recording_id),
         CommandRecordingState::Complete,
         AppPermissionState::Ready,
         microphone_storage_path(&active.meeting_id),
+        active.raw_audio_retention_policy,
         recovery_action,
     ))
 }
@@ -2059,20 +3031,224 @@ fn transcribe_meeting_for_app_root<B: WhisperBackend>(
 }
 
 fn begin_transcription_job_for_app_root(
-    _app_root: &Path,
+    app_root: &Path,
     command_state: &Mutex<DesktopCommandState>,
     meeting_id: &str,
     started_at_ms: u64,
 ) -> Result<CommandJobView, String> {
-    let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
-    command_state
-        .begin_transcription_job(meeting_id, started_at_ms)
-        .map_err(|job| {
-            format!(
-                "{} already owns transcription for {}",
-                job.id, job.meeting_id
+    let job = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state
+            .begin_transcription_job(meeting_id, started_at_ms)
+            .map_err(|job| {
+                format!(
+                    "{} already owns transcription for {}",
+                    job.id, job.meeting_id
+                )
+            })?
+    };
+
+    let store = match open_store(app_root) {
+        Ok(store) => store,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error);
+        }
+    };
+    let active_job = match store.active_transcription_job_for_meeting(meeting_id) {
+        Ok(active_job) => active_job,
+        Err(error) => {
+            let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+            command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            return Err(error.to_string());
+        }
+    };
+    if let Some(active_job) = active_job {
+        let recovered_job = match store
+            .recover_processing_job(
+                &active_job.id,
+                started_at_ms,
+                "transcription worker was not running after app restart",
             )
-        })
+            .and_then(|_| store.processing_job(&active_job.id))
+        {
+            Ok(recovered_job) => recovered_job,
+            Err(error) => {
+                let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+                return Err(error.to_string());
+            }
+        };
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.transcription_job = Some(command_job_from_processing_job(recovered_job));
+        return Err(format!(
+            "{} already owns transcription for {}",
+            active_job.id, active_job.meeting_id
+        ));
+    }
+
+    let durable_job = processing_job_from_command_job(&job);
+    if let Err(error) = store.insert_processing_job(&durable_job) {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+        return Err(error.to_string());
+    }
+
+    Ok(job)
+}
+
+fn processing_job_from_command_job(job: &CommandJobView) -> ProcessingJob {
+    let kind = match job.kind {
+        CommandJobKind::Transcription => JobKind::Transcribe,
+        CommandJobKind::Summary => JobKind::Summarize,
+    };
+    let mut processing_job = ProcessingJob::new(&job.id, &job.meeting_id, kind, JobStatus::Running);
+    processing_job.attempts = 1;
+    processing_job.started_at_ms = Some(job.started_at_ms);
+    processing_job.idempotency_key = Some(command_job_idempotency_key(job.kind, &job.meeting_id));
+    processing_job
+}
+
+#[cfg(test)]
+fn transcription_idempotency_key(meeting_id: &str) -> String {
+    command_job_idempotency_key(CommandJobKind::Transcription, meeting_id)
+}
+
+#[cfg(test)]
+fn summary_idempotency_key(meeting_id: &str) -> String {
+    command_job_idempotency_key(CommandJobKind::Summary, meeting_id)
+}
+
+fn command_job_idempotency_key(kind: CommandJobKind, meeting_id: &str) -> String {
+    match kind {
+        CommandJobKind::Transcription => format!("transcribe:{meeting_id}"),
+        CommandJobKind::Summary => format!("summarize:{meeting_id}"),
+    }
+}
+
+fn command_job_from_processing_job(job: ProcessingJob) -> CommandJobView {
+    let kind = match job.kind {
+        JobKind::Transcribe => CommandJobKind::Transcription,
+        JobKind::Summarize => CommandJobKind::Summary,
+        JobKind::Export | JobKind::Index => {
+            panic!("unsupported durable command job kind: {:?}", job.kind)
+        }
+    };
+    CommandJobView {
+        id: job.id,
+        kind,
+        meeting_id: job.meeting_id,
+        state: command_job_state_from_processing_status(job.status, job.cancel_requested),
+        cancel_requested: job.cancel_requested,
+        started_at_ms: job.started_at_ms.unwrap_or_default(),
+        last_error: job.last_error,
+    }
+}
+
+fn command_job_state_from_processing_status(
+    status: JobStatus,
+    cancel_requested: bool,
+) -> CommandJobState {
+    match status {
+        JobStatus::Running if cancel_requested => CommandJobState::CancelRequested,
+        JobStatus::Running => CommandJobState::Running,
+        JobStatus::Succeeded => CommandJobState::Complete,
+        JobStatus::Canceled => CommandJobState::Canceled,
+        JobStatus::Recovery => CommandJobState::Recovery,
+        JobStatus::Retry => CommandJobState::Retry,
+        JobStatus::Queued | JobStatus::Failed => CommandJobState::Failed,
+    }
+}
+
+fn persist_transcription_job_cancel_request(app_root: &Path, job_id: &str) -> Result<(), String> {
+    open_store(app_root)?
+        .request_processing_job_cancel(job_id)
+        .map_err(|error| error.to_string())
+}
+
+fn persist_summary_job_cancel_request(app_root: &Path, job_id: &str) -> Result<(), String> {
+    open_store(app_root)?
+        .request_processing_job_cancel(job_id)
+        .map_err(|error| error.to_string())
+}
+
+fn persist_transcription_job_finish(
+    app_root: &Path,
+    job_id: &str,
+    finish_state: CommandJobFinishState,
+    finished_at_ms: u64,
+    last_error: Option<&str>,
+) -> Result<(), String> {
+    let store = open_store(app_root)?;
+    match finish_state {
+        CommandJobFinishState::Complete => store.complete_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Canceled => store.cancel_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Failed => {
+            store.fail_processing_job(job_id, finished_at_ms, last_error.unwrap_or("failed"))
+        }
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn persist_summary_job_finish(
+    app_root: &Path,
+    job_id: &str,
+    finish_state: CommandJobFinishState,
+    finished_at_ms: u64,
+    last_error: Option<&str>,
+) -> Result<(), String> {
+    let store = open_store(app_root)?;
+    match finish_state {
+        CommandJobFinishState::Complete => store.complete_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Canceled => store.cancel_processing_job(job_id, finished_at_ms),
+        CommandJobFinishState::Failed => {
+            store.fail_processing_job(job_id, finished_at_ms, last_error.unwrap_or("failed"))
+        }
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn analysis_command_last_error(command: &AnalysisCommandView) -> Option<String> {
+    command
+        .failure
+        .as_ref()
+        .map(|failure| failure.message.clone())
+}
+
+fn finish_state_for_summary(
+    command: &Result<Option<AnalysisCommandView>, String>,
+) -> (CommandJobFinishState, Option<String>) {
+    match command {
+        Ok(Some(command)) if command.state == AnalysisCommandState::Failed => (
+            CommandJobFinishState::Failed,
+            analysis_command_last_error(command),
+        ),
+        Ok(Some(_)) => (CommandJobFinishState::Complete, None),
+        Ok(None) => (CommandJobFinishState::Canceled, None),
+        Err(error) => (CommandJobFinishState::Failed, Some(error.clone())),
+    }
+}
+
+fn transcription_command_last_error(transcription: &TranscriptionCommandView) -> Option<String> {
+    transcription
+        .failure
+        .as_ref()
+        .map(|failure| failure.message.clone())
+}
+
+fn finish_state_for_transcription(
+    transcription: &Result<Option<TranscriptionCommandView>, String>,
+) -> (CommandJobFinishState, Option<String>) {
+    match transcription {
+        Ok(Some(transcription)) if transcription.state == TranscriptionCommandState::Failed => (
+            CommandJobFinishState::Failed,
+            transcription_command_last_error(transcription),
+        ),
+        Ok(Some(_)) => (CommandJobFinishState::Complete, None),
+        Ok(None) => (CommandJobFinishState::Canceled, None),
+        Err(error) => (CommandJobFinishState::Failed, Some(error.clone())),
+    }
 }
 
 fn start_transcription_job_for_app_root(
@@ -2092,6 +3268,13 @@ fn start_transcription_job_for_app_root(
         Err(error) => {
             let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
             command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+            let _ = persist_transcription_job_finish(
+                app_root,
+                &job.id,
+                CommandJobFinishState::Failed,
+                started_at_ms,
+                Some(&error),
+            );
             return Err(error);
         }
     };
@@ -2108,7 +3291,69 @@ fn cancel_transcription_job_for_app_root(
         command_state.request_transcription_cancel(job_id)?;
         command_state.snapshot_state()
     };
+    persist_transcription_job_cancel_request(app_root, job_id)?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
+}
+
+fn transcription_readiness_failure_snapshot_for_app_root(
+    app_root: &Path,
+    command_state: &Mutex<DesktopCommandState>,
+    meeting_id: &str,
+    settings: &AppSettings,
+) -> Result<Option<DesktopSnapshot>, String> {
+    let Some(failure) = whisper_transcription_readiness_failure(meeting_id, settings) else {
+        return Ok(None);
+    };
+    let snapshot_state = {
+        let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
+        command_state.last_transcription = Some(failure);
+        command_state.snapshot_state()
+    };
+    desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state).map(Some)
+}
+
+fn whisper_transcription_readiness_failure(
+    meeting_id: &str,
+    settings: &AppSettings,
+) -> Option<TranscriptionCommandView> {
+    let configured_path = resolved_whisper_model_path(settings);
+    let trimmed_path = configured_path.trim();
+    if trimmed_path.is_empty() {
+        return Some(transcription_failed(
+            meeting_id,
+            "missing_model",
+            "No Whisper model path is configured.",
+            "Choose a local Whisper model file, save it, run Test path, then retry transcription.",
+        ));
+    }
+    if !PathBuf::from(trimmed_path).is_file() {
+        return Some(transcription_failed(
+            meeting_id,
+            "missing_model",
+            "Saved Whisper model path does not point to a readable model file.",
+            "Choose a readable local Whisper model file, save it, run Test path, then retry transcription.",
+        ));
+    }
+    if !is_supported_whisper_model_file_path(Path::new(trimmed_path)) {
+        return Some(transcription_failed(
+            meeting_id,
+            "unsupported_model_file",
+            "Saved Whisper model path must use a supported .bin or .gguf file.",
+            "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file, save it, then retry transcription.",
+        ));
+    }
+    if !whisper_path_test_evidence_proves_current_readiness(
+        trimmed_path,
+        &settings.whisper_path_test_evidence,
+    ) {
+        return Some(transcription_failed(
+            meeting_id,
+            "model_path_untested",
+            "Whisper model path needs matching Test path evidence before transcription.",
+            "Run Test path for the saved Whisper model file, then retry transcription. Readability does not prove model compatibility.",
+        ));
+    }
+    None
 }
 
 #[expect(
@@ -2134,27 +3379,30 @@ fn finish_transcription_job_for_app_root<B: WhisperBackend>(
         created_at_ms,
         || transcription_job_cancel_requested(command_state, &job.id),
     );
+    let (finish_state, last_error) = finish_state_for_transcription(&transcription);
     let snapshot_state = {
         let mut command_state = command_state.lock().map_err(|error| error.to_string())?;
         match &transcription {
             Ok(Some(transcription)) => {
-                let finish_state = if transcription.state == TranscriptionCommandState::Failed {
-                    CommandJobFinishState::Failed
-                } else {
-                    CommandJobFinishState::Complete
-                };
                 command_state.finish_transcription_job(&job, finish_state);
                 command_state.last_transcription = Some(transcription.clone());
             }
             Ok(None) => {
-                command_state.finish_transcription_job(&job, CommandJobFinishState::Canceled);
+                command_state.finish_transcription_job(&job, finish_state);
             }
             Err(_) => {
-                command_state.finish_transcription_job(&job, CommandJobFinishState::Failed);
+                command_state.finish_transcription_job(&job, finish_state);
             }
         }
         command_state.snapshot_state()
     };
+    persist_transcription_job_finish(
+        app_root,
+        &job.id,
+        finish_state,
+        created_at_ms,
+        last_error.as_deref(),
+    )?;
     transcription?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
@@ -2221,18 +3469,40 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
             )
         })
         .collect::<Vec<_>>();
+    let model_path_for_evidence = model_path.clone();
     let transcriber = WhisperTranscriber::new(model_path, model_name, backend);
     match transcriber.transcribe_wav_bundle(&requests) {
         Ok(document) => {
             if is_cancelled() {
                 return Ok(None);
             }
+            let compatibility_evidence = whisper_transcription_compatibility_evidence(
+                &store,
+                meeting_id,
+                &model_path_for_evidence,
+                &document,
+                created_at_ms,
+            );
             match persist_transcription_document(&store, meeting_id, document, created_at_ms) {
-                Ok(()) => Ok(Some(TranscriptionCommandView {
-                    meeting_id: meeting_id.to_string(),
-                    state: TranscriptionCommandState::Complete,
-                    failure: None,
-                })),
+                Ok(()) => {
+                    if let Some(evidence) = compatibility_evidence {
+                        if let Err(error) =
+                            store.save_whisper_transcription_compatibility_evidence(&evidence)
+                        {
+                            eprintln!(
+                                "failed to persist Whisper transcription compatibility evidence: {error}"
+                            );
+                        }
+                    }
+                    cleanup_raw_audio_retention_after_transcription(
+                        &store, meeting_id, &artifacts,
+                    )?;
+                    Ok(Some(TranscriptionCommandView {
+                        meeting_id: meeting_id.to_string(),
+                        state: TranscriptionCommandState::Complete,
+                        failure: None,
+                    }))
+                }
                 Err(error) => Ok(Some(transcription_failed(
                     meeting_id,
                     "transcript_persist_failed",
@@ -2249,6 +3519,79 @@ fn transcribe_meeting_command_with_cancellation<B: WhisperBackend>(
             }
         }
     }
+}
+
+fn whisper_transcription_compatibility_evidence(
+    store: &Store,
+    meeting_id: &str,
+    model_path: &Path,
+    document: &TranscriptionDocument,
+    used_at_ms: u64,
+) -> Option<WhisperTranscriptionCompatibilityEvidence> {
+    if document.segments.is_empty() {
+        return None;
+    }
+    let settings = store.app_settings().ok()?;
+    let configured_path = resolved_whisper_model_path(&settings);
+    let model_path = model_path.to_string_lossy().to_string();
+    if model_path.trim() != configured_path.trim() {
+        return None;
+    }
+    let metadata = std::fs::metadata(model_path.trim()).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified_at_ms = file_modified_at_ms(&metadata)?;
+    Some(WhisperTranscriptionCompatibilityEvidence {
+        model_path,
+        used_at_ms,
+        provider: document.provider.clone(),
+        model_name: document.model_name.clone(),
+        meeting_id: meeting_id.to_string(),
+        model_run_id: document.model_run_id.clone(),
+        transcript_version_id: document.transcript_version_id.clone(),
+        segment_count: document.segments.len() as u64,
+        file_size_bytes: metadata.len(),
+        modified_at_ms,
+    })
+}
+
+fn file_modified_at_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    u64::try_from(
+        metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+    .ok()
+}
+
+fn cleanup_raw_audio_retention_after_transcription(
+    store: &Store,
+    meeting_id: &str,
+    artifacts: &[curiosity_store::TranscriptionAudioArtifact],
+) -> Result<(), String> {
+    let artifact_ids = artifacts
+        .iter()
+        .map(|artifact| artifact.artifact_id.as_str())
+        .collect::<Vec<_>>();
+    let report = store
+        .cleanup_raw_audio_artifacts_after_transcription(meeting_id, &artifact_ids)
+        .map_err(|error| format!("Raw audio retention cleanup failed: {error}"))?;
+    if !report.skipped_private_artifacts.is_empty() {
+        let skipped = report
+            .skipped_private_artifacts
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Raw audio retention cleanup failed: skipped unsafe or user-owned artifact path(s): {skipped}"
+        ));
+    }
+    Ok(())
 }
 
 fn persist_transcription_document(
@@ -2369,17 +3712,36 @@ fn transcription_failed(
     }
 }
 
+fn analysis_failed(
+    meeting_id: &str,
+    code: &str,
+    message: &str,
+    setup_guidance: &str,
+) -> AnalysisCommandView {
+    AnalysisCommandView {
+        meeting_id: meeting_id.to_string(),
+        state: AnalysisCommandState::Failed,
+        analysis: None,
+        failure: Some(CommandFailureView {
+            code: code.to_string(),
+            message: message.to_string(),
+            setup_guidance: setup_guidance.to_string(),
+        }),
+    }
+}
+
 fn recording_snapshot(
     app_root: &Path,
     command_state: &DesktopCommandSnapshotState,
 ) -> CommandRecordingDto {
     if let Some(active) = &command_state.active_recording {
-        return recording_dto(
+        return recording_dto_with_retention(
             &active.meeting_id,
             Some(active.recording_id.clone()),
             CommandRecordingState::Recording,
             AppPermissionState::Ready,
             microphone_storage_path(&active.meeting_id),
+            active.raw_audio_retention_policy,
             "Recording locally to private app storage",
         );
     }
@@ -2488,6 +3850,26 @@ fn recording_dto(
     storage_path: String,
     recovery_action: &str,
 ) -> CommandRecordingDto {
+    recording_dto_with_retention(
+        meeting_id,
+        recording_id,
+        state,
+        permission_state,
+        storage_path,
+        RawAudioRetentionPolicy::Retain,
+        recovery_action,
+    )
+}
+
+fn recording_dto_with_retention(
+    meeting_id: &str,
+    recording_id: Option<String>,
+    state: CommandRecordingState,
+    permission_state: AppPermissionState,
+    storage_path: String,
+    raw_audio_retention: RawAudioRetentionPolicy,
+    recovery_action: &str,
+) -> CommandRecordingDto {
     CommandRecordingDto {
         meeting_id: meeting_id.to_string(),
         recording_id,
@@ -2496,7 +3878,7 @@ fn recording_dto(
         storage_location: StorageLocationDto {
             app_private_path: storage_path,
         },
-        raw_audio_retention: RawAudioRetentionPolicy::Retain,
+        raw_audio_retention,
         recoverable: false,
         recovery_action: recovery_action.to_string(),
     }
@@ -2508,6 +3890,10 @@ fn artifact_id(recording_id: &str) -> String {
 
 fn system_audio_artifact_id(recording_id: &str) -> String {
     format!("artifact-{recording_id}-system")
+}
+
+fn imported_artifact_id(recording_id: &str) -> String {
+    format!("artifact-{recording_id}-imported")
 }
 
 fn artifact_id_for_stream(recording_id: &str, stream: StreamKind) -> String {
@@ -2586,6 +3972,20 @@ fn system_audio_artifact_relative_path(meeting_id: &str, recording_id: &str) -> 
     )
 }
 
+fn imported_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
+    format!(
+        "{}/{recording_id}/imported.wav",
+        microphone_storage_path(meeting_id)
+    )
+}
+
+fn imported_temp_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
+    format!(
+        "{}/{recording_id}/imported.wav.tmp",
+        microphone_storage_path(meeting_id)
+    )
+}
+
 fn artifact_relative_path_for_stream(
     meeting_id: &str,
     recording_id: &str,
@@ -2599,15 +3999,386 @@ fn artifact_relative_path_for_stream(
 
 fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
     let configured_path = resolved_whisper_model_path(settings);
-    let kind = if !configured_path.is_empty() && PathBuf::from(&configured_path).is_file() {
+    let path = PathBuf::from(configured_path.trim());
+    let kind = if configured_path.trim().is_empty() || !path.is_file() {
+        "missing"
+    } else if !is_supported_whisper_model_file_path(&path) {
+        "unsupported"
+    } else if whisper_path_test_evidence_proves_current_readiness(
+        &configured_path,
+        &settings.whisper_path_test_evidence,
+    ) {
         "ready"
     } else {
-        "missing"
+        "untested"
     };
     ModelStatus {
         kind: kind.to_string(),
         configured_path,
     }
+}
+
+fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidanceView {
+    FirstRunSetupGuidanceView {
+        whisper: whisper_setup_guidance_from_settings(settings),
+        ollama: ollama_setup_guidance_from_settings(settings),
+    }
+}
+
+fn model_setup_options() -> ModelSetupOptionsView {
+    let candidates = recommended_analysis_model_presets()
+        .iter()
+        .filter(|preset| {
+            preset.provider_kind == AnalysisProviderKind::OllamaLocal
+                && !preset.network_used
+                && !preset.requires_data_disclosure
+        })
+        .map(|preset| OllamaModelSetupCandidateView {
+            id: preset.id.to_string(),
+            display_name: preset.display_name.to_string(),
+            model_tag: preset.model_tag.to_string(),
+            pull_command: format!("ollama pull {}", preset.model_tag),
+            default_candidate: preset.default_candidate,
+            setup_notes: preset.setup_notes.to_string(),
+        })
+        .collect();
+
+    ModelSetupOptionsView {
+        whisper: WhisperModelSetupOptionsView {
+            mode: "ManualFile".to_string(),
+            title: "Local Whisper file".to_string(),
+            detail: "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet."
+                .to_string(),
+            choose_label: "Choose model".to_string(),
+            save_label: "Save Whisper".to_string(),
+            test_label: "Test path".to_string(),
+            downloads_managed: false,
+            accepted_extensions: SUPPORTED_WHISPER_MODEL_EXTENSIONS
+                .iter()
+                .map(|extension| (*extension).to_string())
+                .collect(),
+        },
+        ollama: OllamaModelSetupOptionsView {
+            mode: "ManualOllama".to_string(),
+            title: "Local Ollama models".to_string(),
+            detail: "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama."
+                .to_string(),
+            automatic_pulls: false,
+            candidates,
+        },
+    }
+}
+
+fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
+    let configured_path = resolved_whisper_model_path(settings);
+    let last_path_test = matching_whisper_path_test_evidence(settings, &configured_path);
+    let last_successful_transcription =
+        matching_whisper_transcription_compatibility_evidence(settings, &configured_path);
+    if configured_path.trim().is_empty() {
+        return WhisperSetupGuidanceView {
+            state: "MissingPath".to_string(),
+            configured_path,
+            message: "No Whisper model path is configured.".to_string(),
+            setup_guidance:
+                "Enter a local Whisper model path in Settings, save it, then use Test path."
+                    .to_string(),
+            compatibility_note: "Readability does not prove model compatibility.".to_string(),
+            last_path_test,
+            last_successful_transcription,
+        };
+    }
+
+    let path = PathBuf::from(configured_path.trim());
+    let unreadable = |message: String, setup_guidance: &str| WhisperSetupGuidanceView {
+        state: "UnreadablePath".to_string(),
+        configured_path: configured_path.clone(),
+        message,
+        setup_guidance: setup_guidance.to_string(),
+        compatibility_note: "Readability does not prove model compatibility.".to_string(),
+        last_path_test: last_path_test.clone(),
+        last_successful_transcription: last_successful_transcription.clone(),
+    };
+
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return unreadable(
+                format!("Whisper model path does not exist or cannot be inspected: {error}"),
+                "Check the saved path, choose a readable local Whisper model file, then use Test path.",
+            );
+        }
+    };
+    if !metadata.is_file() {
+        return unreadable(
+            "Whisper model path must point to a file.".to_string(),
+            "Choose a readable local Whisper model file, not a directory, then use Test path.",
+        );
+    }
+    if !is_supported_whisper_model_file_path(&path) {
+        return WhisperSetupGuidanceView {
+            state: "UnsupportedFile".to_string(),
+            configured_path,
+            message: "Whisper model path must use a supported .bin or .gguf file.".to_string(),
+            setup_guidance:
+                "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file."
+                    .to_string(),
+            compatibility_note: "Test path only accepts .bin and .gguf model files.".to_string(),
+            last_path_test,
+            last_successful_transcription,
+        };
+    }
+    if let Err(error) = std::fs::File::open(&path) {
+        return unreadable(
+            format!("Whisper model path is not readable: {error}"),
+            "Check file permissions, choose a readable local Whisper model file, then use Test path.",
+        );
+    }
+
+    let (message, compatibility_note) = if last_successful_transcription.is_some() {
+        (
+            "Whisper model path is readable and has completed transcription before.".to_string(),
+            "Last successful transcription is historical evidence for this local path, not a background compatibility check."
+                .to_string(),
+        )
+    } else {
+        (
+            "Whisper model path is readable; compatibility is not verified.".to_string(),
+            "Readability does not prove model compatibility.".to_string(),
+        )
+    };
+
+    WhisperSetupGuidanceView {
+        state: "ReadablePath".to_string(),
+        configured_path,
+        message,
+        setup_guidance:
+            "Use Test path for file evidence, then transcribe a sample to verify compatibility."
+                .to_string(),
+        compatibility_note,
+        last_path_test,
+        last_successful_transcription,
+    }
+}
+
+fn ollama_setup_guidance_from_settings(settings: &AppSettings) -> OllamaSetupGuidanceView {
+    let base_url = settings.ollama_base_url.trim().to_string();
+    let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+    let last_connection_test = matching_ollama_connection_test_evidence(settings);
+    let validation_error = validate_local_ollama_model(&model)
+        .and_then(|_| local_ollama_endpoint(&base_url, "/api/tags").map(|_| ()))
+        .err();
+
+    let (state, availability, message, setup_guidance) = if let Some(error) = validation_error {
+        if let Some(evidence) = last_connection_test
+            .as_ref()
+            .filter(|evidence| evidence.state == "Unavailable")
+        {
+            ollama_invalid_setup_guidance_from_last_test(error.to_string(), evidence)
+        } else {
+            (
+                "InvalidLocalConfiguration",
+                "UnknownUntilTest",
+                error.to_string(),
+                "Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama. Availability is unknown until Test Ollama runs."
+                    .to_string(),
+            )
+        }
+    } else if let Some(evidence) = last_connection_test.as_ref() {
+        ollama_setup_guidance_from_last_test(&model, evidence)
+    } else {
+        (
+            "ConfiguredNotChecked",
+            "UnknownUntilTest",
+            "Ollama is configured for a local loopback URL and model.".to_string(),
+            "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs."
+                .to_string(),
+        )
+    };
+
+    OllamaSetupGuidanceView {
+        state: state.to_string(),
+        base_url,
+        model,
+        availability: availability.to_string(),
+        message,
+        setup_guidance,
+        last_connection_test,
+    }
+}
+
+fn ollama_invalid_setup_guidance_from_last_test(
+    validation_error: String,
+    evidence: &OllamaConnectionTestEvidence,
+) -> (&'static str, &'static str, String, String) {
+    let failure_detail = evidence
+        .failure_detail
+        .as_deref()
+        .filter(|detail| !detail.trim().is_empty());
+    let setup_guidance = if failure_detail == Some(validation_error.as_str()) {
+        format!(
+            "{validation_error} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    } else if let Some(failure_detail) = failure_detail {
+        format!(
+            "{validation_error} Last explicit Test Ollama reported: {failure_detail} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    } else {
+        format!(
+            "{validation_error} Use a localhost or loopback Ollama URL and a local model tag, save it, then run Test Ollama again. Availability is not checked in the background."
+        )
+    };
+
+    (
+        "InvalidLocalConfiguration",
+        "UnavailableAtLastTest",
+        "Saved Ollama configuration is invalid; last explicit Test Ollama could not confirm local summary availability."
+            .to_string(),
+        setup_guidance,
+    )
+}
+
+fn ollama_setup_guidance_from_last_test(
+    model: &str,
+    evidence: &OllamaConnectionTestEvidence,
+) -> (&'static str, &'static str, String, String) {
+    if evidence.state == "Available" {
+        let selected_model = evidence
+            .selected_local_model_tag
+            .as_deref()
+            .filter(|tag| !tag.trim().is_empty())
+            .unwrap_or(model);
+        return (
+            "ConfiguredNotChecked",
+            "AvailableAtLastTest",
+            format!(
+                "Last explicit Test Ollama reached {selected_model}; summaries were available at that test."
+            ),
+            "Availability is not checked in the background. Run Test Ollama again after changing Ollama, models, or the base URL."
+                .to_string(),
+        );
+    }
+
+    if let Some(pull_command) = evidence
+        .pull_command
+        .as_deref()
+        .filter(|command| !command.trim().is_empty())
+    {
+        return (
+            "ConfiguredNotChecked",
+            "MissingModelAtLastTest",
+            format!(
+                "Last explicit Test Ollama reached Ollama, but {model} was missing. Summaries are unavailable until the selected local model is installed."
+            ),
+            format!(
+                "Run `{pull_command}`, then run Test Ollama again. Availability is not checked in the background."
+            ),
+        );
+    }
+
+    let failure_detail = evidence
+        .failure_detail
+        .as_deref()
+        .filter(|detail| !detail.trim().is_empty())
+        .unwrap_or("The last explicit Test Ollama could not validate local Ollama.");
+    (
+        "ConfiguredNotChecked",
+        "UnavailableAtLastTest",
+        "Last explicit Test Ollama could not confirm local summary availability.".to_string(),
+        format!(
+            "{failure_detail} Start Ollama with `ollama serve`, verify the local base URL, then run Test Ollama again. Availability is not checked in the background."
+        ),
+    )
+}
+
+fn matching_whisper_path_test_evidence(
+    settings: &AppSettings,
+    configured_path: &str,
+) -> Option<WhisperPathTestEvidence> {
+    let configured_path = configured_path.trim();
+    settings
+        .whisper_path_test_evidence
+        .as_ref()
+        .filter(|evidence| evidence.tested_path == configured_path)
+        .filter(|evidence| {
+            evidence.state != "Valid"
+                || whisper_path_test_evidence_matches_current_file(configured_path, evidence)
+        })
+        .cloned()
+}
+
+fn matching_whisper_transcription_compatibility_evidence(
+    settings: &AppSettings,
+    configured_path: &str,
+) -> Option<WhisperTranscriptionCompatibilityEvidence> {
+    let configured_path = configured_path.trim();
+    if !is_supported_whisper_model_file_path(Path::new(configured_path)) {
+        return None;
+    }
+    settings
+        .whisper_transcription_compatibility_evidence
+        .as_ref()
+        .filter(|evidence| evidence.model_path == configured_path)
+        .filter(|evidence| {
+            whisper_transcription_compatibility_evidence_matches_current_file(
+                configured_path,
+                evidence,
+            )
+        })
+        .cloned()
+}
+
+fn whisper_path_test_evidence_proves_current_readiness(
+    configured_path: &str,
+    evidence: &Option<WhisperPathTestEvidence>,
+) -> bool {
+    let configured_path = configured_path.trim();
+    evidence
+        .as_ref()
+        .filter(|evidence| evidence.tested_path == configured_path)
+        .filter(|evidence| evidence.state == "Valid")
+        .map(|evidence| whisper_path_test_evidence_matches_current_file(configured_path, evidence))
+        .unwrap_or(false)
+}
+
+fn whisper_transcription_compatibility_evidence_matches_current_file(
+    configured_path: &str,
+    evidence: &WhisperTranscriptionCompatibilityEvidence,
+) -> bool {
+    std::fs::metadata(configured_path.trim())
+        .map(|metadata| {
+            metadata.is_file()
+                && metadata.len() == evidence.file_size_bytes
+                && file_modified_at_ms(&metadata) == Some(evidence.modified_at_ms)
+        })
+        .unwrap_or(false)
+}
+
+fn whisper_path_test_evidence_matches_current_file(
+    configured_path: &str,
+    evidence: &WhisperPathTestEvidence,
+) -> bool {
+    let path = PathBuf::from(configured_path.trim());
+    if !is_supported_whisper_model_file_path(&path) {
+        return false;
+    }
+    let Some(expected_size) = evidence.file_size_bytes else {
+        return false;
+    };
+    std::fs::metadata(&path)
+        .map(|metadata| metadata.is_file() && metadata.len() == expected_size)
+        .unwrap_or(false)
+}
+
+fn matching_ollama_connection_test_evidence(
+    settings: &AppSettings,
+) -> Option<OllamaConnectionTestEvidence> {
+    let base_url = settings.ollama_base_url.trim();
+    let model = canonical_local_ollama_model_tag(&settings.ollama_model);
+    settings
+        .ollama_connection_test_evidence
+        .as_ref()
+        .filter(|evidence| evidence.base_url == base_url && evidence.requested_model == model)
+        .cloned()
 }
 
 fn resolved_whisper_model_path(settings: &AppSettings) -> String {
@@ -2633,6 +4404,20 @@ fn app_settings_view(settings: AppSettings) -> AppSettingsView {
         ollama_base_url: settings.ollama_base_url,
         ollama_model: settings.ollama_model,
         export_directory: settings.export_directory,
+        raw_audio_retention_policy: raw_audio_retention_policy_view(
+            settings.raw_audio_retention_policy,
+        ),
+    }
+}
+
+fn raw_audio_retention_policy_view(
+    policy: DomainRawAudioRetentionPolicy,
+) -> RawAudioRetentionPolicy {
+    match policy {
+        DomainRawAudioRetentionPolicy::Retain => RawAudioRetentionPolicy::Retain,
+        DomainRawAudioRetentionPolicy::DeleteAfterTranscription => {
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        }
     }
 }
 
@@ -2660,19 +4445,63 @@ fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
             "Choose a readable local Whisper model file, not a directory.",
         );
     }
-    match std::fs::File::open(&path) {
-        Ok(_) => WhisperModelPathTestView {
+    if !is_supported_whisper_model_file_path(&path) {
+        return WhisperModelPathTestView::invalid(
+            "Whisper model path must use a supported .bin or .gguf file.",
+            "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+        );
+    }
+    if metadata.len() == 0 {
+        return WhisperModelPathTestView::invalid(
+            "Whisper model path points to an empty file.",
+            "Choose a non-empty whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+        );
+    }
+    match sha256_for_readable_file(&path) {
+        Ok(sha256) => WhisperModelPathTestView {
             state: "Valid".to_string(),
-            message: "Whisper model path is readable.".to_string(),
+            message: "Whisper model path is readable; compatibility is not verified by this test."
+                .to_string(),
             setup_guidance:
-                "Save this path, then transcribe with the whisper-rs desktop feature enabled."
+                "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility."
                     .to_string(),
+            file_size_bytes: Some(metadata.len()),
+            sha256: Some(sha256),
         },
         Err(error) => WhisperModelPathTestView::invalid(
             format!("Whisper model path is not readable: {error}"),
             "Check file permissions and choose a readable local Whisper model file.",
         ),
     }
+}
+
+const SUPPORTED_WHISPER_MODEL_EXTENSIONS: [&str; 2] = ["bin", "gguf"];
+
+fn is_supported_whisper_model_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            SUPPORTED_WHISPER_MODEL_EXTENSIONS
+                .iter()
+                .any(|supported_extension| extension.eq_ignore_ascii_case(supported_extension))
+        })
+        .unwrap_or(false)
+}
+
+fn sha256_for_readable_file(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Clone)]
@@ -2835,13 +4664,15 @@ where
             "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
         );
     }
+    let selected_model_tag = canonical_local_ollama_model_tag(model_name);
     let url = match local_ollama_endpoint(base_url, "/api/tags") {
         Ok(url) => url,
         Err(error) => {
             return OllamaConnectionTestView::unavailable(
                 error.to_string(),
                 "Use a local Ollama base URL such as http://127.0.0.1:11434.",
-            );
+            )
+            .with_selected_local_model_tag(selected_model_tag);
         }
     };
     let response = match transport.get_json(&url) {
@@ -2850,32 +4681,41 @@ where
             return OllamaConnectionTestView::unavailable(
                 format!("Ollama is unavailable: {error}"),
                 "Start Ollama with `ollama serve`, then retry.",
-            );
+            )
+            .with_selected_local_model_tag(selected_model_tag);
         }
     };
     let installed_models = installed_ollama_model_names(&response);
     let matched_model = installed_models
         .iter()
-        .find(|installed_model| ollama_model_matches_request(installed_model, model_name));
+        .find(|installed_model| ollama_model_matches_request(installed_model, model_name))
+        .cloned();
     if let Some(installed_model) = matched_model {
         OllamaConnectionTestView {
             state: "Available".to_string(),
             message: format!("Ollama is reachable and {installed_model} is installed."),
             setup_guidance: String::new(),
+            selected_local_model_tag: Some(selected_model_tag),
+            installed_local_models: Some(installed_models),
+            pull_command: None,
         }
     } else {
-        let pull_model_name = canonical_local_ollama_model_tag(model_name);
+        let pull_command = format!("ollama pull {selected_model_tag}");
         let installed_hint = if installed_models.is_empty() {
             " No local models were reported by Ollama.".to_string()
         } else {
             format!(" Installed local models: {}.", installed_models.join(", "))
         };
-        OllamaConnectionTestView::unavailable(
-            format!("Ollama is reachable, but {pull_model_name} is not installed."),
+        let mut view = OllamaConnectionTestView::unavailable(
+            format!("Ollama is reachable, but {selected_model_tag} is not installed."),
             format!(
-                "Install the selected model with `ollama pull {pull_model_name}`, then retry.{installed_hint}"
+                "Install the selected model with `{pull_command}`, then retry.{installed_hint}"
             ),
         )
+        .with_selected_local_model_tag(selected_model_tag);
+        view.installed_local_models = Some(installed_models);
+        view.pull_command = Some(pull_command);
+        view
     }
 }
 
@@ -2979,9 +4819,20 @@ fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientErr
 }
 
 fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisClientError> {
-    let mut url = Url::parse(base_url.trim()).map_err(|error| {
+    let base_url = base_url.trim();
+    let mut url = Url::parse(base_url).map_err(|error| {
         AnalysisClientError::Transport(format!("Ollama base URL is invalid: {error}"))
     })?;
+    let local_url_error =
+        "Ollama base URL must be a local loopback http(s) URL without credentials, query, or fragment.";
+    if has_explicit_url_userinfo(base_url)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
+    }
     let is_loopback = match url.host_str() {
         Some("localhost") => true,
         Some(host) => host
@@ -2991,23 +4842,27 @@ fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisC
         None => false,
     };
     if !is_loopback {
-        return Err(AnalysisClientError::Transport(
-            "Ollama base URL must use localhost or a loopback IP address for local analysis."
-                .to_string(),
-        ));
+        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
     }
     match url.scheme() {
         "http" | "https" => {}
-        _ => {
-            return Err(AnalysisClientError::Transport(
-                "Ollama base URL must use http or https.".to_string(),
-            ))
-        }
+        _ => return Err(AnalysisClientError::Transport(local_url_error.to_string())),
     }
     url.set_path(path);
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
+}
+
+fn has_explicit_url_userinfo(url: &str) -> bool {
+    let Some(authority_start) = url.find("://").map(|index| index + 3) else {
+        return false;
+    };
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|index| authority_start + index)
+        .unwrap_or(url.len());
+    url[authority_start..authority_end].contains('@')
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -3017,6 +4872,7 @@ fn current_timestamp_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(test, debug_assertions))]
 fn build_audio_smoke_status() -> AudioSmokeStatus {
     let microphone =
         smoke_result_status(ManualSmokeCheck::macos_placeholder().run_without_hardware());
@@ -3041,6 +4897,7 @@ fn build_audio_smoke_status() -> AudioSmokeStatus {
     }
 }
 
+#[cfg(any(test, debug_assertions))]
 fn system_audio_smoke_recording_for_app_root(
     app_root: &Path,
     duration: std::time::Duration,
@@ -3052,6 +4909,7 @@ fn system_audio_smoke_recording_for_app_root(
     )
 }
 
+#[cfg(any(test, debug_assertions))]
 fn smoke_result_status(result: ManualSmokeResult) -> CaptureProbeStatus {
     let state = match result.status {
         ManualSmokeStatus::NotRun => "NotRun",
@@ -3098,6 +4956,9 @@ struct DesktopSnapshot {
     selected_meeting_id: Option<String>,
     recording: CommandRecordingDto,
     model: ModelStatus,
+    setup_guidance: FirstRunSetupGuidanceView,
+    model_setup_options: ModelSetupOptionsView,
+    calendar_context: CalendarContextView,
     settings: AppSettingsView,
     capture: CaptureStatus,
     transcription: Option<TranscriptionCommandView>,
@@ -3123,11 +4984,84 @@ struct ModelStatus {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FirstRunSetupGuidanceView {
+    whisper: WhisperSetupGuidanceView,
+    ollama: OllamaSetupGuidanceView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperSetupGuidanceView {
+    state: String,
+    configured_path: String,
+    message: String,
+    setup_guidance: String,
+    compatibility_note: String,
+    last_path_test: Option<WhisperPathTestEvidence>,
+    last_successful_transcription: Option<WhisperTranscriptionCompatibilityEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaSetupGuidanceView {
+    state: String,
+    base_url: String,
+    model: String,
+    availability: String,
+    message: String,
+    setup_guidance: String,
+    last_connection_test: Option<OllamaConnectionTestEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelSetupOptionsView {
+    whisper: WhisperModelSetupOptionsView,
+    ollama: OllamaModelSetupOptionsView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperModelSetupOptionsView {
+    mode: String,
+    title: String,
+    detail: String,
+    choose_label: String,
+    save_label: String,
+    test_label: String,
+    downloads_managed: bool,
+    accepted_extensions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaModelSetupOptionsView {
+    mode: String,
+    title: String,
+    detail: String,
+    automatic_pulls: bool,
+    candidates: Vec<OllamaModelSetupCandidateView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaModelSetupCandidateView {
+    id: String,
+    display_name: String,
+    model_tag: String,
+    pull_command: String,
+    default_candidate: bool,
+    setup_notes: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AppSettingsView {
     whisper_model_path: String,
     ollama_base_url: String,
     ollama_model: String,
     export_directory: Option<String>,
+    raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -3136,6 +5070,10 @@ struct WhisperModelPathTestView {
     state: String,
     message: String,
     setup_guidance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 impl WhisperModelPathTestView {
@@ -3144,6 +5082,8 @@ impl WhisperModelPathTestView {
             state: "Invalid".to_string(),
             message: message.into(),
             setup_guidance: setup_guidance.into(),
+            file_size_bytes: None,
+            sha256: None,
         }
     }
 }
@@ -3154,6 +5094,9 @@ struct OllamaConnectionTestView {
     state: String,
     message: String,
     setup_guidance: String,
+    selected_local_model_tag: Option<String>,
+    installed_local_models: Option<Vec<String>>,
+    pull_command: Option<String>,
 }
 
 impl OllamaConnectionTestView {
@@ -3162,7 +5105,15 @@ impl OllamaConnectionTestView {
             state: "Unavailable".to_string(),
             message: message.into(),
             setup_guidance: setup_guidance.into(),
+            selected_local_model_tag: None,
+            installed_local_models: None,
+            pull_command: None,
         }
+    }
+
+    fn with_selected_local_model_tag(mut self, model_tag: String) -> Self {
+        self.selected_local_model_tag = Some(model_tag);
+        self
     }
 }
 
@@ -3262,7 +5213,38 @@ struct MeetingView {
     privacy: MeetingPrivacy,
     export_state: ExportCommandState,
     delete_state: DeleteCommandState,
+    calendar_attachment: Option<MeetingCalendarAttachmentView>,
     analysis: Option<AnalysisDisclosureState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingCalendarAttachmentView {
+    source: String,
+    event_id: String,
+    event_title: String,
+    calendar_title: String,
+    starts_at_ms: u64,
+    ends_at_ms: u64,
+    privacy: String,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+}
+
+impl MeetingCalendarAttachmentView {
+    fn from_store(context: curiosity_store::MeetingCalendarContext) -> Self {
+        Self {
+            source: context.source,
+            event_id: context.event_id,
+            event_title: context.event_title,
+            calendar_title: context.calendar_title,
+            starts_at_ms: context.starts_at_ms,
+            ends_at_ms: context.ends_at_ms,
+            privacy: context.privacy,
+            privacy_confirmed: context.privacy_confirmed,
+            attached_at_ms: context.attached_at_ms,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -3279,6 +5261,7 @@ struct TranscriptSegmentView {
     start_ms: u64,
     end_ms: u64,
     text: String,
+    original_text: Option<String>,
     source_channel: String,
     model_run_id: String,
     transcript_version_id: String,
@@ -3300,6 +5283,8 @@ struct ExportCommandState {
     #[serde(skip_serializing_if = "Option::is_none")]
     meeting_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<ExportFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
@@ -3310,6 +5295,7 @@ impl Default for ExportCommandState {
         Self {
             state: "idle".to_string(),
             meeting_id: None,
+            format: None,
             path: None,
             message: None,
         }
@@ -3321,15 +5307,17 @@ impl ExportCommandState {
         Self {
             state: "exported".to_string(),
             meeting_id: Some(exported.meeting_id),
+            format: Some(exported.format),
             path: Some(exported.path),
             message: None,
         }
     }
 
-    fn failed(meeting_id: &str, message: String) -> Self {
+    fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {
         Self {
             state: "failed".to_string(),
             meeting_id: Some(meeting_id.to_string()),
+            format: Some(format),
             path: None,
             message: Some(message),
         }
@@ -3389,6 +5377,24 @@ impl DeleteCommandState {
     }
 }
 
+fn delete_command_state_from_pending_finalization(
+    report: PendingDeleteFinalizationReport,
+) -> DeleteCommandState {
+    DeleteCommandState::deleted(DeletedMeetingDto {
+        meeting_id: report.meeting_id,
+        deleted_private_artifacts: paths_to_strings(report.deleted_private_artifacts),
+        skipped_private_artifacts: paths_to_strings(report.skipped_private_artifacts),
+        remaining_exports: paths_to_strings(report.exported_files_outside_app_control),
+    })
+}
+
+fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AnalysisDisclosureState {
@@ -3402,6 +5408,7 @@ struct AnalysisDisclosureState {
     prompt_template_version: String,
 }
 
+#[cfg(any(test, debug_assertions))]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioSmokeStatus {
@@ -3409,6 +5416,7 @@ struct AudioSmokeStatus {
     system_audio: CaptureProbeStatus,
 }
 
+#[cfg(any(test, debug_assertions))]
 #[derive(Clone, Debug, Serialize)]
 struct CaptureProbeStatus {
     state: String,
@@ -3424,11 +5432,14 @@ mod tests {
     };
     use curiosity_domain::{
         AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,
-        RecordingSession, RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
+        RawAudioRetentionPolicy as DomainRawAudioRetentionPolicy, RecordingSession,
+        RecordingSource, SourceChannel, TranscriptSegment, TranscriptVersion,
     };
     use curiosity_transcription::{FakeWhisperBackend, WhisperBackendSegment};
     use sha2::{Digest, Sha256};
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3466,12 +5477,157 @@ mod tests {
         assert_eq!(json["model"]["kind"], "missing");
         assert_eq!(json["capture"]["microphone"], "Ready");
         assert_eq!(json["capture"]["systemAudio"], "SystemAudioUnavailable");
+        assert_eq!(json["calendarContext"]["source"], "AppleCalendar");
+        assert_eq!(json["calendarContext"]["permissionState"], "NotRequested");
+        assert_eq!(
+            json["calendarContext"]["availabilityState"],
+            "PermissionRequired"
+        );
+        assert_eq!(json["calendarContext"]["autoStartEnabled"], false);
+        assert_eq!(
+            json["calendarContext"]["upcomingEvents"]
+                .as_array()
+                .expect("upcoming calendar events")
+                .len(),
+            0
+        );
         assert_eq!(json["settings"]["ollamaBaseUrl"], "http://127.0.0.1:11434");
         assert_eq!(json["settings"]["ollamaModel"], "qwen3.6:27b");
         assert!(json["transcription"].is_null());
 
         restore_whisper_env(previous);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn attach_calendar_event_context_persists_backend_resolved_event() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let mut unknown_privacy = calendar_event_draft("event-1", "Design Review", 2_000, 3_000);
+        unknown_privacy.event.privacy = "Unknown".to_string();
+        let events = finalize_calendar_context_events(vec![unknown_privacy]);
+        let snapshot_state = DesktopCommandSnapshotState::default();
+        let snapshot = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "event-1",
+            true,
+            4_000,
+            events,
+        )
+        .expect("attach calendar event");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["eventId"],
+            "event-1"
+        );
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["eventTitle"],
+            "Design Review"
+        );
+        assert_eq!(
+            json["meetings"][0]["calendarAttachment"]["privacyConfirmed"],
+            true
+        );
+    }
+
+    #[test]
+    fn attach_calendar_event_context_rejects_unavailable_or_unsafe_events() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let snapshot_state = DesktopCommandSnapshotState::default();
+        let missing_error = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "missing-event",
+            true,
+            4_000,
+            Vec::new(),
+        )
+        .expect_err("missing backend event should reject");
+        assert!(missing_error.contains("no longer available"));
+
+        let mut recurring = calendar_event_draft("event-1", "Recurring", 2_000, 3_000);
+        recurring.event.is_recurring = true;
+        let unsafe_events = finalize_calendar_context_events(vec![recurring]);
+        let unsafe_error = attach_calendar_event_context_for_app_root_with_events(
+            &root,
+            &snapshot_state,
+            "meeting-1",
+            "event-1",
+            true,
+            4_000,
+            unsafe_events,
+        )
+        .expect_err("unsafe backend event should reject");
+        assert!(unsafe_error.contains("not marked attachable"));
+    }
+
+    #[test]
+    fn desktop_command_view_contract_fixture_matches_rust_serialization() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _whisper_env = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../contracts/desktop-command-view-contract.fixture.json");
+        let fixture_text = fs::read_to_string(&fixture_path).unwrap_or_else(|error| {
+            panic!(
+                "read desktop command/view contract fixture at {}: {error}",
+                fixture_path.display()
+            )
+        });
+        let expected: serde_json::Value =
+            serde_json::from_str(&fixture_text).expect("parse desktop command/view fixture");
+        let actual = desktop_command_view_contract_fixture();
+        if std::env::var_os("UPDATE_DESKTOP_COMMAND_VIEW_CONTRACT").is_some() {
+            let fixture_json = serde_json::to_string_pretty(&actual)
+                .expect("serialize desktop command/view fixture");
+            fs::write(&fixture_path, format!("{fixture_json}\n")).unwrap_or_else(|error| {
+                panic!(
+                    "write desktop command/view contract fixture at {}: {error}",
+                    fixture_path.display()
+                )
+            });
+            return;
+        }
+
+        assert_eq!(
+            actual, expected,
+            "Rust desktop command/view serialization no longer matches {}. Update the fixture intentionally when DTOs change.",
+            fixture_path.display()
+        );
+    }
+
+    #[test]
+    fn whisper_env_restore_guard_restores_value_during_unwind() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _restore_original = EnvVarRestoreGuard::capture("CURIOSITY_WHISPER_MODEL");
+        std::env::set_var("CURIOSITY_WHISPER_MODEL", "before-guard");
+
+        let result = std::panic::catch_unwind(|| {
+            let _restore = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+            assert!(std::env::var("CURIOSITY_WHISPER_MODEL").is_err());
+            panic!("force env restore during unwind");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::env::var("CURIOSITY_WHISPER_MODEL").as_deref(),
+            Ok("before-guard")
+        );
     }
 
     #[test]
@@ -3484,6 +5640,10 @@ mod tests {
         assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11434");
         assert_eq!(settings.ollama_model, "qwen3.6:27b");
         assert_eq!(settings.export_directory, None);
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::Retain
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3496,15 +5656,385 @@ mod tests {
             .expect("save whisper");
         save_analysis_settings_for_app_root(
             &root,
+            "http://localhost:11434".to_string(),
+            "Qwen 3.6 27B".to_string(),
+        )
+        .expect("save qwen display name");
+        let qwen_settings = get_settings_for_app_root(&root).expect("qwen settings");
+        assert_eq!(qwen_settings.ollama_base_url, "http://localhost:11434");
+        assert_eq!(qwen_settings.ollama_model, "qwen3.6:27b");
+
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "ollama-qwen3-6-27b".to_string(),
+        )
+        .expect("save qwen preset id");
+        let qwen_id_settings = get_settings_for_app_root(&root).expect("qwen id settings");
+        assert_eq!(qwen_id_settings.ollama_model, "qwen3.6:27b");
+
+        save_analysis_settings_for_app_root(
+            &root,
             "http://127.0.0.1:11435".to_string(),
-            "gemma4:31b".to_string(),
+            "Gemma 4 31B".to_string(),
         )
         .expect("save analysis");
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save retention");
         let settings = get_settings_for_app_root(&root).expect("settings");
 
         assert_eq!(settings.whisper_model_path, "/models/ggml-base.en.bin");
         assert_eq!(settings.ollama_base_url, "http://127.0.0.1:11435");
         assert_eq!(settings.ollama_model, "gemma4:31b");
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_setup_tests_persist_matching_snapshot_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _whisper_env = EnvVarRestoreGuard::unset("CURIOSITY_WHISPER_MODEL");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.bin");
+        let model_bytes = b"not a real model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        let model_path = model_path.to_string_lossy().to_string();
+        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
+
+        let whisper_result =
+            test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+                .expect("test whisper path");
+        save_whisper_model_path_for_app_root(&root, model_path.clone()).expect("save whisper");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"gemma4:31b"},{"name":"qwen3.6:27b"}]}"#,
+            ),
+            1_700_000_002_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(whisper_result.state, "Valid");
+        assert_eq!(ollama_result.state, "Available");
+        assert_eq!(json["model"]["kind"], "ready");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "AvailableAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["message"],
+            "Last explicit Test Ollama reached qwen3.6:27b; summaries were available at that test."
+        );
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Availability is not checked in the background"));
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["testedPath"],
+            model_path
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["testedAtMs"],
+            1_700_000_001_000_u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["fileSizeBytes"],
+            model_bytes.len() as u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["sha256"],
+            expected_sha256
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"]["failureDetail"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["baseUrl"],
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["requestedModel"],
+            "qwen3.6:27b"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["testedAtMs"],
+            1_700_000_002_000_u64
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["selectedLocalModelTag"],
+            "qwen3.6:27b"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["installedLocalModels"],
+            serde_json::json!(["gemma4:31b", "qwen3.6:27b"])
+        );
+        assert!(!json["setupGuidance"]["whisper"]
+            .to_string()
+            .to_lowercase()
+            .contains("is compatible"));
+
+        save_whisper_model_path_for_app_root(&root, "/models/stale.bin".to_string())
+            .expect("save mismatched whisper");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11435".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save mismatched analysis");
+        let stale_snapshot = desktop_snapshot_for_app_root(&root).expect("stale snapshot");
+        let stale_json = serde_json::to_value(&stale_snapshot).expect("serialize stale snapshot");
+        assert_eq!(
+            stale_json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(stale_json["model"]["kind"], "missing");
+        assert_eq!(
+            stale_json["setupGuidance"]["ollama"]["lastConnectionTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            stale_json["setupGuidance"]["ollama"]["availability"],
+            "UnknownUntilTest"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_marks_ollama_model_missing_from_matching_last_test_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "Qwen3.6:27B".to_string(),
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
+            1_700_000_003_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(ollama_result.state, "Unavailable");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "MissingModelAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["pullCommand"],
+            "ollama pull qwen3.6:27b"
+        );
+        assert!(json["setupGuidance"]["ollama"]["message"]
+            .as_str()
+            .expect("ollama message")
+            .contains("qwen3.6:27b was missing"));
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Run `ollama pull qwen3.6:27b`, then run Test Ollama again"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_marks_summaries_unavailable_from_matching_failed_ollama_test_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let ollama_result = test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_http_error(500, r#"{"error":"tags unavailable"}"#),
+            1_700_000_004_000,
+        )
+        .expect("test ollama");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save analysis");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(ollama_result.state, "Unavailable");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "UnavailableAtLastTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"]["pullCommand"],
+            serde_json::Value::Null
+        );
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("HTTP 500"));
+        assert!(json["setupGuidance"]["ollama"]["setupGuidance"]
+            .as_str()
+            .expect("ollama setup guidance")
+            .contains("Availability is not checked in the background"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_analysis_settings_rejects_non_local_privacy_paths_without_mutating_settings() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://localhost:11435".to_string(),
+            "gemma4:31b".to_string(),
+        )
+        .expect("save baseline");
+
+        for hosted_model in [
+            "deepseek-v3.2:cloud",
+            "ollama-cloud-deepseek-v3-2",
+            "hosted-deepseek-v3-2-speciale",
+            "DeepSeek V3.2 Speciale",
+        ] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                "http://127.0.0.1:11434".to_string(),
+                hosted_model.to_string(),
+            )
+            .expect_err("hosted model should not be saved as local analysis settings");
+            assert!(
+                error.contains("hosted or cloud model tags"),
+                "unexpected error for {hosted_model}: {error}"
+            );
+        }
+
+        for remote_base_url in ["https://ollama.example.com", "http://192.168.1.20:11434"] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                remote_base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .expect_err("non-loopback Ollama URL should not be saved");
+            assert!(
+                error.contains("loopback"),
+                "unexpected error for {remote_base_url}: {error}"
+            );
+        }
+
+        let settings = get_settings_for_app_root(&root).expect("settings after rejected saves");
+        assert_eq!(settings.ollama_base_url, "http://localhost:11435");
+        assert_eq!(settings.ollama_model, "gemma4:31b");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["state"],
+            "ConfiguredNotChecked"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_analysis_settings_rejects_secret_bearing_local_ollama_urls_without_mutating_settings() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://localhost:11435".to_string(),
+            "gemma4:31b".to_string(),
+        )
+        .expect("save baseline");
+
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://user@localhost:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .expect_err("secret-bearing local Ollama URL should not be saved");
+            assert!(
+                error.contains("local loopback")
+                    && error.contains("without credentials, query, or fragment"),
+                "unexpected error for {base_url}: {error}"
+            );
+        }
+
+        let settings = get_settings_for_app_root(&root).expect("settings after rejected saves");
+        assert_eq!(settings.ollama_base_url, "http://localhost:11435");
+        assert_eq!(settings.ollama_model, "gemma4:31b");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_setup_test_fails_loudly_when_evidence_cannot_be_persisted() {
+        let root = unique_test_root();
+        fs::write(&root, b"not a directory").expect("blocking file");
+
+        let error = test_whisper_model_path_for_app_root(&root, "".to_string(), 1_700_000_001_000)
+            .expect_err("persistence failure should fail the explicit test command");
+
+        assert!(!error.trim().is_empty());
+        let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn save_raw_audio_retention_setting_persists_supported_policy_and_rejects_never_save() {
+        let root = unique_test_root();
+
+        let settings = save_raw_audio_retention_policy_for_app_root(
+            &root,
+            "DeleteAfterTranscription".to_string(),
+        )
+        .expect("save delete-after retention");
+        let error = save_raw_audio_retention_policy_for_app_root(&root, "NeverSave".to_string())
+            .expect_err("NeverSave remains unsupported");
+        let reopened = get_settings_for_app_root(&root).expect("settings after rejected save");
+
+        assert_eq!(
+            settings.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert!(
+            error.contains("unsupported raw audio retention policy"),
+            "unsupported policy should fail loudly: {error}"
+        );
+        assert_eq!(
+            reopened.raw_audio_retention_policy,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3581,6 +6111,32 @@ mod tests {
     }
 
     #[test]
+    fn local_ollama_client_rejects_secret_bearing_base_url_before_transport_call() {
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
+            let client = LocalOllamaTextClient::new(base_url, transport.clone());
+
+            let error = client
+                .complete("qwen3.6:27b", "summarize locally")
+                .expect_err("secret-bearing local Ollama URL should be rejected");
+
+            let error = error.to_string();
+            assert!(
+                error.contains("local loopback")
+                    && error.contains("without credentials, query, or fragment"),
+                "unexpected error for {base_url}: {error}"
+            );
+            assert_eq!(transport.generate_call_count(), 0);
+        }
+    }
+
+    #[test]
     fn local_ollama_client_rejects_cloud_model_tags_before_transport_call() {
         let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
         let client = LocalOllamaTextClient::new("http://localhost:11434", transport.clone());
@@ -3604,6 +6160,15 @@ mod tests {
 
         assert_eq!(result.state, "Available");
         assert!(result.message.contains("qwen3.6:27b"));
+        assert_eq!(
+            result.selected_local_model_tag.as_deref(),
+            Some("qwen3.6:27b")
+        );
+        assert_eq!(
+            result.installed_local_models.as_deref(),
+            Some(["gemma4:31b".to_string(), "qwen3.6:27b".to_string()].as_slice())
+        );
+        assert_eq!(result.pull_command, None);
     }
 
     #[test]
@@ -3682,6 +6247,93 @@ mod tests {
         assert!(result
             .setup_guidance
             .contains("Installed local models: gemma4:31b"));
+        assert_eq!(
+            result.selected_local_model_tag.as_deref(),
+            Some("qwen3.6:27b")
+        );
+        assert_eq!(
+            result.installed_local_models.as_deref(),
+            Some(["gemma4:31b".to_string()].as_slice())
+        );
+        assert_eq!(
+            result.pull_command.as_deref(),
+            Some("ollama pull qwen3.6:27b")
+        );
+    }
+
+    #[test]
+    fn test_ollama_connection_rejects_cloud_model_without_local_setup_metadata() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        let result = test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "deepseek-v3.2:cloud",
+            &transport,
+        );
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result.message.contains("hosted or cloud model tags"));
+        assert_eq!(result.selected_local_model_tag, None);
+        assert_eq!(result.installed_local_models, None);
+        assert_eq!(result.pull_command, None);
+    }
+
+    #[test]
+    fn test_ollama_connection_rejects_secret_bearing_base_url_before_transport_call() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let result = test_ollama_connection_value(base_url, "qwen3.6:27b", &transport);
+
+            assert_eq!(result.state, "Unavailable");
+            assert!(
+                result.message.contains("local loopback")
+                    && result
+                        .message
+                        .contains("without credentials, query, or fragment"),
+                "unexpected message for {base_url}: {}",
+                result.message
+            );
+            assert_eq!(result.installed_local_models, None);
+            assert_eq!(result.pull_command, None);
+        }
+
+        assert_eq!(transport.tags_call_count(), 0);
+    }
+
+    #[test]
+    fn test_ollama_connection_does_not_persist_secret_bearing_base_url_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        let result = test_ollama_connection_for_app_root(
+            &root,
+            "http://user:pass@127.0.0.1:11434?token=secret".to_string(),
+            "qwen3.6:27b".to_string(),
+            &transport,
+            1_700_000_001_000,
+        )
+        .expect("invalid test should return feedback without persisting evidence");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result
+            .message
+            .contains("without credentials, query, or fragment"));
+        assert_eq!(transport.tags_call_count(), 0);
+        assert_eq!(settings.ollama_connection_test_evidence, None);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3844,13 +6496,94 @@ mod tests {
         let root = unique_test_root();
         fs::create_dir_all(&root).expect("test root");
         let model_path = root.join("fixture-whisper.bin");
-        fs::write(&model_path, b"not a real model").expect("model file");
+        let model_bytes = b"not a real model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
+
+        let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
+        let json = serde_json::to_value(&result).expect("serialize result");
+
+        assert_eq!(result.state, "Valid");
+        assert!(result.message.contains("readable"));
+        assert_eq!(
+            json["fileSizeBytes"].as_u64(),
+            Some(model_bytes.len() as u64)
+        );
+        assert_eq!(json["sha256"].as_str(), Some(expected_sha256.as_str()));
+        let readiness_copy = format!("{} {}", result.message, result.setup_guidance).to_lowercase();
+        assert!(readiness_copy.contains("compatibility"));
+        assert!(!readiness_copy.contains("is compatible"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_whisper_model_path_accepts_readable_gguf_file_without_loading_model() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.gguf");
+        fs::write(&model_path, b"not a real gguf model").expect("model file");
 
         let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
 
         assert_eq!(result.state, "Valid");
-        assert!(result.message.contains("readable"));
+        assert!(result.file_size_bytes.is_some());
+        assert!(result.sha256.is_some());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_whisper_model_path_rejects_empty_supported_files_without_readiness_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        for file_name in ["empty-whisper.bin", "empty-whisper.gguf"] {
+            let model_path = root.join(file_name);
+            fs::write(&model_path, b"").expect("empty model file");
+            let model_path = model_path.to_string_lossy().to_string();
+
+            save_whisper_model_path_for_app_root(&root, model_path.clone())
+                .expect("save whisper path");
+            let result =
+                test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+                    .expect("persist invalid empty whisper path evidence");
+            let result_json = serde_json::to_value(&result).expect("serialize result");
+
+            assert_eq!(result.state, "Invalid");
+            assert!(result.message.contains("empty file"));
+            let result_object = result_json.as_object().expect("result object");
+            assert!(!result_object.contains_key("fileSizeBytes"));
+            assert!(!result_object.contains_key("sha256"));
+
+            let settings = app_settings_for_app_root(&root).expect("settings");
+            let evidence = settings
+                .whisper_path_test_evidence
+                .as_ref()
+                .expect("persisted invalid evidence");
+            assert_eq!(evidence.tested_path, model_path);
+            assert_eq!(evidence.state, "Invalid");
+            assert_eq!(evidence.file_size_bytes, None);
+            assert_eq!(evidence.sha256, None);
+            assert!(evidence
+                .failure_detail
+                .as_deref()
+                .expect("failure detail")
+                .contains("empty file"));
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+            let snapshot_json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            assert_ne!(snapshot_json["model"]["kind"], "ready");
+            assert_eq!(
+                snapshot_json["setupGuidance"]["whisper"]["lastPathTest"]["state"],
+                "Invalid"
+            );
+        }
+
+        restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3860,6 +6593,99 @@ mod tests {
 
         assert_eq!(result.state, "Invalid");
         assert!(result.setup_guidance.contains("local Whisper model path"));
+    }
+
+    #[test]
+    fn test_whisper_model_path_rejects_unsupported_readable_files_without_readiness_evidence() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        for file_name in ["notes.txt", "extensionless"] {
+            let unsupported_path = root.join(file_name);
+            fs::write(
+                &unsupported_path,
+                b"readable but not a supported model file",
+            )
+            .expect("unsupported readable file");
+            let unsupported_path = unsupported_path.to_string_lossy().to_string();
+
+            save_whisper_model_path_for_app_root(&root, unsupported_path.clone())
+                .expect("save whisper path");
+            let result = test_whisper_model_path_for_app_root(
+                &root,
+                unsupported_path.clone(),
+                1_700_000_001_000,
+            )
+            .expect("test unsupported whisper path");
+
+            assert_eq!(result.state, "Invalid");
+            assert!(result.message.contains(".bin") && result.message.contains(".gguf"));
+            assert!(
+                result.setup_guidance.contains(".bin") && result.setup_guidance.contains(".gguf")
+            );
+
+            let settings = app_settings_for_app_root(&root).expect("settings");
+            assert_ne!(
+                settings
+                    .whisper_path_test_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.state.as_str()),
+                Some("Valid")
+            );
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            assert_ne!(json["model"]["kind"], "ready");
+            assert_ne!(
+                json["setupGuidance"]["whisper"]["lastPathTest"]["state"],
+                "Valid"
+            );
+        }
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_ignores_legacy_valid_evidence_for_unsupported_whisper_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let unsupported_path = root.join("notes.txt");
+        let unsupported_bytes = b"legacy readable file evidence";
+        fs::write(&unsupported_path, unsupported_bytes).expect("unsupported readable file");
+        let unsupported_path = unsupported_path.to_string_lossy().to_string();
+        save_whisper_model_path_for_app_root(&root, unsupported_path.clone())
+            .expect("save whisper path");
+        open_store(&root)
+            .expect("store")
+            .save_whisper_path_test_evidence(&WhisperPathTestEvidence {
+                tested_path: unsupported_path,
+                tested_at_ms: 1_700_000_001_000,
+                state: "Valid".to_string(),
+                file_size_bytes: Some(unsupported_bytes.len() as u64),
+                sha256: Some(format!("{:x}", Sha256::digest(unsupported_bytes))),
+                failure_detail: None,
+            })
+            .expect("persist legacy valid evidence");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_ne!(json["model"]["kind"], "ready");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3875,7 +6701,7 @@ mod tests {
         let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
-        assert_eq!(json["model"]["kind"], "ready");
+        assert_eq!(json["model"]["kind"], "untested");
         assert_eq!(
             json["model"]["configuredPath"],
             model_path.to_string_lossy().as_ref()
@@ -3906,6 +6732,230 @@ mod tests {
             json["model"]["configuredPath"],
             saved_model_path.to_string_lossy().as_ref()
         );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_guides_missing_whisper_and_unchecked_ollama_without_probe_metadata() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "MissingPath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "No Whisper model path is configured."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["availability"],
+            "UnknownUntilTest"
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["baseUrl"],
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(json["setupGuidance"]["ollama"]["model"], "qwen3.6:27b");
+        let ollama = json["setupGuidance"]["ollama"]
+            .as_object()
+            .expect("ollama guidance");
+        assert!(!ollama.contains_key("installedLocalModels"));
+        assert!(!ollama.contains_key("pullCommand"));
+        assert!(!json["setupGuidance"]["ollama"]
+            .to_string()
+            .contains("ollama pull"));
+        assert!(!json["setupGuidance"]["ollama"]
+            .to_string()
+            .to_lowercase()
+            .contains("download"));
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        let ollama = json["setupGuidance"]["ollama"]
+            .as_object()
+            .expect("ollama guidance");
+        assert!(whisper.contains_key("lastPathTest"));
+        assert!(ollama.contains_key("lastConnectionTest"));
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["ollama"]["lastConnectionTest"],
+            serde_json::Value::Null
+        );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_exposes_manual_model_setup_options_without_downloads_or_hosted_models() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let setup_options = &json["modelSetupOptions"];
+
+        assert_eq!(
+            setup_options["whisper"]["mode"],
+            serde_json::json!("ManualFile")
+        );
+        assert_eq!(setup_options["whisper"]["downloadsManaged"], false);
+        assert_eq!(
+            setup_options["whisper"]["acceptedExtensions"],
+            serde_json::json!(["bin", "gguf"])
+        );
+        assert!(setup_options["whisper"]["detail"]
+            .as_str()
+            .expect("whisper setup detail")
+            .contains("does not download Whisper models yet"));
+
+        assert_eq!(
+            setup_options["ollama"]["mode"],
+            serde_json::json!("ManualOllama")
+        );
+        assert_eq!(setup_options["ollama"]["automaticPulls"], false);
+        let candidates = setup_options["ollama"]["candidates"]
+            .as_array()
+            .expect("ollama candidates");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["modelTag"] == "qwen3.6:27b"
+                && candidate["pullCommand"] == "ollama pull qwen3.6:27b"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["modelTag"] == "gemma4:31b"
+                && candidate["pullCommand"] == "ollama pull gemma4:31b"));
+        assert!(!setup_options["ollama"]
+            .to_string()
+            .contains("deepseek-v3.2:cloud"));
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_guides_readable_whisper_as_unverified_without_hashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "ReadablePath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["configuredPath"],
+            model_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable; compatibility is not verified."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        assert!(!whisper.contains_key("sha256"));
+        assert!(!whisper.contains_key("fileSizeBytes"));
+        assert!(whisper.contains_key("lastPathTest"));
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_marks_changed_whisper_file_as_untested_without_rehashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"first version").expect("model file");
+        let model_path = model_path.to_string_lossy().to_string();
+
+        test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
+            .expect("test whisper path");
+        save_whisper_model_path_for_app_root(&root, model_path.clone()).expect("save whisper");
+        fs::write(&model_path, b"changed file with a different size").expect("changed model file");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert!(!json["setupGuidance"]["whisper"]
+            .to_string()
+            .contains("first version"));
+
+        restore_whisper_env(previous);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_snapshot_guides_existing_directory_whisper_path_as_unreadable_without_hashing() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let previous = std::env::var("CURIOSITY_WHISPER_MODEL").ok();
+        std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        let model_directory = root.join("not-a-model-file");
+        fs::create_dir_all(&model_directory).expect("model directory");
+        save_whisper_model_path_for_app_root(&root, model_directory.to_string_lossy().to_string())
+            .expect("save whisper");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["setupGuidance"]["whisper"]["state"], "UnreadablePath");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path must point to a file."
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["compatibilityNote"],
+            "Readability does not prove model compatibility."
+        );
+        let whisper = json["setupGuidance"]["whisper"]
+            .as_object()
+            .expect("whisper guidance");
+        assert!(!whisper.contains_key("sha256"));
+        assert!(!whisper.contains_key("fileSizeBytes"));
+        let readiness_copy = json["setupGuidance"]["whisper"].to_string().to_lowercase();
+        assert!(!readiness_copy.contains("is compatible"));
+        assert!(!readiness_copy.contains("compatibility is verified"));
 
         restore_whisper_env(previous);
         let _ = fs::remove_dir_all(root);
@@ -4180,6 +7230,42 @@ mod tests {
     }
 
     #[test]
+    fn correct_transcript_segment_command_refreshes_snapshot_text_and_original_text() {
+        let root = unique_test_root();
+        let command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Correction Planning",
+            "helo launch plan",
+        );
+
+        let snapshot = correct_transcript_segment_for_app_root(
+            &root,
+            &command_state.snapshot_state(),
+            "meeting-1",
+            "meeting-1-segment-1",
+            "hello launch plan",
+            2_500,
+        )
+        .expect("correct transcript segment");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["selectedMeetingId"], "meeting-1");
+        assert_eq!(json["meetings"][0]["transcriptText"], "hello launch plan");
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["text"],
+            "hello launch plan"
+        );
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["originalText"],
+            "helo launch plan"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn export_meeting_json_command_writes_json_and_exposes_export_state() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -4197,9 +7283,70 @@ mod tests {
         let export = Store::read_meeting_export_json(exported_path).expect("read export");
 
         assert_eq!(json["exportCommand"]["state"], "exported");
+        assert_eq!(json["exportCommand"]["format"], "json");
         assert_eq!(json["meetings"][0]["exportState"]["path"], exported_path);
+        assert_eq!(json["meetings"][0]["exportState"]["format"], "json");
         assert_eq!(export.meeting_id, "meeting-1");
         assert_eq!(export.segments[0].text, "export this transcript");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn export_meeting_command_writes_markdown_and_srt_and_exposes_format_state() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Export Planning",
+            "export this transcript",
+        );
+
+        let markdown_snapshot = export_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            "meeting-1",
+            ExportFormat::Markdown,
+        )
+        .expect("export markdown");
+        let markdown_json =
+            serde_json::to_value(&markdown_snapshot).expect("serialize markdown snapshot");
+        let markdown_path = markdown_json["exportCommand"]["path"]
+            .as_str()
+            .expect("markdown export path");
+
+        assert_eq!(markdown_json["exportCommand"]["state"], "exported");
+        assert_eq!(markdown_json["exportCommand"]["format"], "markdown");
+        assert_eq!(
+            markdown_json["meetings"][0]["exportState"]["path"],
+            markdown_path
+        );
+        assert_eq!(
+            markdown_json["meetings"][0]["exportState"]["format"],
+            "markdown"
+        );
+        assert_eq!(
+            fs::read_to_string(markdown_path).expect("read markdown"),
+            "- [00:00] export this transcript"
+        );
+
+        let srt_snapshot =
+            export_meeting_for_app_root(&root, &mut command_state, "meeting-1", ExportFormat::Srt)
+                .expect("export srt");
+        let srt_json = serde_json::to_value(&srt_snapshot).expect("serialize srt snapshot");
+        let srt_path = srt_json["exportCommand"]["path"]
+            .as_str()
+            .expect("srt export path");
+
+        assert_eq!(srt_json["exportCommand"]["state"], "exported");
+        assert_eq!(srt_json["exportCommand"]["format"], "srt");
+        assert_eq!(srt_json["meetings"][0]["exportState"]["path"], srt_path);
+        assert_eq!(srt_json["meetings"][0]["exportState"]["format"], "srt");
+        assert_eq!(
+            fs::read_to_string(srt_path).expect("read srt"),
+            "1\n00:00:00,000 --> 00:00:01,200\nexport this transcript\n"
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -4239,6 +7386,165 @@ mod tests {
     }
 
     #[test]
+    fn desktop_snapshot_finalizes_pending_delete_intent_and_reports_cleanup() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Pending Delete",
+            "delete this transcript",
+        );
+        let export_snapshot =
+            export_meeting_json_for_app_root(&root, &mut command_state, "meeting-1")
+                .expect("export meeting");
+        let export_json = serde_json::to_value(&export_snapshot).expect("serialize export");
+        let exported_path = export_json["exportCommand"]["path"]
+            .as_str()
+            .expect("export path")
+            .to_string();
+        let private_path = root.join("meetings/meeting-1/audio/imported.wav");
+        let manifest_path = root.join("meetings/meeting-1/manifest.json");
+        let store = open_store(&root).expect("open store");
+        store
+            .write_recoverable_artifact_manifest(
+                "meeting-1",
+                "meeting-1-session-1",
+                "meeting-1-artifact-1",
+                "meetings/meeting-1/audio/imported.wav",
+                "sha256:meeting-1",
+            )
+            .expect("write recoverable manifest");
+        store
+            .tombstone_audio_artifact("meeting-1-artifact-1")
+            .expect("tombstone artifact");
+        store
+            .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+            .expect("mark meeting deleted");
+
+        let snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &command_state.snapshot_state())
+                .expect("snapshot finalizes pending delete");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(!private_path.exists());
+        assert!(!manifest_path.exists());
+        assert!(PathBuf::from(&exported_path).exists());
+        assert_eq!(json["deleteCommand"]["state"], "deleted");
+        assert_eq!(json["deleteCommand"]["meetingId"], "meeting-1");
+        assert_eq!(json["deleteCommand"]["remainingExports"][0], exported_path);
+        let deleted_artifact = json["deleteCommand"]["deletedPrivateArtifacts"][0]
+            .as_str()
+            .expect("deleted private artifact");
+        assert!(deleted_artifact.ends_with("meetings/meeting-1/audio/imported.wav"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .all(|meeting| meeting["id"] != "meeting-1"));
+        let reopened = open_store(&root).expect("reopen store");
+        assert_eq!(reopened.count("audio_artifacts").expect("artifacts"), 0);
+        assert_eq!(
+            reopened
+                .count("recording_sessions")
+                .expect("recording sessions"),
+            0
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_finalizes_pending_raw_audio_retention_cleanup() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        store
+            .tombstone_audio_artifact(&artifact.artifact_id)
+            .expect("simulate committed tombstone before file removal");
+
+        desktop_snapshot_for_app_root(&root).expect("snapshot finalizes pending raw cleanup");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(!artifact_path.exists());
+        assert!(reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("artifact row remains tombstoned"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_with_active_recording_does_not_recover_deleted_meeting_summary_job() {
+        let root = unique_test_root();
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(
+                "meeting-1",
+                "Deleted worker",
+                1_700_000_000_000,
+            ))
+            .expect("insert meeting");
+        store
+            .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+            .expect("mark meeting deleted");
+        let mut job = ProcessingJob::new(
+            "job-deleted-meeting",
+            "meeting-1",
+            JobKind::Summarize,
+            JobStatus::Running,
+        );
+        job.started_at_ms = Some(1_700_000_001_000);
+        store.insert_processing_job(&job).expect("insert job");
+        let snapshot_state = DesktopCommandSnapshotState {
+            active_recording: Some(ActiveDesktopRecordingSnapshot {
+                meeting_id: "active-meeting".to_string(),
+                recording_id: "active-recording".to_string(),
+                captures_system_audio: false,
+                raw_audio_retention_policy: RawAudioRetentionPolicy::Retain,
+            }),
+            ..Default::default()
+        };
+
+        let snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &snapshot_state).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(
+            reopened
+                .processing_job("job-deleted-meeting")
+                .expect("deleted meeting job")
+                .status,
+            JobStatus::Running
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn delete_meeting_rejects_active_recording_meeting_without_corrupting_state() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -4272,6 +7578,51 @@ mod tests {
             .expect("meetings")
             .iter()
             .any(|meeting| meeting["id"] == meeting_id));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn delete_meeting_rejects_active_processing_job_without_corrupting_state() {
+        let root = unique_test_root();
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Do not delete active",
+            "active processing transcript",
+        );
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let job =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin active summary job");
+        let mut command_state = command_state.into_inner().expect("command state");
+
+        let snapshot = delete_meeting_for_app_root(&root, &mut command_state, "meeting-1")
+            .expect("active processing delete returns visible failure snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["deleteCommand"]["state"], "failed");
+        assert_eq!(json["deleteCommand"]["meetingId"], "meeting-1");
+        assert!(json["deleteCommand"]["message"]
+            .as_str()
+            .expect("delete message")
+            .contains("active processing job"));
+        assert!(json["meetings"]
+            .as_array()
+            .expect("meetings")
+            .iter()
+            .any(|meeting| meeting["id"] == "meeting-1"));
+        assert!(!reopened
+            .meeting_deleted("meeting-1")
+            .expect("meeting should not be marked deleted"));
+        assert_eq!(
+            reopened
+                .processing_job(&job.id)
+                .expect("active summary job")
+                .status,
+            JobStatus::Running
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -4492,6 +7843,422 @@ mod tests {
         assert!(root.join(&artifact.path).is_file());
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn start_microphone_recording_captures_current_raw_audio_retention_setting() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMicrophoneRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save retention");
+
+        let snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Recorded locally".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start recording");
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(
+            snapshot.recording.raw_audio_retention,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(
+            store
+                .recording_session_raw_audio_retention_policy(&recording_id)
+                .expect("session policy"),
+            DomainRawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_persists_private_completed_imported_wav_artifact() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("customer-call.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Customer call".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let copied_path = root.join(&artifact.path);
+        let source_sha256 = sha256_for_readable_file(&source_path).expect("source hash");
+
+        assert_eq!(snapshot.recording.state, CommandRecordingState::Complete);
+        assert_eq!(
+            snapshot.recording.storage_location.app_private_path,
+            format!("meetings/{meeting_id}/audio")
+        );
+        assert_eq!(
+            store.meeting_status(&meeting_id).expect("meeting status"),
+            "Complete"
+        );
+        assert_eq!(
+            store
+                .recording_session_status(&recording_id)
+                .expect("session status"),
+            "Complete"
+        );
+        assert_eq!(artifact.kind, "Imported");
+        assert_eq!(
+            artifact.path,
+            format!("meetings/{meeting_id}/audio/{recording_id}/imported.wav")
+        );
+        assert_ne!(artifact.path, source_path.display().to_string());
+        assert!(copied_path.is_file());
+        assert!(!root
+            .join(imported_temp_artifact_relative_path(
+                &meeting_id,
+                &recording_id
+            ))
+            .exists());
+        assert_eq!(
+            fs::read(&copied_path).expect("copied wav"),
+            fs::read(&source_path).expect("source wav")
+        );
+        assert_eq!(artifact.sha256, source_sha256);
+        assert!(!artifact.sha256.starts_with("sha256:pending"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_captures_retention_setting_without_retroactive_changes() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("customer-call.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Customer call".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        save_raw_audio_retention_policy_for_app_root(&root, "Retain".to_string())
+            .expect("save later retain setting");
+        let reopened_snapshot =
+            desktop_snapshot_for_app_root_with_state(&root, &command_state.snapshot_state())
+                .expect("snapshot after settings change");
+        let json = serde_json::to_value(&reopened_snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+
+        assert_eq!(
+            snapshot.recording.raw_audio_retention,
+            RawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(
+            store
+                .recording_session_raw_audio_retention_policy(&recording_id)
+                .expect("session policy"),
+            DomainRawAudioRetentionPolicy::DeleteAfterTranscription
+        );
+        assert_eq!(json["meetings"][0]["id"], meeting_id);
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert_eq!(json["settings"]["rawAudioRetentionPolicy"], "Retain");
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_invalid_sources_without_persisting_rows_or_private_files() {
+        let invalid_root = unique_test_root();
+        let missing_path = invalid_root.join("missing.wav");
+        let directory_path = invalid_root.join("directory.wav");
+        let non_wav_path = invalid_root.join("not-a-wav.txt");
+        let malformed_wav_path = invalid_root.join("malformed.wav");
+        fs::create_dir_all(&directory_path).expect("directory source");
+        fs::write(&non_wav_path, b"not wav").expect("non wav source");
+        fs::write(&malformed_wav_path, b"RIFFbut not enough").expect("malformed wav source");
+
+        for (source_path, expected_message) in [
+            ("".to_string(), "WAV source path is required"),
+            (
+                missing_path.display().to_string(),
+                "WAV source file does not exist",
+            ),
+            (
+                directory_path.display().to_string(),
+                "WAV source path must be a file",
+            ),
+            (
+                non_wav_path.display().to_string(),
+                "WAV source file must have a .wav extension",
+            ),
+            (
+                malformed_wav_path.display().to_string(),
+                "WAV source file has an unsupported WAV header",
+            ),
+        ] {
+            let root = unique_test_root();
+            let mut command_state = DesktopCommandState::default();
+
+            let error = import_audio_file_for_app_root(
+                &root,
+                &mut command_state,
+                source_path,
+                Some("Rejected".to_string()),
+                1_700_000_000_000,
+            )
+            .expect_err("invalid import should fail");
+            let store = open_store(&root).expect("open store");
+
+            assert!(
+                error.contains(expected_message),
+                "{error:?} did not contain {expected_message:?}"
+            );
+            assert_eq!(store.count("meetings").expect("meetings"), 0);
+            assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+            assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+            assert!(!root.join("meetings").exists());
+            assert!(command_state.last_recording.is_none());
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+
+        fs::remove_dir_all(invalid_root).expect("invalid source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_truncated_data_chunk_without_persisting_rows_or_private_files() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("truncated-data.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_truncated_data_chunk_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Truncated".to_string()),
+            1_700_000_000_000,
+        )
+        .expect_err("truncated data chunk should fail before persistence");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("WAV source file has an unsupported WAV header"),
+            "{error:?}"
+        );
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(!root.join("meetings").exists());
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_file_rejects_missing_odd_chunk_pad_without_persisting_rows_or_private_files() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("missing-data-pad.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_missing_odd_data_chunk_pad_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Missing pad".to_string()),
+            1_700_000_000_000,
+        )
+        .expect_err("missing odd chunk pad should fail before persistence");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("WAV source file has an unsupported WAV header"),
+            "{error:?}"
+        );
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(!root.join("meetings").exists());
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn import_audio_guard_rejects_concurrent_import_and_recording_start() {
+        let mut command_state = DesktopCommandState::default();
+
+        command_state.begin_import_audio().expect("begin import");
+        let second_import = command_state
+            .begin_import_audio()
+            .expect_err("second import must be rejected");
+        let start_while_importing = command_state
+            .begin_recording_start()
+            .expect_err("recording start must be rejected while importing");
+        command_state.finish_import_audio();
+        command_state
+            .begin_recording_start()
+            .expect("recording start after import finishes");
+        let import_while_starting = command_state
+            .begin_import_audio()
+            .expect_err("import must be rejected during recording startup");
+
+        assert_eq!(
+            second_import,
+            "Finish the active audio import before importing another WAV."
+        );
+        assert_eq!(
+            start_while_importing,
+            "Finish the active audio import before starting a recording."
+        );
+        assert_eq!(
+            import_while_starting,
+            "Finish recording startup before importing audio."
+        );
+    }
+
+    #[test]
+    fn import_audio_file_preserves_preexisting_final_artifact_on_destination_collision() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("collision-source.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let imported_at_ms = 1_700_000_000_000;
+        let meeting_id = format!("meeting-{imported_at_ms}");
+        let recording_id = format!("recording-{imported_at_ms}");
+        let final_path = root.join(imported_artifact_relative_path(&meeting_id, &recording_id));
+        let temp_path = root.join(imported_temp_artifact_relative_path(
+            &meeting_id,
+            &recording_id,
+        ));
+        fs::create_dir_all(final_path.parent().expect("final parent")).expect("final dir");
+        let original_final_bytes = b"preexisting imported wav";
+        fs::write(&final_path, original_final_bytes).expect("preexisting final artifact");
+        let mut command_state = DesktopCommandState::default();
+
+        let error = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Collision".to_string()),
+            imported_at_ms,
+        )
+        .expect_err("destination collision should reject import");
+        let store = open_store(&root).expect("open store");
+
+        assert!(
+            error.contains("Imported WAV destination already exists"),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(&final_path).expect("final artifact after failed import"),
+            original_final_bytes
+        );
+        assert!(!temp_path.exists());
+        assert_eq!(store.count("meetings").expect("meetings"), 0);
+        assert_eq!(store.count("recording_sessions").expect("sessions"), 0);
+        assert_eq!(store.count("audio_artifacts").expect("artifacts"), 0);
+        assert!(command_state.last_recording.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn delete_meeting_removes_imported_private_copy_but_preserves_original_source_file() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        let source_path = source_root.join("original.wav");
+        fs::create_dir_all(&source_root).expect("source dir");
+        write_minimal_wav(&source_path);
+        let original_bytes = fs::read(&source_path).expect("original bytes");
+        let mut command_state = DesktopCommandState::default();
+        let snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Delete imported".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = snapshot.recording.meeting_id.clone();
+        let recording_id = snapshot
+            .recording
+            .recording_id
+            .clone()
+            .expect("recording id");
+        let copied_path = root.join(format!(
+            "meetings/{meeting_id}/audio/{recording_id}/imported.wav"
+        ));
+
+        let delete_snapshot = delete_meeting_for_app_root(&root, &mut command_state, &meeting_id)
+            .expect("delete imported meeting");
+        let json = serde_json::to_value(&delete_snapshot).expect("serialize snapshot");
+
+        assert!(!copied_path.exists());
+        assert_eq!(
+            fs::read(&source_path).expect("source after delete"),
+            original_bytes
+        );
+        assert_eq!(json["deleteCommand"]["state"], "deleted");
+        let deleted_artifact = json["deleteCommand"]["deletedPrivateArtifacts"][0]
+            .as_str()
+            .expect("deleted private artifact");
+        assert!(deleted_artifact.ends_with(&format!(
+            "meetings/{meeting_id}/audio/{recording_id}/imported.wav"
+        )));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
     }
 
     #[test]
@@ -4874,6 +8641,181 @@ mod tests {
     }
 
     #[test]
+    fn transcribe_saved_model_without_path_test_returns_visible_failure_without_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "Untested Whisper", 1_000))
+            .expect("insert meeting");
+        drop(store);
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        let snapshot = transcription_readiness_failure_snapshot_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            &settings,
+        )
+        .expect("readiness snapshot")
+        .expect("untested model should fail readiness");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store after failure");
+
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert_eq!(
+            json["transcription"]["failure"]["code"],
+            "model_path_untested"
+        );
+        assert!(json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Run Test path"));
+        assert_eq!(json["transcriptionJob"], serde_json::Value::Null);
+        assert!(store
+            .active_transcription_job_for_meeting("meeting-1")
+            .expect("active job")
+            .is_none());
+        assert!(store
+            .transcript_segments("meeting-1")
+            .expect("transcript segments")
+            .is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn unsupported_saved_whisper_paths_are_typed_blocked_and_ignore_legacy_valid_evidence() {
+        for file_name in ["notes.txt", "extensionless"] {
+            let root = unique_test_root();
+            fs::create_dir_all(&root).expect("test root");
+            let model_path = root.join(file_name);
+            let model_bytes = b"not a whisper model";
+            fs::write(&model_path, model_bytes).expect("unsupported model path");
+            let model_path_string = model_path.to_string_lossy().to_string();
+            save_whisper_model_path_for_app_root(&root, model_path_string.clone())
+                .expect("save unsupported whisper path");
+            let modified_at_ms =
+                file_modified_at_ms(&fs::metadata(&model_path).expect("model metadata"))
+                    .expect("model modified time");
+            let store = open_store(&root).expect("open store");
+            store
+                .save_whisper_path_test_evidence(&WhisperPathTestEvidence {
+                    tested_path: model_path_string.clone(),
+                    tested_at_ms: 1_700_000_001_000,
+                    state: "Valid".to_string(),
+                    file_size_bytes: Some(model_bytes.len() as u64),
+                    sha256: Some(format!("{:x}", Sha256::digest(model_bytes))),
+                    failure_detail: None,
+                })
+                .expect("legacy path-test evidence");
+            store
+                .save_whisper_transcription_compatibility_evidence(
+                    &WhisperTranscriptionCompatibilityEvidence {
+                        model_path: model_path_string.clone(),
+                        used_at_ms: 1_700_000_002_000,
+                        provider: "local-whisper".to_string(),
+                        model_name: file_name.to_string(),
+                        meeting_id: "meeting-1".to_string(),
+                        model_run_id: "run-1".to_string(),
+                        transcript_version_id: "version-1".to_string(),
+                        segment_count: 1,
+                        file_size_bytes: model_bytes.len() as u64,
+                        modified_at_ms,
+                    },
+                )
+                .expect("legacy transcription compatibility evidence");
+            drop(store);
+
+            let snapshot = desktop_snapshot_for_app_root(&root).expect("desktop snapshot");
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+            assert_eq!(json["model"]["kind"], "unsupported");
+            assert_eq!(json["setupGuidance"]["whisper"]["state"], "UnsupportedFile");
+            assert_eq!(
+                json["setupGuidance"]["whisper"]["lastPathTest"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"],
+                serde_json::Value::Null
+            );
+            assert!(json["setupGuidance"]["whisper"]["setupGuidance"]
+                .as_str()
+                .expect("setup guidance")
+                .contains(".bin or .gguf"));
+            assert!(!json["setupGuidance"]["whisper"]["setupGuidance"]
+                .as_str()
+                .expect("setup guidance")
+                .contains("Test path"));
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn transcribe_unsupported_saved_whisper_path_returns_typed_failure_without_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual(
+                "meeting-1",
+                "Unsupported Whisper",
+                1_000,
+            ))
+            .expect("insert meeting");
+        drop(store);
+        let model_path = root.join("notes.txt");
+        fs::write(&model_path, b"not a whisper model").expect("unsupported model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save unsupported whisper");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        let snapshot = transcription_readiness_failure_snapshot_for_app_root(
+            &root,
+            &command_state,
+            "meeting-1",
+            &settings,
+        )
+        .expect("readiness snapshot")
+        .expect("unsupported model should fail readiness");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store after failure");
+
+        assert_eq!(json["model"]["kind"], "unsupported");
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert_eq!(
+            json["transcription"]["failure"]["code"],
+            "unsupported_model_file"
+        );
+        assert!(json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains(".bin or .gguf"));
+        assert!(!json["transcription"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Test path"));
+        assert_eq!(json["transcriptionJob"], serde_json::Value::Null);
+        assert!(store
+            .active_transcription_job_for_meeting("meeting-1")
+            .expect("active job")
+            .is_none());
+        assert!(store
+            .transcript_segments("meeting-1")
+            .expect("transcript segments")
+            .is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn transcribe_with_fake_backend_persists_segments_and_returns_ready_snapshot() {
         let root = unique_test_root();
         let mut command_state = DesktopCommandState::default();
@@ -4907,6 +8849,437 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn successful_transcription_records_historical_whisper_compatibility_without_readiness() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let meeting_id = seed_stopped_fake_recording(&root, &mut command_state);
+        let model_path = root.join("fixture-whisper.bin");
+        let model_bytes = b"fixture model";
+        fs::write(&model_path, model_bytes).expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper path");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path.clone(),
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "compatibility transcript",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect("transcribe meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let evidence = &json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"];
+        let model_modified_at_ms =
+            file_modified_at_ms(&fs::metadata(&model_path).expect("model metadata"))
+                .expect("model modified time");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(json["model"]["kind"], "untested");
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastPathTest"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable and has completed transcription before."
+        );
+        assert!(json["setupGuidance"]["whisper"]["compatibilityNote"]
+            .as_str()
+            .expect("compatibility note")
+            .contains("historical evidence"));
+        assert_eq!(evidence["modelPath"], model_path.to_string_lossy().as_ref());
+        assert_eq!(evidence["usedAtMs"], 1_700_000_001_000_u64);
+        assert_eq!(evidence["provider"], "local-whisper");
+        assert_eq!(evidence["modelName"], "fixture-whisper.bin");
+        assert_eq!(evidence["meetingId"], meeting_id);
+        assert_eq!(evidence["segmentCount"], 1_u64);
+        assert_eq!(evidence["fileSizeBytes"], model_bytes.len() as u64);
+        assert_eq!(evidence["modifiedAtMs"], model_modified_at_ms);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn desktop_snapshot_hides_stale_successful_transcription_evidence_for_changed_model_metadata() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        save_whisper_model_path_for_app_root(&root, model_path.to_string_lossy().to_string())
+            .expect("save whisper path");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_whisper_transcription_compatibility_evidence(
+                &WhisperTranscriptionCompatibilityEvidence {
+                    model_path: model_path.to_string_lossy().to_string(),
+                    used_at_ms: 1_700_000_001_000,
+                    provider: "local-whisper".to_string(),
+                    model_name: "fixture-whisper.bin".to_string(),
+                    meeting_id: "meeting-1".to_string(),
+                    model_run_id: "run-1".to_string(),
+                    transcript_version_id: "version-1".to_string(),
+                    segment_count: 1,
+                    file_size_bytes: b"fixture model".len() as u64,
+                    modified_at_ms: 0,
+                },
+            )
+            .expect("save stale evidence");
+
+        let snapshot = desktop_snapshot_for_app_root(&root).expect("snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["lastSuccessfulTranscription"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["setupGuidance"]["whisper"]["message"],
+            "Whisper model path is readable; compatibility is not verified."
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcribe_delete_after_recording_removes_raw_audio_after_persisting_transcript() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "delete after transcript",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect("transcribe imported meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(
+            json["meetings"][0]["transcriptText"],
+            "delete after transcript"
+        );
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert!(!artifact_path.exists());
+        assert!(reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("artifact tombstoned"));
+        assert!(reopened
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query retained artifacts")
+            .is_none());
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript remains")
+                .len(),
+            1
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn transcribe_delete_after_mixed_recording_removes_all_raw_audio_after_persisting_transcript() {
+        let root = unique_test_root();
+        let mut command_state = DesktopCommandState::default();
+        let factory = FakeMixedRecorderFactory;
+        let started_at_ms = 1_700_000_000_000;
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let start_snapshot = start_microphone_recording_for_app_root(
+            &root,
+            &mut command_state,
+            Some("Delete after full call".to_string()),
+            started_at_ms,
+            &factory,
+        )
+        .expect("start mixed recording");
+        let meeting_id = start_snapshot.recording.meeting_id.clone();
+        stop_microphone_recording_for_app_root(&root, &mut command_state, started_at_ms + 500)
+            .expect("stop mixed recording");
+        let artifacts = {
+            let store = open_store(&root).expect("open store");
+            store
+                .completed_wav_artifacts_for_transcription(&meeting_id)
+                .expect("query mixed artifacts")
+        };
+        let artifact_paths = artifacts
+            .iter()
+            .map(|artifact| {
+                (
+                    artifact.artifact_id.clone(),
+                    artifact.kind.clone(),
+                    root.join(&artifact.path),
+                )
+            })
+            .collect::<Vec<_>>();
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            PathAwareWhisperBackend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe mixed delete-after meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+        let transcript_segments = reopened
+            .transcript_segments(&meeting_id)
+            .expect("transcript remains");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(
+            json["meetings"][0]["privacy"]["rawAudioRetention"],
+            "DeleteAfterTranscription"
+        );
+        assert_eq!(
+            artifact_paths
+                .iter()
+                .map(|(_, kind, _)| kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RawMic", "RawSystem"]
+        );
+        for (artifact_id, _kind, path) in &artifact_paths {
+            assert!(
+                !path.exists(),
+                "delete-after cleanup should remove selected raw artifact file: {}",
+                path.display()
+            );
+            assert!(reopened
+                .artifact_tombstoned(artifact_id)
+                .expect("artifact tombstoned"));
+        }
+        assert!(reopened
+            .completed_wav_artifacts_for_transcription(&meeting_id)
+            .expect("query retained artifacts")
+            .is_empty());
+        assert_eq!(transcript_segments.len(), 2);
+        assert_eq!(
+            transcript_segments
+                .iter()
+                .map(|segment| segment.source_channel)
+                .collect::<Vec<_>>(),
+            vec![SourceChannel::Microphone, SourceChannel::System]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_after_cleanup_failure_after_transcript_persistence_returns_error() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+        let artifact_parent = artifact_path.parent().expect("artifact parent");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o555))
+            .expect("make artifact parent read-only");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let error = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "persisted before cleanup failure",
+            )]),
+            1_700_000_001_000,
+        )
+        .expect_err("cleanup failure should not be marked as command success");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o755))
+            .expect("restore artifact parent permissions");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert!(
+            error.contains("Raw audio retention cleanup failed"),
+            "cleanup failure should be surfaced clearly: {error}"
+        );
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed cleanup leaves artifact row retained"));
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript persisted before cleanup")
+                .len(),
+            1
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn failed_delete_after_transcription_keeps_raw_audio_retained() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query imported artifact")
+            .expect("completed imported artifact");
+        let artifact_path = root.join(&artifact.path);
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            root.join("missing-model.bin"),
+            "missing-model.bin",
+            FakeWhisperBackend::default(),
+            1_700_000_001_000,
+        )
+        .expect("transcription failure is represented in snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcription"]["state"], "Failed");
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed transcription keeps artifact"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
+    }
+
+    #[test]
+    fn transcribe_imported_wav_maps_segments_to_imported_channel() {
+        let root = unique_test_root();
+        let source_root = unique_test_root();
+        fs::create_dir_all(&source_root).expect("source dir");
+        let source_path = source_root.join("imported.wav");
+        write_minimal_wav(&source_path);
+        let mut command_state = DesktopCommandState::default();
+        let import_snapshot = import_audio_file_for_app_root(
+            &root,
+            &mut command_state,
+            source_path.display().to_string(),
+            Some("Imported transcript".to_string()),
+            1_700_000_000_000,
+        )
+        .expect("import wav");
+        let meeting_id = import_snapshot.recording.meeting_id.clone();
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let backend = FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+            0,
+            1_200,
+            "imported transcript",
+        )]);
+
+        let snapshot = transcribe_meeting_for_app_root(
+            &root,
+            &mut command_state,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            backend,
+            1_700_000_001_000,
+        )
+        .expect("transcribe imported meeting");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(json["transcription"]["state"], "Complete");
+        assert_eq!(json["meetings"][0]["transcriptText"], "imported transcript");
+        assert_eq!(
+            json["meetings"][0]["segments"][0]["sourceChannel"],
+            "Imported"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(source_root).expect("source cleanup");
     }
 
     #[test]
@@ -5093,6 +9466,198 @@ mod tests {
     }
 
     #[test]
+    fn transcription_job_lifecycle_persists_durable_processing_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let store = open_store(&root).expect("open store");
+        let durable_started = store
+            .processing_job(&started.id)
+            .expect("durable started job");
+
+        assert_eq!(durable_started.kind, curiosity_domain::JobKind::Transcribe);
+        assert_eq!(durable_started.status, curiosity_domain::JobStatus::Running);
+        assert_eq!(durable_started.attempts, 1);
+        assert_eq!(durable_started.started_at_ms, Some(1_700_000_001_000));
+        assert_eq!(
+            durable_started.idempotency_key.as_deref(),
+            Some(transcription_idempotency_key(&meeting_id).as_str())
+        );
+        assert!(!durable_started.cancel_requested);
+
+        cancel_transcription_job_for_app_root(&root, &command_state, &started.id)
+            .expect("request transcription cancel");
+        let durable_cancel = store
+            .processing_job(&started.id)
+            .expect("durable cancel-requested job");
+        assert!(durable_cancel.cancel_requested);
+
+        finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started.clone(),
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "durable canceled",
+            )]),
+            1_700_000_001_500,
+        )
+        .expect("finish transcription job");
+        let durable_finished = store
+            .processing_job(&started.id)
+            .expect("durable finished job");
+
+        assert_eq!(
+            durable_finished.status,
+            curiosity_domain::JobStatus::Canceled
+        );
+        assert_eq!(durable_finished.finished_at_ms, Some(1_700_000_001_500));
+        assert!(!durable_finished.cancel_requested);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_ownership_uses_durable_active_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            &meeting_id,
+            1_700_000_001_100,
+        )
+        .expect_err("durable active job should own transcription after restart");
+
+        assert!(duplicate.contains(&started.id));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_duplicate_recovers_orphan_without_phantom_running_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_transcription_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            &meeting_id,
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should reject this duplicate attempt");
+        let snapshot = {
+            let state = restarted_command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("snapshot after duplicate")
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["transcriptionJob"]["state"], "Recovery");
+        assert_eq!(
+            json["transcriptionJob"]["lastError"],
+            "transcription worker was not running after app restart"
+        );
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transcription_job_restart_snapshot_recovers_missing_worker() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let restarted_snapshot = desktop_snapshot_for_app_root_with_state(
+            &root,
+            &DesktopCommandSnapshotState::default(),
+        )
+        .expect("restart snapshot");
+        let restarted_json = serde_json::to_value(&restarted_snapshot).expect("serialize restart");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered job");
+
+        assert_eq!(restarted_json["transcriptionJob"]["id"], started.id);
+        assert_eq!(restarted_json["transcriptionJob"]["state"], "Recovery");
+        assert_eq!(
+            restarted_json["transcriptionJob"]["lastError"],
+            "transcription worker was not running after app restart"
+        );
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert!(
+            recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,
+            "recovery finish time should be the snapshot recovery time, not the job start time"
+        );
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("transcription worker was not running after app restart")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn transcription_job_cancel_request_marks_snapshot_and_blocks_duplicate_until_finish() {
         let root = unique_test_root();
         let command_state = Mutex::new(DesktopCommandState::default());
@@ -5149,6 +9714,145 @@ mod tests {
                 .expect("query transcript segments")
                 .is_empty(),
             "a canceled transcription must not persist completed backend output"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn canceled_delete_after_transcription_job_keeps_raw_audio_retained() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .expect("completed artifact");
+        let artifact_path = root.join(&artifact.path);
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        cancel_transcription_job_for_app_root(&root, &command_state, &started.id)
+            .expect("request transcription cancel");
+
+        let snapshot = finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "canceled transcript",
+            )]),
+            1_700_000_001_500,
+        )
+        .expect("finish canceled transcription job");
+        let json = serde_json::to_value(&snapshot).expect("serialize finish");
+        let reopened = open_store(&root).expect("reopen store");
+
+        assert_eq!(json["transcriptionJob"]["state"], "Canceled");
+        assert!(json["transcription"].is_null());
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("canceled transcription keeps artifact"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_after_cleanup_failure_marks_durable_transcription_job_failed() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        save_raw_audio_retention_policy_for_app_root(&root, "DeleteAfterTranscription".to_string())
+            .expect("save delete-after retention");
+        let meeting_id = {
+            let mut state = command_state.lock().expect("command state");
+            seed_stopped_fake_recording(&root, &mut state)
+        };
+        let store = open_store(&root).expect("open store");
+        let artifact = store
+            .completed_wav_artifact_for_transcription(&meeting_id)
+            .expect("query completed artifact")
+            .expect("completed artifact");
+        let artifact_path = root.join(&artifact.path);
+        let artifact_parent = artifact_path.parent().expect("artifact parent");
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o555))
+            .expect("make artifact parent read-only");
+        let model_path = root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"fixture model").expect("model file");
+        let started = begin_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            &meeting_id,
+            1_700_000_001_000,
+        )
+        .expect("begin transcription job");
+        let job_id = started.id.clone();
+
+        let finish_result = finish_transcription_job_for_app_root(
+            &root,
+            &command_state,
+            started,
+            &meeting_id,
+            model_path,
+            "fixture-whisper.bin",
+            FakeWhisperBackend::new(vec![WhisperBackendSegment::new(
+                0,
+                1_200,
+                "persisted before durable cleanup failure",
+            )]),
+            1_700_000_001_500,
+        );
+        fs::set_permissions(artifact_parent, fs::Permissions::from_mode(0o755))
+            .expect("restore artifact parent permissions");
+        let error = finish_result.expect_err("cleanup failure should fail the durable job finish");
+        let reopened = open_store(&root).expect("reopen store");
+        let durable_job = reopened
+            .processing_job(&job_id)
+            .expect("durable failed transcription job");
+
+        assert!(
+            error.contains("Raw audio retention cleanup failed"),
+            "cleanup failure should be returned to the worker: {error}"
+        );
+        assert_eq!(durable_job.status, curiosity_domain::JobStatus::Failed);
+        assert_eq!(durable_job.finished_at_ms, Some(1_700_000_001_500));
+        assert!(
+            durable_job
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Raw audio retention cleanup failed"),
+            "durable job should persist the cleanup error: {:?}",
+            durable_job.last_error
+        );
+        assert!(artifact_path.exists());
+        assert!(!reopened
+            .artifact_tombstoned(&artifact.artifact_id)
+            .expect("failed cleanup leaves artifact row retained"));
+        assert_eq!(
+            reopened
+                .transcript_segments(&meeting_id)
+                .expect("transcript persisted before cleanup")
+                .len(),
+            1
         );
 
         fs::remove_dir_all(root).expect("cleanup");
@@ -5288,6 +9992,506 @@ mod tests {
     }
 
     #[test]
+    fn summary_job_lifecycle_persists_durable_processing_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let succeeded =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        let durable_started = store
+            .processing_job(&succeeded.id)
+            .expect("durable started summary job");
+        assert_eq!(durable_started.kind, curiosity_domain::JobKind::Summarize);
+        assert_eq!(durable_started.status, curiosity_domain::JobStatus::Running);
+        assert_eq!(durable_started.attempts, 1);
+        assert_eq!(durable_started.started_at_ms, Some(1_700_000_001_000));
+        assert_eq!(
+            durable_started.idempotency_key.as_deref(),
+            Some(summary_idempotency_key("meeting-1").as_str())
+        );
+        assert!(!durable_started.cancel_requested);
+
+        let success_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Durable summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let success_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", success_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            succeeded.clone(),
+            "meeting-1",
+            success_client,
+            "qwen3.6:27b",
+            1_700_000_001_500,
+        )
+        .expect("finish successful summary job");
+        let durable_succeeded = store
+            .processing_job(&succeeded.id)
+            .expect("durable succeeded summary job");
+        assert_eq!(
+            durable_succeeded.status,
+            curiosity_domain::JobStatus::Succeeded
+        );
+        assert_eq!(durable_succeeded.finished_at_ms, Some(1_700_000_001_500));
+        assert_eq!(durable_succeeded.last_error, None);
+        assert!(!durable_succeeded.cancel_requested);
+
+        let failed =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("begin failing summary job");
+        let failure_transport = RecordingOllamaTransport::generate_error("connection refused");
+        let failure_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", failure_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            failed.clone(),
+            "meeting-1",
+            failure_client,
+            "qwen3.6:27b",
+            1_700_000_002_500,
+        )
+        .expect("finish failed summary job as visible command failure");
+        let durable_failed = store
+            .processing_job(&failed.id)
+            .expect("durable failed summary job");
+        assert_eq!(durable_failed.status, curiosity_domain::JobStatus::Failed);
+        assert_eq!(durable_failed.finished_at_ms, Some(1_700_000_002_500));
+        assert!(
+            durable_failed
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("connection refused"),
+            "failed durable summary jobs should keep the actionable provider error"
+        );
+        assert!(!durable_failed.cancel_requested);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preflights_missing_transcript_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        let store = open_store(&root).expect("open store");
+        store
+            .insert_meeting(&Meeting::new_manual("meeting-1", "No Transcript", 1_000))
+            .expect("insert meeting");
+        drop(store);
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("missing transcript preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "no_transcript_segments"
+        );
+        assert_eq!(
+            json["analysisCommand"]["failure"]["message"],
+            "Generate a transcript before requesting a summary."
+        );
+        assert_eq!(json["analysisCommand"]["failure"]["setupGuidance"], "");
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preflights_drifted_non_local_analysis_settings_without_durable_job() {
+        for (case, ollama_base_url, ollama_model, expected_message_fragment) in [
+            (
+                "cloud-model",
+                "http://127.0.0.1:11434",
+                "deepseek-v3.2:cloud",
+                "hosted or cloud model tags",
+            ),
+            (
+                "non-loopback-url",
+                "https://ollama.example.com",
+                "qwen3.6:27b",
+                "loopback",
+            ),
+            (
+                "invalid-url",
+                "not a url",
+                "qwen3.6:27b",
+                "Ollama base URL is invalid",
+            ),
+        ] {
+            let root = unique_test_root();
+            let command_state = Mutex::new(DesktopCommandState::default());
+            seed_transcribed_meeting_with_private_artifact(
+                &root,
+                "meeting-1",
+                "Summary Planning",
+                "summarize this transcript",
+            );
+            let store = open_store(&root).expect("open store");
+            store
+                .save_analysis_settings(ollama_base_url, ollama_model)
+                .expect("inject drifted analysis settings");
+            drop(store);
+
+            let (job, snapshot) = start_summary_job_for_app_root(
+                &root,
+                &command_state,
+                "meeting-1",
+                1_700_000_001_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: expected preflight snapshot: {error}"));
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            let store = open_store(&root).expect("reopen store");
+
+            assert!(job.is_none(), "{case}");
+            assert_eq!(json["analysisCommand"]["state"], "Failed", "{case}");
+            assert_eq!(
+                json["analysisCommand"]["failure"]["code"], "invalid_analysis_settings",
+                "{case}"
+            );
+            assert!(
+                json["analysisCommand"]["failure"]["message"]
+                    .as_str()
+                    .expect("failure message")
+                    .contains(expected_message_fragment),
+                "{case}"
+            );
+            assert!(json["summaryJob"].is_null(), "{case}");
+            assert_eq!(
+                store.count("processing_jobs").expect("processing jobs"),
+                0,
+                "{case}"
+            );
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn summary_job_start_preflights_missing_ollama_model_evidence_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
+            1_700_000_001_000,
+        )
+        .expect("persist missing-model Ollama evidence");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save matching analysis settings");
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("missing-model preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "ollama_unavailable"
+        );
+        assert!(json["analysisCommand"]["failure"]["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("qwen3.6:27b was missing"));
+        assert!(json["analysisCommand"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("Run `ollama pull qwen3.6:27b`, then run Test Ollama again"));
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preflights_unavailable_ollama_evidence_without_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        test_ollama_connection_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_http_error(500, r#"{"error":"tags unavailable"}"#),
+            1_700_000_001_000,
+        )
+        .expect("persist unavailable Ollama evidence");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save matching analysis settings");
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("unavailable preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "ollama_unavailable"
+        );
+        assert_eq!(
+            json["analysisCommand"]["failure"]["message"],
+            "Last explicit Test Ollama could not confirm local summary availability."
+        );
+        assert!(json["analysisCommand"]["failure"]["setupGuidance"]
+            .as_str()
+            .expect("setup guidance")
+            .contains("then run Test Ollama again"));
+        assert!(json["summaryJob"].is_null());
+        assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_allows_available_and_mismatched_ollama_evidence() {
+        for (case, evidence_base_url, tags_response) in [
+            (
+                "available-matching",
+                "http://127.0.0.1:11434",
+                r#"{"models":[{"name":"qwen3.6:27b"}]}"#,
+            ),
+            (
+                "missing-mismatched",
+                "http://127.0.0.1:11435",
+                r#"{"models":[{"name":"gemma4:31b"}]}"#,
+            ),
+        ] {
+            let root = unique_test_root();
+            let command_state = Mutex::new(DesktopCommandState::default());
+            seed_transcribed_meeting_with_private_artifact(
+                &root,
+                "meeting-1",
+                "Summary Planning",
+                "summarize this transcript",
+            );
+            test_ollama_connection_for_app_root(
+                &root,
+                evidence_base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+                &RecordingOllamaTransport::tags_response(tags_response),
+                1_700_000_001_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: persist Ollama evidence: {error}"));
+            save_analysis_settings_for_app_root(
+                &root,
+                "http://127.0.0.1:11434".to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .unwrap_or_else(|error| panic!("{case}: save analysis settings: {error}"));
+
+            let (job, snapshot) = start_summary_job_for_app_root(
+                &root,
+                &command_state,
+                "meeting-1",
+                1_700_000_002_000,
+            )
+            .unwrap_or_else(|error| panic!("{case}: start summary job: {error}"));
+            let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+            let store = open_store(&root).expect("reopen store");
+
+            assert!(job.is_some(), "{case}");
+            assert_eq!(json["summaryJob"]["state"], "Running", "{case}");
+            assert!(json["analysisCommand"].is_null(), "{case}");
+            assert_eq!(
+                store.count("processing_jobs").expect("processing jobs"),
+                1,
+                "{case}"
+            );
+
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn summary_job_start_preflights_after_historical_completed_job_without_new_durable_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let completed =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin historical summary job");
+        let success_transport = RecordingOllamaTransport::generate_response(
+            r#"{"response":"{\"summary\":\"Historical summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
+        );
+        let success_client =
+            LocalOllamaTextClient::new("http://127.0.0.1:11434", success_transport);
+        finish_summary_job_for_app_root_with_client(
+            &root,
+            &command_state,
+            completed.clone(),
+            "meeting-1",
+            success_client,
+            "qwen3.6:27b",
+            1_700_000_001_500,
+        )
+        .expect("finish historical summary job");
+        let store = open_store(&root).expect("open store");
+        let historical_job_count = store.count("processing_jobs").expect("processing jobs");
+        store
+            .save_analysis_settings("https://ollama.example.com", "qwen3.6:27b")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let (job, snapshot) =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_002_000)
+                .expect("invalid settings preflight snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+
+        assert!(job.is_none());
+        assert_eq!(json["summaryJob"]["id"], completed.id);
+        assert_eq!(json["summaryJob"]["state"], "Complete");
+        assert_eq!(json["analysisCommand"]["state"], "Failed");
+        assert_eq!(
+            json["analysisCommand"]["failure"]["code"],
+            "invalid_analysis_settings"
+        );
+        assert!(json["analysisCommand"]["failure"]["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("loopback"));
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            historical_job_count
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preserves_active_job_before_readiness_preflight() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_analysis_settings("https://ollama.example.com", "deepseek-v3.2:cloud")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let duplicate =
+            start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
+                .expect_err("active summary job should still own duplicate start");
+        let snapshot_state = {
+            let state = command_state.lock().expect("command state");
+            state.snapshot_state()
+        };
+        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
+            .expect("duplicate snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Running");
+        assert!(json["analysisCommand"].is_null());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_start_preserves_durable_orphan_before_readiness_preflight() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let store = open_store(&root).expect("open store");
+        store
+            .save_analysis_settings("https://ollama.example.com", "deepseek-v3.2:cloud")
+            .expect("inject drifted analysis settings");
+        drop(store);
+
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = start_summary_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            "meeting-1",
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should still own duplicate start");
+        let snapshot_state = {
+            let state = restarted_command_state.lock().expect("command state");
+            state.snapshot_state()
+        };
+        let snapshot = desktop_snapshot_for_app_root_with_state(&root, &snapshot_state)
+            .expect("duplicate snapshot");
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("reopen store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Recovery");
+        assert!(json["analysisCommand"].is_null());
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn summary_job_cancel_request_marks_snapshot_and_blocks_duplicate() {
         let root = unique_test_root();
         let command_state = Mutex::new(DesktopCommandState::default());
@@ -5304,6 +10508,10 @@ mod tests {
         let cancel_snapshot = cancel_summary_job_for_app_root(&root, &command_state, &started.id)
             .expect("request summary cancel");
         let cancel_json = serde_json::to_value(&cancel_snapshot).expect("serialize cancel");
+        let store = open_store(&root).expect("open store");
+        let durable_cancel = store
+            .processing_job(&started.id)
+            .expect("durable cancel-requested summary job");
         let duplicate =
             begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_001)
                 .expect_err("cancel-requested summary still owns command");
@@ -5311,6 +10519,7 @@ mod tests {
         assert!(duplicate.contains(&started.id));
         assert_eq!(cancel_json["summaryJob"]["state"], "CancelRequested");
         assert_eq!(cancel_json["summaryJob"]["cancelRequested"], true);
+        assert!(durable_cancel.cancel_requested);
 
         let transport = RecordingOllamaTransport::generate_response(
             r#"{"response":"{\"summary\":\"Canceled summary\",\"decisions\":[],\"action_items\":[],\"questions\":[],\"citations\":[{\"segment_id\":\"meeting-1-segment-1\",\"start_ms\":0,\"end_ms\":1200}]}"}"#,
@@ -5319,7 +10528,7 @@ mod tests {
         let finish_snapshot = finish_summary_job_for_app_root_with_client(
             &root,
             &command_state,
-            started,
+            started.clone(),
             "meeting-1",
             client,
             "qwen3.6:27b",
@@ -5327,11 +10536,121 @@ mod tests {
         )
         .expect("finish canceled summary job");
         let finish_json = serde_json::to_value(&finish_snapshot).expect("serialize finish");
+        let durable_finished = store
+            .processing_job(&started.id)
+            .expect("durable canceled summary job");
 
         assert_eq!(finish_json["summaryJob"]["state"], "Canceled");
         assert_eq!(finish_json["summaryJob"]["cancelRequested"], false);
         assert!(finish_json["analysisCommand"].is_null());
         assert!(finish_json["meetings"][0]["analysis"].is_null());
+        assert_eq!(
+            durable_finished.status,
+            curiosity_domain::JobStatus::Canceled
+        );
+        assert_eq!(durable_finished.finished_at_ms, Some(1_700_000_001_500));
+        assert!(!durable_finished.cancel_requested);
+        assert!(
+            store
+                .current_analysis_result("meeting-1")
+                .expect("query analysis result")
+                .is_none(),
+            "a canceled summary must not persist completed analyzer output"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_restart_duplicate_recovers_orphan_without_phantom_running_job() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let restarted_command_state = Mutex::new(DesktopCommandState::default());
+        let duplicate = begin_summary_job_for_app_root(
+            &root,
+            &restarted_command_state,
+            "meeting-1",
+            1_700_000_001_100,
+        )
+        .expect_err("durable orphan should reject this duplicate summary attempt");
+        let snapshot = {
+            let state = restarted_command_state.lock().expect("command state");
+            desktop_snapshot_for_app_root_with_state(&root, &state.snapshot_state())
+                .expect("snapshot after duplicate")
+        };
+        let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert!(duplicate.contains(&started.id));
+        assert_eq!(json["summaryJob"]["id"], started.id);
+        assert_eq!(json["summaryJob"]["state"], "Recovery");
+        assert_eq!(
+            json["summaryJob"]["lastError"],
+            "summary worker was not running after app restart"
+        );
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert_eq!(recovered.finished_at_ms, Some(1_700_000_001_100));
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("summary worker was not running after app restart")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn summary_job_restart_snapshot_recovers_missing_worker() {
+        let root = unique_test_root();
+        let command_state = Mutex::new(DesktopCommandState::default());
+        seed_transcribed_meeting_with_private_artifact(
+            &root,
+            "meeting-1",
+            "Summary Planning",
+            "summarize this transcript",
+        );
+
+        let started =
+            begin_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
+                .expect("begin summary job");
+        let restarted_snapshot = desktop_snapshot_for_app_root_with_state(
+            &root,
+            &DesktopCommandSnapshotState::default(),
+        )
+        .expect("restart snapshot");
+        let restarted_json = serde_json::to_value(&restarted_snapshot).expect("serialize restart");
+        let store = open_store(&root).expect("open store");
+        let recovered = store
+            .processing_job(&started.id)
+            .expect("durable recovered summary job");
+
+        assert_eq!(restarted_json["summaryJob"]["id"], started.id);
+        assert_eq!(restarted_json["summaryJob"]["state"], "Recovery");
+        assert_eq!(
+            restarted_json["summaryJob"]["lastError"],
+            "summary worker was not running after app restart"
+        );
+        assert_eq!(recovered.status, curiosity_domain::JobStatus::Recovery);
+        assert!(
+            recovered.finished_at_ms.unwrap_or_default() >= 1_700_000_001_000,
+            "recovery finish time should be the snapshot recovery time, not the job start time"
+        );
+        assert_eq!(
+            recovered.last_error.as_deref(),
+            Some("summary worker was not running after app restart")
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -5350,6 +10669,7 @@ mod tests {
         let (started, snapshot) =
             start_summary_job_for_app_root(&root, &command_state, "meeting-1", 1_700_000_001_000)
                 .expect("start summary job");
+        let started = started.expect("valid start should return a summary job");
         let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
         assert_eq!(json["summaryJob"]["id"], started.id);
@@ -5753,6 +11073,43 @@ mod tests {
         fs::write(path, bytes).expect("minimal wav");
     }
 
+    fn write_truncated_data_chunk_wav(path: &Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&38u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16_000u32.to_le_bytes());
+        bytes.extend_from_slice(&32_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        fs::write(path, bytes).expect("truncated wav");
+    }
+
+    fn write_missing_odd_data_chunk_pad_wav(path: &Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&38u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16_000u32.to_le_bytes());
+        bytes.extend_from_slice(&32_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(0);
+        fs::write(path, bytes).expect("missing odd chunk pad wav");
+    }
+
     fn seed_transcribed_analyzed_meeting(root: &Path) {
         let store = open_store(root).expect("open store");
         store
@@ -5886,6 +11243,7 @@ mod tests {
         generate_response: Option<Result<serde_json::Value, OllamaHttpError>>,
         tags_response: Option<Result<serde_json::Value, OllamaHttpError>>,
         generate_requests: Vec<RecordedOllamaRequest>,
+        tags_requests: Vec<String>,
     }
 
     #[derive(Clone)]
@@ -5965,6 +11323,14 @@ mod tests {
                 .generate_requests
                 .len()
         }
+
+        fn tags_call_count(&self) -> usize {
+            self.state
+                .lock()
+                .expect("transport state")
+                .tags_requests
+                .len()
+        }
     }
 
     impl OllamaHttpTransport for RecordingOllamaTransport {
@@ -5985,17 +11351,186 @@ mod tests {
             })
         }
 
-        fn get_json(&self, _url: &str) -> Result<serde_json::Value, OllamaHttpError> {
-            self.state
-                .lock()
-                .expect("transport state")
-                .tags_response
-                .clone()
-                .unwrap_or_else(|| {
-                    Err(OllamaHttpError::Unavailable(
-                        "missing tags response".to_string(),
-                    ))
-                })
+        fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError> {
+            let mut state = self.state.lock().expect("transport state");
+            state.tags_requests.push(url.to_string());
+            state.tags_response.clone().unwrap_or_else(|| {
+                Err(OllamaHttpError::Unavailable(
+                    "missing tags response".to_string(),
+                ))
+            })
+        }
+    }
+
+    fn desktop_command_view_contract_fixture() -> serde_json::Value {
+        let empty_root = unique_test_root();
+        let mut empty_snapshot = serialize_desktop_snapshot_case(&empty_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut empty_snapshot, &empty_root);
+        fs::remove_dir_all(&empty_root).expect("cleanup empty fixture root");
+
+        let meeting_root = unique_test_root();
+        seed_transcribed_analyzed_meeting(&meeting_root);
+        let mut meeting_snapshot = serialize_desktop_snapshot_case(&meeting_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut meeting_snapshot, &meeting_root);
+        fs::remove_dir_all(&meeting_root).expect("cleanup meeting fixture root");
+
+        let evidence_root = unique_test_root();
+        fs::create_dir_all(&evidence_root).expect("evidence fixture root");
+        let evidence_model_path = evidence_root.join("fixture-whisper.bin");
+        fs::write(&evidence_model_path, b"not a real model")
+            .expect("evidence fixture whisper model");
+        test_whisper_model_path_for_app_root(
+            &evidence_root,
+            evidence_model_path.to_string_lossy().to_string(),
+            1_700_000_001_000,
+        )
+        .expect("persist evidence fixture whisper test");
+        save_whisper_model_path_for_app_root(
+            &evidence_root,
+            evidence_model_path.to_string_lossy().to_string(),
+        )
+        .expect("save evidence fixture whisper path");
+        test_ollama_connection_for_app_root(
+            &evidence_root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"gemma4:31b"},{"name":"qwen3.6:27b"}]}"#,
+            ),
+            1_700_000_002_000,
+        )
+        .expect("persist evidence fixture ollama test");
+        save_analysis_settings_for_app_root(
+            &evidence_root,
+            "http://127.0.0.1:11434".to_string(),
+            "qwen3.6:27b".to_string(),
+        )
+        .expect("save evidence fixture analysis settings");
+        let mut evidence_snapshot = serialize_desktop_snapshot_case(&evidence_root, |root| {
+            desktop_snapshot_for_app_root(root)
+        });
+        canonicalize_app_root_paths(&mut evidence_snapshot, &evidence_root);
+        fs::remove_dir_all(&evidence_root).expect("cleanup evidence fixture root");
+
+        let unsupported_snapshot_root = unique_test_root();
+        fs::create_dir_all(&unsupported_snapshot_root).expect("unsupported snapshot fixture root");
+        let unsupported_snapshot_model_path = unsupported_snapshot_root.join("notes.txt");
+        fs::write(
+            &unsupported_snapshot_model_path,
+            b"readable but not a supported model file",
+        )
+        .expect("unsupported snapshot fixture whisper path");
+        save_whisper_model_path_for_app_root(
+            &unsupported_snapshot_root,
+            unsupported_snapshot_model_path
+                .to_string_lossy()
+                .to_string(),
+        )
+        .expect("save unsupported snapshot fixture whisper path");
+        let mut unsupported_snapshot =
+            serialize_desktop_snapshot_case(&unsupported_snapshot_root, |root| {
+                desktop_snapshot_for_app_root(root)
+            });
+        canonicalize_app_root_paths(&mut unsupported_snapshot, &unsupported_snapshot_root);
+        fs::remove_dir_all(&unsupported_snapshot_root)
+            .expect("cleanup unsupported snapshot fixture root");
+
+        let whisper_root = unique_test_root();
+        fs::create_dir_all(&whisper_root).expect("whisper fixture root");
+        let model_path = whisper_root.join("fixture-whisper.bin");
+        fs::write(&model_path, b"not a real model").expect("fixture whisper model");
+        let readable_whisper = serde_json::to_value(test_whisper_model_path_value(
+            model_path.to_string_lossy().as_ref(),
+        ))
+        .expect("serialize readable whisper path test");
+        let unsupported_model_path = whisper_root.join("notes.txt");
+        fs::write(
+            &unsupported_model_path,
+            b"readable but not a supported model file",
+        )
+        .expect("fixture unsupported whisper path");
+        let unsupported_whisper = serde_json::to_value(test_whisper_model_path_value(
+            unsupported_model_path.to_string_lossy().as_ref(),
+        ))
+        .expect("serialize unsupported whisper path test");
+        fs::remove_dir_all(&whisper_root).expect("cleanup whisper fixture root");
+
+        let available_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "qwen3.6:27b",
+            &RecordingOllamaTransport::tags_response(
+                r#"{"models":[{"name":"qwen3.6:27b"},{"name":"gemma4:31b"}]}"#,
+            ),
+        ))
+        .expect("serialize available ollama test");
+        let missing_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "qwen3.6:27b",
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"gemma4:31b"}]}"#),
+        ))
+        .expect("serialize missing ollama test");
+        let cloud_ollama = serde_json::to_value(test_ollama_connection_value(
+            "http://127.0.0.1:11434",
+            "deepseek-v3.2:cloud",
+            &RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#),
+        ))
+        .expect("serialize cloud ollama test");
+
+        serde_json::json!({
+            "version": 1,
+            "owner": "apps/desktop/src-tauri/src/main.rs",
+            "cases": {
+                "desktop_snapshot.empty": empty_snapshot,
+                "desktop_snapshot.transcribed_analyzed_meeting": meeting_snapshot,
+                "desktop_snapshot.with_setup_evidence": evidence_snapshot,
+                "desktop_snapshot.unsupported_whisper_model": unsupported_snapshot,
+                "test_whisper_model_path.valid_readable_file": readable_whisper,
+                "test_whisper_model_path.unsupported_extension": unsupported_whisper,
+                "test_whisper_model_path.missing_path": serde_json::to_value(test_whisper_model_path_value(""))
+                    .expect("serialize missing whisper path test"),
+                "test_ollama_connection.available_configured_model": available_ollama,
+                "test_ollama_connection.missing_local_model": missing_ollama,
+                "test_ollama_connection.cloud_model_rejected": cloud_ollama,
+            }
+        })
+    }
+
+    fn serialize_desktop_snapshot_case(
+        root: &Path,
+        build: impl FnOnce(&Path) -> Result<DesktopSnapshot, String>,
+    ) -> serde_json::Value {
+        serde_json::to_value(build(root).expect("desktop snapshot fixture case"))
+            .expect("serialize desktop snapshot fixture case")
+    }
+
+    fn canonicalize_app_root_paths(value: &mut serde_json::Value, app_root: &Path) {
+        let app_root = app_root.to_string_lossy().to_string();
+        canonicalize_app_root_path_text(value, &app_root);
+    }
+
+    fn canonicalize_app_root_path_text(value: &mut serde_json::Value, app_root: &str) {
+        match value {
+            serde_json::Value::String(text) => {
+                if text.contains(app_root) {
+                    *text = text.replace(app_root, "<app-root>");
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    canonicalize_app_root_path_text(item, app_root);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values_mut() {
+                    canonicalize_app_root_path_text(item, app_root);
+                }
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
         }
     }
 
@@ -6013,6 +11548,36 @@ mod tests {
             std::env::set_var("CURIOSITY_WHISPER_MODEL", previous);
         } else {
             std::env::remove_var("CURIOSITY_WHISPER_MODEL");
+        }
+    }
+
+    struct EnvVarRestoreGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarRestoreGuard {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var(key).ok(),
+            }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let guard = Self::capture(key);
+            std::env::remove_var(key);
+            guard
+        }
+    }
+
+    impl Drop for EnvVarRestoreGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
         }
     }
 }

@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "kind": "fixture-derived-command-view-contract-shape-lock",
+  "scope": "Locks the checked-in Rust-produced desktop command/view fixture shape. This is not generated DTO ownership.",
+  "fixturePath": "apps/desktop/contracts/desktop-command-view-contract.fixture.json",
+  "fixtureMetadata": {
+    "version": 1,
+    "owner": "apps/desktop/src-tauri/src/main.rs"
+  },
+  "forbiddenStrings": ["seed_dev_fixture"],
+  "expectedCases": [
+    "desktop_snapshot.empty",
+    "desktop_snapshot.transcribed_analyzed_meeting",
+    "desktop_snapshot.unsupported_whisper_model",
+    "desktop_snapshot.with_setup_evidence",
+    "test_ollama_connection.available_configured_model",
+    "test_ollama_connection.cloud_model_rejected",
+    "test_ollama_connection.missing_local_model",
+    "test_whisper_model_path.missing_path",
+    "test_whisper_model_path.unsupported_extension",
+    "test_whisper_model_path.valid_readable_file"
+  ],
+  "cases": [
+    {
+      "name": "desktop_snapshot.empty",
+      "paths": [
+        { "path": ["loading"], "type": "boolean" },
+        { "path": ["commandSurface", "ready"], "type": "boolean" },
+        { "path": ["commandSurface", "detail"], "type": "nonEmptyString" },
+        { "path": ["meetings"], "type": "array" },
+        { "path": ["selectedMeetingId"], "type": "null" },
+        { "path": ["model", "configuredPath"], "type": "string" },
+        { "path": ["model", "kind"], "type": "string", "enum": ["missing"] },
+        { "path": ["modelSetupOptions", "whisper", "mode"], "type": "string", "enum": ["ManualFile"] },
+        { "path": ["modelSetupOptions", "whisper", "downloadsManaged"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions"], "type": "array", "minItems": 2, "maxItems": 2 },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions", 0], "type": "string", "enum": ["bin"] },
+        { "path": ["modelSetupOptions", "whisper", "acceptedExtensions", 1], "type": "string", "enum": ["gguf"] },
+        { "path": ["modelSetupOptions", "ollama", "mode"], "type": "string", "enum": ["ManualOllama"] },
+        { "path": ["modelSetupOptions", "ollama", "automaticPulls"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "ollama", "candidates"], "type": "array", "minItems": 2, "maxItems": 2 },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 0, "id"], "type": "string", "enum": ["ollama-qwen3-6-27b"] },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 0, "modelTag"], "type": "string", "enum": ["qwen3.6:27b"] },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 0, "pullCommand"], "type": "string", "enum": ["ollama pull qwen3.6:27b"] },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 1, "id"], "type": "string", "enum": ["ollama-gemma4-31b"] },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 1, "modelTag"], "type": "string", "enum": ["gemma4:31b"] },
+        { "path": ["modelSetupOptions", "ollama", "candidates", 1, "pullCommand"], "type": "string", "enum": ["ollama pull gemma4:31b"] },
+        { "path": ["recording", "state"], "type": "string", "enum": ["Idle"] },
+        { "path": ["recording", "storage_location", "app_private_path"], "type": "nonEmptyString" },
+        { "path": ["settings", "whisperModelPath"], "type": "string" },
+        { "path": ["settings", "ollamaBaseUrl"], "type": "nonEmptyString" },
+        { "path": ["settings", "ollamaModel"], "type": "nonEmptyString" },
+        { "path": ["setupGuidance", "whisper", "state"], "type": "string", "enum": ["MissingPath"] },
+        { "path": ["setupGuidance", "whisper", "lastPathTest"], "type": "null" },
+        { "path": ["setupGuidance", "whisper", "lastSuccessfulTranscription"], "type": "null" },
+        {
+          "path": ["setupGuidance", "ollama", "availability"],
+          "type": "string",
+          "enum": ["UnknownUntilTest"]
+        },
+        { "path": ["setupGuidance", "ollama", "lastConnectionTest"], "type": "null" },
+        { "path": ["calendarContext", "source"], "type": "string", "enum": ["AppleCalendar"] },
+        { "path": ["calendarContext", "autoStartEnabled"], "type": "boolean", "exact": false },
+        { "path": ["transcription"], "type": "null" },
+        { "path": ["transcriptionJob"], "type": "null" },
+        { "path": ["analysisCommand"], "type": "null" },
+        { "path": ["summaryJob"], "type": "null" }
+      ]
+    },
+    {
+      "name": "desktop_snapshot.transcribed_analyzed_meeting",
+      "paths": [
+        { "path": ["meetings"], "type": "array", "minItems": 1 },
+        { "path": ["selectedMeetingId"], "type": "nonEmptyString" },
+        { "path": ["modelSetupOptions", "whisper", "downloadsManaged"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "ollama", "automaticPulls"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "ollama", "candidates"], "type": "array", "minItems": 2, "maxItems": 2 },
+        { "path": ["meetings", 0, "id"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "title"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "transcriptState"], "type": "string", "enum": ["Ready"] },
+        { "path": ["meetings", 0, "transcriptText"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "segments"], "type": "array", "minItems": 1 },
+        { "path": ["meetings", 0, "segments", 0, "id"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "segments", 0, "startMs"], "type": "number" },
+        { "path": ["meetings", 0, "segments", 0, "endMs"], "type": "number" },
+        { "path": ["meetings", 0, "segments", 0, "text"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "segments", 0, "modelRunId"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "segments", 0, "transcriptVersionId"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "privacy", "localOnly"], "type": "boolean", "exact": true },
+        { "path": ["meetings", 0, "privacy", "storagePath"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "analysis", "provider"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "analysis", "networkUsed"], "type": "boolean", "exact": false },
+        { "path": ["meetings", 0, "analysis", "summary"], "type": "nonEmptyString" },
+        { "path": ["meetings", 0, "exportState", "state"], "type": "string", "enum": ["idle"] },
+        { "path": ["meetings", 0, "deleteState", "state"], "type": "string", "enum": ["idle"] }
+      ]
+    },
+    {
+      "name": "desktop_snapshot.unsupported_whisper_model",
+      "paths": [
+        { "path": ["model", "kind"], "type": "string", "enum": ["unsupported"] },
+        { "path": ["model", "configuredPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["settings", "whisperModelPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["setupGuidance", "whisper", "state"], "type": "string", "enum": ["UnsupportedFile"] },
+        { "path": ["setupGuidance", "whisper", "configuredPath"], "type": "nonEmptyString", "pattern": "^<app-root>/notes\\.txt$" },
+        { "path": ["setupGuidance", "whisper", "lastPathTest"], "type": "null" },
+        { "path": ["setupGuidance", "whisper", "lastSuccessfulTranscription"], "type": "null" }
+      ]
+    },
+    {
+      "name": "desktop_snapshot.with_setup_evidence",
+      "paths": [
+        { "path": ["model", "kind"], "type": "string", "enum": ["ready"] },
+        { "path": ["model", "configuredPath"], "type": "nonEmptyString" },
+        { "path": ["modelSetupOptions", "whisper", "downloadsManaged"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "ollama", "automaticPulls"], "type": "boolean", "exact": false },
+        { "path": ["modelSetupOptions", "ollama", "candidates"], "type": "array", "minItems": 2, "maxItems": 2 },
+        { "path": ["setupGuidance", "whisper", "state"], "type": "string", "enum": ["ReadablePath"] },
+        { "path": ["setupGuidance", "whisper", "lastPathTest"], "type": "object" },
+        { "path": ["setupGuidance", "whisper", "lastPathTest", "state"], "type": "string", "enum": ["Valid"] },
+        { "path": ["setupGuidance", "whisper", "lastPathTest", "testedPath"], "type": "nonEmptyString" },
+        { "path": ["setupGuidance", "whisper", "lastPathTest", "fileSizeBytes"], "type": "number" },
+        {
+          "path": ["setupGuidance", "whisper", "lastPathTest", "sha256"],
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "path": ["setupGuidance", "ollama", "availability"],
+          "type": "string",
+          "enum": ["AvailableAtLastTest"]
+        },
+        { "path": ["setupGuidance", "ollama", "lastConnectionTest"], "type": "object" },
+        { "path": ["setupGuidance", "ollama", "lastConnectionTest", "state"], "type": "string", "enum": ["Available"] },
+        {
+          "path": ["setupGuidance", "ollama", "lastConnectionTest", "installedLocalModels"],
+          "type": "array",
+          "minItems": 2
+        },
+        {
+          "path": ["setupGuidance", "ollama", "lastConnectionTest", "pullCommand"],
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "name": "test_ollama_connection.available_configured_model",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Available"] },
+        { "path": ["message"], "type": "nonEmptyString" },
+        { "path": ["selectedLocalModelTag"], "type": "nonEmptyString" },
+        { "path": ["installedLocalModels"], "type": "array", "minItems": 2 },
+        { "path": ["pullCommand"], "type": "null" }
+      ]
+    },
+    {
+      "name": "test_ollama_connection.cloud_model_rejected",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Unavailable"] },
+        { "path": ["message"], "type": "nonEmptyString" },
+        { "path": ["selectedLocalModelTag"], "type": "null" },
+        { "path": ["installedLocalModels"], "type": "null" },
+        { "path": ["pullCommand"], "type": "null" }
+      ]
+    },
+    {
+      "name": "test_ollama_connection.missing_local_model",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Unavailable"] },
+        { "path": ["message"], "type": "nonEmptyString" },
+        { "path": ["selectedLocalModelTag"], "type": "nonEmptyString" },
+        { "path": ["installedLocalModels"], "type": "array", "minItems": 1 },
+        { "path": ["pullCommand"], "type": "nonEmptyString" }
+      ]
+    },
+    {
+      "name": "test_whisper_model_path.missing_path",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Invalid"] },
+        { "path": ["message"], "type": "nonEmptyString" },
+        { "path": ["setupGuidance"], "type": "nonEmptyString" }
+      ]
+    },
+    {
+      "name": "test_whisper_model_path.unsupported_extension",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Invalid"] },
+        { "path": ["message"], "type": "nonEmptyString", "pattern": "\\.bin.*\\.gguf" },
+        { "path": ["setupGuidance"], "type": "nonEmptyString", "pattern": "\\.bin.*\\.gguf" }
+      ]
+    },
+    {
+      "name": "test_whisper_model_path.valid_readable_file",
+      "paths": [
+        { "path": ["state"], "type": "string", "enum": ["Valid"] },
+        { "path": ["message"], "type": "nonEmptyString" },
+        { "path": ["setupGuidance"], "type": "nonEmptyString" },
+        { "path": ["fileSizeBytes"], "type": "number" },
+        { "path": ["sha256"], "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      ]
+    }
+  ]
+}

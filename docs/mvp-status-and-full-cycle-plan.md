@@ -146,9 +146,10 @@ Use this when you want to validate the app workflow without hardware, Whisper, o
 
 ## Remaining Non-MVP Work
 
-- Developer ID signing/notarization for production distribution. The older
-  packaging note above predates the current unsigned macOS DMG build/release
-  workflow documented in `README.md` and `docs/macos-dmg-release.md`.
+- Apple signing secret configuration for production distribution. The older
+  packaging note above predates the current Developer ID signed and notarized
+  macOS DMG workflow documented in `README.md` and
+  `docs/macos-dmg-release.md`.
 - Calendar integration.
 - Whisper model download/management UI.
 - Hosted provider key selection and disclosure UX beyond the guarded backend paths.

@@ -282,6 +282,7 @@ dependencies = [
  "curiosity-audio",
  "curiosity-domain",
  "curiosity-store",
+ "curiosity-transcription",
  "serde",
 ]
 

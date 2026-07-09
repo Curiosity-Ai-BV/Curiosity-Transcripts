@@ -1,0 +1,317 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "release-candidate-smoke-evidence",
+  "scope": "arm64 macOS DMG manual smoke evidence",
+  "isTemplate": true,
+  "overallResult": "pending",
+  "build": {
+    "version": "TEMPLATE_VERSION",
+    "gitRef": "TEMPLATE_GIT_REF",
+    "gitSha": "TEMPLATE_GIT_SHA",
+    "buildTimestamp": "TEMPLATE_BUILD_TIMESTAMP_ISO_8601",
+    "releaseArtifact": {
+      "path": "TEMPLATE_ABSOLUTE_OR_RELEASE_ARTIFACT_DMG_PATH",
+      "name": "Curiosity-Transcripts-TEMPLATE_VERSION-macos-aarch64.dmg",
+      "sha256": "TEMPLATE_DMG_SHA256"
+    },
+    "signing": {
+      "status": "pending",
+      "developerIdApplication": "TEMPLATE_DEVELOPER_ID_APPLICATION_IDENTITY_OR_NOT_APPLICABLE",
+      "developerIdInstaller": "TEMPLATE_DEVELOPER_ID_INSTALLER_IDENTITY_OR_NOT_APPLICABLE",
+      "codesignVerified": "pending"
+    },
+    "notarization": {
+      "status": "pending",
+      "requestId": "TEMPLATE_NOTARIZATION_REQUEST_ID_OR_PENDING",
+      "stapled": "pending",
+      "gatekeeperVerified": "pending"
+    }
+  },
+  "machine": {
+    "machineLabel": "TEMPLATE_MACHINE_LABEL",
+    "architecture": "TEMPLATE_MACHINE_ARCHITECTURE",
+    "macosVersion": "TEMPLATE_MACOS_VERSION",
+    "cleanUserAccount": {
+      "accountLabel": "TEMPLATE_CLEAN_MACOS_USER_ACCOUNT_LABEL",
+      "createdForSmoke": "pending",
+      "developmentCheckoutAbsent": "pending"
+    }
+  },
+  "modelSetup": {
+    "whisper": {
+      "modelPath": "TEMPLATE_ABSOLUTE_WHISPER_MODEL_PATH_OR_SKIP_REASON",
+      "status": "pending",
+      "sha256": "TEMPLATE_WHISPER_MODEL_SHA256_OR_PENDING",
+      "fileSizeBytes": "TEMPLATE_WHISPER_MODEL_FILE_SIZE_BYTES_OR_PENDING",
+      "modifiedAt": "TEMPLATE_WHISPER_MODEL_MODIFIED_AT_ISO_8601_OR_PENDING",
+      "pathTestEvidence": "TEMPLATE_SETTINGS_TEST_PATH_OUTPUT_OR_PENDING",
+      "skipReason": "TEMPLATE_SKIP_REASON_IF_WHISPER_MODEL_ABSENT"
+    },
+    "ollama": {
+      "baseUrl": "TEMPLATE_OLLAMA_BASE_URL_OR_SKIP_REASON",
+      "model": "TEMPLATE_OLLAMA_MODEL_OR_SKIP_REASON",
+      "status": "pending",
+      "tagsEvidence": "TEMPLATE_OLLAMA_API_TAGS_EVIDENCE_OR_PENDING",
+      "skipReason": "TEMPLATE_SKIP_REASON_IF_OLLAMA_ABSENT"
+    }
+  },
+  "manualItems": [
+    {
+      "id": "clean-user-install",
+      "label": "Clean-user install",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record clean macOS account label, DMG open result, drag-to-Applications result, and launch-from-Applications result"
+        ],
+        "artifacts": [
+          "PENDING: attach screenshot/log path for installed app in /Applications"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record install notes without claiming pass"
+    },
+    {
+      "id": "macos-permissions",
+      "label": "macOS permissions",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record Microphone and Screen Recording prompts, denial behavior, and visible recovery state"
+        ],
+        "artifacts": [
+          "PENDING: attach permission prompt or System Settings evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record permission notes without claiming pass"
+    },
+    {
+      "id": "model-setup",
+      "label": "Model setup",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record Whisper path readiness, file size, SHA-256, last successful transcription evidence, local loopback Ollama URL without credentials/query/fragment, local model tag, /api/tags output naming the model, and missing-model guidance"
+        ],
+        "artifacts": [
+          "PENDING: attach Settings readiness screenshots and command output paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record model setup notes without claiming pass"
+    },
+    {
+      "id": "offline-after-setup",
+      "label": "Offline after setup",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record network-disabled local record, transcribe, search, export, and delete behavior after setup"
+        ],
+        "artifacts": [
+          "PENDING: attach offline state evidence and app result evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record offline notes without claiming pass"
+    },
+    {
+      "id": "recording",
+      "label": "Recording",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record mic plus ScreenCaptureKit result, private WAV artifacts, and truthful mic-only fallback if system audio is unavailable"
+        ],
+        "artifacts": [
+          "PENDING: attach recording evidence and private artifact paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record recording notes without claiming pass"
+    },
+    {
+      "id": "import-wav",
+      "label": "Import WAV",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record local WAV import source path, copied app-private artifact path, and source-file preservation after delete"
+        ],
+        "artifacts": [
+          "PENDING: attach import UI, artifact, and source-file evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record import notes without claiming pass"
+    },
+    {
+      "id": "transcription",
+      "label": "Transcription",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record configured local Whisper model, recorded meeting transcription result, and channel-tagged segment evidence"
+        ],
+        "artifacts": [
+          "PENDING: attach transcript segment evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record transcription notes without claiming pass"
+    },
+    {
+      "id": "durable-recovery",
+      "label": "Durable job recovery",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record quit-and-relaunch behavior during one transcription run and one summary run, including the truthful recovered or retryable state"
+        ],
+        "artifacts": [
+          "PENDING: attach before-quit, after-relaunch, and job-state evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record recovery notes without claiming pass"
+    },
+    {
+      "id": "correction",
+      "label": "Correction",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record edited transcript segment, saved correction, relaunch result, and original-text indication"
+        ],
+        "artifacts": [
+          "PENDING: attach correction and relaunch evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record correction notes without claiming pass"
+    },
+    {
+      "id": "summary",
+      "label": "Summary",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record local Ollama summary, decisions, questions, action items, and citation visibility"
+        ],
+        "artifacts": [
+          "PENDING: attach summary evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record summary notes without claiming pass"
+    },
+    {
+      "id": "privacy-data-state",
+      "label": "Privacy data state",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record private audio path, raw-audio retention, processing state, export status, delete status, default retention save behavior, and delete-after-transcription cleanup"
+        ],
+        "artifacts": [
+          "PENDING: attach privacy data state evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record privacy data state notes without claiming pass"
+    },
+    {
+      "id": "at-rest-disclosure",
+      "label": "At-rest disclosure",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record release notes/support copy disclosure that app-level encryption-at-rest is not implemented in v1, app-private data relies on OS/user-account file protections, app delete controls app-private meeting data, and user-owned source files plus exported files can remain outside app delete control"
+        ],
+        "artifacts": [
+          "PENDING: attach release notes or support-copy evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record at-rest disclosure notes without claiming pass"
+    },
+    {
+      "id": "export-json-markdown-srt",
+      "label": "JSON/Markdown/SRT export",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record desktop export action result for JSON, Markdown, and SRT plus format-specific status"
+        ],
+        "artifacts": [
+          "PENDING: attach exported JSON, Markdown, and SRT file paths or checksums"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record export notes without claiming pass"
+    },
+    {
+      "id": "contract-fixture",
+      "label": "Contract fixture",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record source presence for desktop command/view fixture and schema, and command/view contract checker results before manual smoke"
+        ],
+        "artifacts": [
+          "PENDING: attach release-artifacts/contracts/desktop-command-view-contract.receipt.json with fixture/schema/source-input hash evidence"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record contract fixture notes without claiming pass"
+    },
+    {
+      "id": "automated-release-artifacts",
+      "label": "Automated release artifacts",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: confirm CI-produced supply-chain, coverage, and desktop command/view contract receipt artifacts are attached before manual publish"
+        ],
+        "artifacts": [
+          "PENDING: attach release-artifacts/supply-chain",
+          "PENDING: attach release-artifacts/coverage",
+          "PENDING: attach release-artifacts/contracts/desktop-command-view-contract.receipt.json"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record automated release artifact notes without claiming pass"
+    },
+    {
+      "id": "delete-cleanup",
+      "label": "Delete cleanup",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record meeting delete result, app-private transcript/analysis/manifest/DB/search/job cleanup, app-private audio artifact cleanup, and pending cleanup finalization after relaunch"
+        ],
+        "artifacts": [
+          "PENDING: attach delete result evidence and any remaining-export evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record delete cleanup notes without claiming pass"
+    },
+    {
+      "id": "uninstall-private-data",
+      "label": "Uninstall and private-data handling",
+      "status": "pending",
+      "evidence": {
+        "observations": [
+          "PENDING: record uninstall behavior, documented app-private data location inspection, and user-owned exported files outside app delete control"
+        ],
+        "artifacts": [
+          "PENDING: attach uninstall and private-data location evidence paths"
+        ],
+        "skipReason": "PENDING: required only if status becomes skipped"
+      },
+      "notes": "PENDING: record uninstall/private-data notes without claiming pass"
+    }
+  ]
+}

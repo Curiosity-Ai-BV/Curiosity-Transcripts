@@ -187,6 +187,12 @@ pub enum RecordingStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RawAudioRetentionPolicy {
+    Retain,
+    DeleteAfterTranscription,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordingSession {
     pub id: String,
@@ -197,6 +203,7 @@ pub struct RecordingSession {
     pub sample_rate_hz: u32,
     pub status: RecordingStatus,
     pub recovery_note: Option<String>,
+    pub raw_audio_retention_policy: RawAudioRetentionPolicy,
 }
 
 impl RecordingSession {
@@ -216,7 +223,13 @@ impl RecordingSession {
             sample_rate_hz,
             status: RecordingStatus::Recording,
             recovery_note: None,
+            raw_audio_retention_policy: RawAudioRetentionPolicy::Retain,
         }
+    }
+
+    pub fn with_raw_audio_retention_policy(mut self, policy: RawAudioRetentionPolicy) -> Self {
+        self.raw_audio_retention_policy = policy;
+        self
     }
 
     pub fn interrupt(mut self, ended_at_ms: u64, note: impl Into<String>) -> Self {
@@ -321,6 +334,10 @@ pub struct ProcessingJob {
     pub status: JobStatus,
     pub attempts: u32,
     pub last_error: Option<String>,
+    pub started_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+    pub cancel_requested: bool,
+    pub idempotency_key: Option<String>,
 }
 
 impl ProcessingJob {
@@ -337,6 +354,10 @@ impl ProcessingJob {
             status,
             attempts: 0,
             last_error: None,
+            started_at_ms: None,
+            finished_at_ms: None,
+            cancel_requested: false,
+            idempotency_key: None,
         }
     }
 }

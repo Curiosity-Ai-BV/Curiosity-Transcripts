@@ -1,76 +1,148 @@
-import {
-  CheckCircle,
-  DownloadSimple,
-  FileText,
-  MagnifyingGlass,
-  Microphone,
-  Moon,
-  PencilSimple,
-  ShieldCheck,
-  Sun,
-  Trash,
-  WarningDiamond,
-  Waveform,
-} from "@phosphor-icons/react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 
 import packageInfo from "../package.json";
 import {
   DesktopCommandFacade,
   DesktopSnapshot,
+  ExportFormat,
+  exportFormatLabel,
   getMockDesktopSnapshot,
   mapAnalysisDisclosure,
   mapCommandJobState,
   mapDeleteState,
   mapExportState,
+  mapLocalProcessingState,
   mapModelStatus,
-  mapPermissionState,
+  mapRawAudioRetention,
   mapRecordingState,
   mapTranscriptionState,
   searchMeetings,
   Tone,
 } from "./commandAdapter";
+import { RecordingControls } from "./desktopRecordingControls";
+import { MeetingPane } from "./desktopMeetingPane";
+import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
+import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
+import { MeetingSummarySection } from "./desktopMeetingSummarySection";
+import { MeetingDetailActions } from "./desktopMeetingDetailActions";
+import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
+import { DesktopCommandOutcomes } from "./desktopCommandOutcomes";
+import { DesktopCalendarContext } from "./desktopCalendarContext";
+import { DesktopModelReadiness } from "./desktopModelReadiness";
+import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
+import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
+import { DesktopSettingsForm } from "./desktopSettingsForm";
+import type { SettingsFeedback } from "./desktopSettingsFeedback";
+import { DesktopTopbar } from "./desktopTopbar";
+import {
+  ACTIVE_JOB_POLL_INTERVAL_MS,
+  calendarContextLabel,
+  calendarContextTone,
+  captureDetail,
+  captureLabel,
+  captureTone,
+  commandAllowedDuringBusy,
+  commandErrorMessage,
+  formatMeetingCalendarAttachment,
+  isActiveCommandJob,
+  isSelectedActiveCommandJob,
+  isSelectedRetryableJob,
+  ollamaSetupLabel,
+  ollamaSetupTone,
+  ollamaSummaryBlocked,
+  preserveCommandJobProgress,
+  resolveSelectedMeetingId,
+  selectedTitleFromSnapshot,
+  settingsFormFromSnapshot,
+  snapshotHasActiveCommandJob,
+  whisperSetupLabel,
+  whisperSetupTone,
+} from "./desktopWorkspaceState";
+import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState";
 
 import "./styles.css";
 
 const appVersion = packageInfo.version;
-const ACTIVE_JOB_POLL_INTERVAL_MS = 250;
 
 interface AppProps {
   snapshot?: DesktopSnapshot;
   commandFacade?: DesktopCommandFacade;
+  filePicker?: Partial<AppFilePicker>;
+  clipboardWriter?: AppClipboardWriter;
 }
 
-type PendingCommand =
-  | "start"
-  | "stop"
-  | "transcribe"
-  | "rename"
-  | "export"
-  | "delete"
-  | "summary"
-  | "cancel-transcription"
-  | "cancel-summary"
-  | "test-whisper"
-  | "test-ollama"
-  | "save-whisper"
-  | "save-analysis"
-  | null;
+interface AppFilePicker {
+  chooseImportWavPath(): Promise<string | null>;
+  chooseWhisperModelPath(): Promise<string | null>;
+}
+
+interface AppClipboardWriter {
+  writeText(text: string): Promise<void>;
+}
 
 type ThemeMode = "dark" | "light";
 
-interface SettingsFormState {
-  whisperModelPath: string;
-  ollamaBaseUrl: string;
-  ollamaModel: string;
+const defaultAppFilePicker: AppFilePicker = {
+  chooseImportWavPath: chooseNativeImportWavPath,
+  chooseWhisperModelPath: chooseNativeWhisperModelPath,
+};
+
+const defaultClipboardWriter: AppClipboardWriter = {
+  async writeText(text: string) {
+    const writeText = globalThis.navigator?.clipboard?.writeText;
+    if (!writeText) {
+      throw new Error("Clipboard API unavailable.");
+    }
+    await writeText.call(globalThis.navigator.clipboard, text);
+  },
+};
+
+async function chooseNativeImportWavPath(): Promise<string | null> {
+  const selected: string | string[] | null = await open({
+    title: "Choose WAV audio file",
+    multiple: false,
+    directory: false,
+    fileAccessMode: "scoped",
+    filters: [
+      {
+        name: "WAV audio",
+        extensions: ["wav"],
+      },
+    ],
+  });
+
+  if (Array.isArray(selected)) {
+    return typeof selected[0] === "string" ? selected[0] : null;
+  }
+
+  return selected;
 }
 
-interface SettingsFeedback {
-  tone: Tone;
-  message: string;
+async function chooseNativeWhisperModelPath(): Promise<string | null> {
+  const selected: string | string[] | null = await open({
+    title: "Choose Whisper model file",
+    multiple: false,
+    directory: false,
+    fileAccessMode: "scoped",
+    filters: [
+      {
+        name: "Whisper model",
+        extensions: ["bin", "gguf"],
+      },
+    ],
+  });
+
+  if (Array.isArray(selected)) {
+    return typeof selected[0] === "string" ? selected[0] : null;
+  }
+
+  return selected;
 }
 
-export default function App({ snapshot, commandFacade }: AppProps) {
+export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
+  const appFilePicker = { ...defaultAppFilePicker, ...filePicker };
+  const appClipboardWriter = clipboardWriter ?? defaultClipboardWriter;
   const initialSnapshot = snapshot ?? getMockDesktopSnapshot();
   const [currentSnapshot, setCurrentSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
@@ -78,10 +150,14 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const [selectedMeetingId, setSelectedMeetingId] = useState(initialSnapshot.selectedMeetingId);
   const [renameTitle, setRenameTitle] = useState(selectedTitleFromSnapshot(initialSnapshot));
   const [recordingTitle, setRecordingTitle] = useState("");
+  const [importWavPath, setImportWavPath] = useState("");
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [segmentDraft, setSegmentDraft] = useState("");
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>(settingsFormFromSnapshot(initialSnapshot));
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback | null>(null);
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("json");
   const [theme, setTheme] = useState<ThemeMode>("dark");
 
   useEffect(() => {
@@ -90,6 +166,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       setSettingsForm(settingsFormFromSnapshot(snapshot));
       setConnectedSearchResultIds(null);
       setRenameTitle(selectedTitleFromSnapshot(snapshot));
+      setEditingSegmentId(null);
+      setSegmentDraft("");
       setSettingsFeedback(null);
       setCommandError(null);
       setPendingCommand(null);
@@ -129,6 +207,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     } else {
       setRenameTitle("");
     }
+    setEditingSegmentId(null);
+    setSegmentDraft("");
   }, [selectedMeeting?.id, selectedMeeting?.title]);
 
   useEffect(() => {
@@ -211,9 +291,19 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     ? mapCommandJobState(currentSnapshot.transcriptionJob)
     : null;
   const summaryJob = currentSnapshot.summaryJob ? mapCommandJobState(currentSnapshot.summaryJob) : null;
+  const setupGuidance = currentSnapshot.setupGuidance;
+  const modelSetupOptions = currentSnapshot.modelSetupOptions;
+  const calendarContext = currentSnapshot.calendarContext;
+  const calendarTone = calendarContextTone(calendarContext);
+  const whisperReadinessTone = whisperSetupTone(setupGuidance.whisper.state);
+  const ollamaReadinessTone = ollamaSetupTone(setupGuidance.ollama);
+  const ollamaSummaryBlockGuidance = ollamaSummaryBlocked(setupGuidance.ollama)
+    ? setupGuidance.ollama.setupGuidance
+    : null;
+  const whisperModelReady = currentSnapshot.model.kind === "ready";
   const startDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
   const stopDisabled = !commandSurfaceReady || !isRecordingActive || commandBusy;
-  const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const transcribeDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy || !whisperModelReady;
   const renameDisabled =
     !commandSurfaceReady ||
     !selectedMeeting ||
@@ -221,10 +311,38 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     !renameTitle.trim() ||
     renameTitle.trim() === selectedMeeting.title;
   const exportDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
-  const deleteDisabled = !commandSurfaceReady || !selectedMeeting || commandBusy;
+  const selectedMeetingHasActiveDeleteBlockingJob =
+    isSelectedActiveCommandJob(currentSnapshot.transcriptionJob, selectedMeeting?.id) ||
+    isSelectedActiveCommandJob(currentSnapshot.summaryJob, selectedMeeting?.id);
+  const deleteDisabled =
+    !commandSurfaceReady || !selectedMeeting || commandBusy || selectedMeetingHasActiveDeleteBlockingJob;
   const recordingTitleDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const importWavPathDisabled = !commandSurfaceReady || isRecordingActive || commandBusy;
+  const chooseWavDisabled = importWavPathDisabled;
+  const importDisabled = importWavPathDisabled || !importWavPath.trim();
+  const correctionDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !editingSegmentId ||
+    commandBusy ||
+    !segmentDraft.trim();
+  const segmentDraftDisabled = pendingCommand === "correct-segment";
+  const saveCorrectionTitle = commandSurfaceReady
+    ? "Save the user correction for this transcript segment."
+    : commandUnavailableTitle;
+  const cancelCorrectionDisabled = pendingCommand === "correct-segment";
+  const editSegmentDisabled = !commandSurfaceReady || commandBusy;
+  const editSegmentTitle = commandSurfaceReady ? "Edit this transcript segment." : commandUnavailableTitle;
   const settingsInputDisabled = commandBusy;
   const settingsActionDisabled = commandBusy;
+  const chooseWhisperModelDisabled = !commandSurfaceReady || commandBusy;
+  const requestCalendarDisabled =
+    !commandSurfaceReady || commandBusy || calendarContext.permissionState !== "NotRequested";
+  const requestCalendarTitle = commandSurfaceReady
+    ? "Request macOS Apple Calendar access for future manual event context."
+    : commandUnavailableTitle;
+  const hasSelectedMeeting = Boolean(selectedMeeting);
+  const canAttachCalendarEvents = commandSurfaceReady && hasSelectedMeeting && !commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -232,10 +350,20 @@ export default function App({ snapshot, commandFacade }: AppProps) {
   const deleteState = selectedMeeting
     ? mapDeleteState(selectedMeeting.deleteState)
     : mapDeleteState({ state: "idle" });
+  const rawAudioRetention = selectedMeeting
+    ? mapRawAudioRetention(selectedMeeting.privacy.rawAudioRetention)
+    : null;
+  const localProcessingState = selectedMeeting
+    ? mapLocalProcessingState(selectedMeeting.privacy.localOnly)
+    : null;
+  const selectedMeetingCalendarContext = selectedMeeting?.calendarAttachment
+    ? formatMeetingCalendarAttachment(selectedMeeting.calendarAttachment)
+    : null;
   const exportCommandState = mapExportState(currentSnapshot.exportCommand);
   const deleteCommandState = mapDeleteState(currentSnapshot.deleteCommand);
   const failedDeleteMeetingId =
     currentSnapshot.deleteCommand.state === "failed" ? currentSnapshot.deleteCommand.meetingId?.trim() : undefined;
+  const retryDeleteDisabled = !commandSurfaceReady || commandBusy;
   const analysisDisclosure = selectedMeeting ? mapAnalysisDisclosure(selectedMeeting.analysis) : null;
   const selectedAnalysisCommand =
     selectedMeeting && currentSnapshot.analysisCommand?.meetingId === selectedMeeting.id
@@ -246,19 +374,65 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     !commandSurfaceReady ||
     !selectedMeeting ||
     commandBusy ||
-    selectedMeeting.segments.length === 0;
+    selectedMeeting.segments.length === 0 ||
+    Boolean(ollamaSummaryBlockGuidance);
+  const canCancelTranscriptionJob = isActiveCommandJob(currentSnapshot.transcriptionJob);
+  const canCancelSummaryJob = isActiveCommandJob(currentSnapshot.summaryJob);
+  const canRetryTranscriptionJob = isSelectedRetryableJob(currentSnapshot.transcriptionJob, selectedMeeting?.id);
+  const canRetrySummaryJob = isSelectedRetryableJob(currentSnapshot.summaryJob, selectedMeeting?.id);
   const cancelTranscriptionDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.transcriptionJob ||
     (commandBusy && pendingCommand !== "transcribe") ||
-    currentSnapshot.transcriptionJob.state !== "Running" ||
+    !canCancelTranscriptionJob ||
     currentSnapshot.transcriptionJob.cancelRequested;
   const cancelSummaryDisabled =
     !commandSurfaceReady ||
     !currentSnapshot.summaryJob ||
     (commandBusy && pendingCommand !== "summary") ||
-    currentSnapshot.summaryJob.state !== "Running" ||
+    !canCancelSummaryJob ||
     currentSnapshot.summaryJob.cancelRequested;
+  const retryTranscriptionDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !canRetryTranscriptionJob ||
+    !whisperModelReady ||
+    commandBusy;
+  const retrySummaryDisabled =
+    !commandSurfaceReady ||
+    !selectedMeeting ||
+    !canRetrySummaryJob ||
+    selectedMeeting.segments.length === 0 ||
+    Boolean(ollamaSummaryBlockGuidance) ||
+    commandBusy;
+  const microphoneStatus = {
+    label: captureLabel(currentSnapshot.capture.microphone),
+    value: captureDetail(currentSnapshot.capture.microphone),
+    tone: captureTone(currentSnapshot.capture.microphone),
+  };
+  const systemAudioStatus = {
+    label: captureLabel(currentSnapshot.capture.systemAudio),
+    value: captureDetail(currentSnapshot.capture.systemAudio),
+    tone: captureTone(currentSnapshot.capture.systemAudio),
+  };
+  const calendarStatus = {
+    label: calendarContextLabel(calendarContext),
+    value: calendarContext.message,
+    tone: calendarTone,
+  };
+  const selectedMeetingAnalysisStatus = selectedMeeting
+    ? {
+        label: analysisDisclosure?.label ?? "Summary unavailable",
+        value: analysisDisclosure?.detail ?? "No selected meeting.",
+        tone: analysisDisclosure?.tone ?? ("muted" as Tone),
+      }
+    : null;
+  const cancelTranscriptionButtonTitle = commandSurfaceReady
+    ? "Request cancellation for the active transcription job."
+    : commandUnavailableTitle;
+  const cancelSummaryButtonTitle = commandSurfaceReady
+    ? "Request cancellation for the active summary job."
+    : commandUnavailableTitle;
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
@@ -278,6 +452,9 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       const nextSnapshot = await command(commandFacade);
       applyDesktopSnapshot(nextSnapshot);
       setRecordingTitle("");
+      if (pending === "import") {
+        setImportWavPath("");
+      }
     } catch (error) {
       setCommandError(commandErrorMessage(error));
     } finally {
@@ -299,6 +476,57 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       "start",
       (commands) => commands.startRecording(title ? { title } : undefined),
     );
+  }
+
+  function importWavFile() {
+    const sourcePath = importWavPath.trim();
+    if (!sourcePath) {
+      return;
+    }
+    const title = recordingTitle.trim();
+    void runSnapshotCommand(
+      "import",
+      (commands) => commands.importAudioFile(title ? { sourcePath, title } : { sourcePath }),
+    );
+  }
+
+  async function chooseImportWavFile() {
+    if (!commandSurfaceReady || isRecordingActive || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("choose-wav");
+    setCommandError(null);
+    try {
+      const sourcePath = await appFilePicker.chooseImportWavPath();
+      if (sourcePath) {
+        setImportWavPath(sourcePath);
+      }
+    } catch (error) {
+      setCommandError(commandErrorMessage(error));
+    } finally {
+      setPendingCommand(null);
+    }
+  }
+
+  async function chooseWhisperModelFile() {
+    if (!commandSurfaceReady || commandBusy) {
+      return;
+    }
+
+    setPendingCommand("choose-whisper-model");
+    setCommandError(null);
+    setSettingsFeedback(null);
+    try {
+      const modelPath = await appFilePicker.chooseWhisperModelPath();
+      if (modelPath) {
+        setSettingsForm((current) => ({ ...current, whisperModelPath: modelPath }));
+      }
+    } catch (error) {
+      setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
+    } finally {
+      setPendingCommand(null);
+    }
   }
 
   function stopRecording() {
@@ -332,7 +560,7 @@ export default function App({ snapshot, commandFacade }: AppProps) {
       return;
     }
     void runSnapshotCommand("export", (commands) =>
-      commands.exportMeetingJson({ meetingId: selectedMeeting.id }),
+      commands.exportMeeting({ meetingId: selectedMeeting.id, format: selectedExportFormat }),
     );
   }
 
@@ -352,6 +580,43 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     void runSnapshotCommand("summary", (commands) =>
       commands.generateSummary({ meetingId: selectedMeeting.id }),
     );
+  }
+
+  function editTranscriptSegment(segmentId: string, text: string) {
+    if (commandBusy) {
+      return;
+    }
+    setCommandError(null);
+    setEditingSegmentId(segmentId);
+    setSegmentDraft(text);
+  }
+
+  function cancelTranscriptCorrection() {
+    setEditingSegmentId(null);
+    setSegmentDraft("");
+  }
+
+  function saveTranscriptCorrection() {
+    if (!selectedMeeting || !editingSegmentId) {
+      return;
+    }
+    const correctedText = segmentDraft.trim();
+    if (!correctedText) {
+      return;
+    }
+    const segmentId = editingSegmentId;
+    const editedAtMs = Date.now();
+    void runSnapshotCommand("correct-segment", async (commands) => {
+      const nextSnapshot = await commands.correctTranscriptSegment({
+        meetingId: selectedMeeting.id,
+        segmentId,
+        correctedText,
+        editedAtMs,
+      });
+      setEditingSegmentId(null);
+      setSegmentDraft("");
+      return nextSnapshot;
+    });
   }
 
   function cancelTranscriptionJob() {
@@ -423,10 +688,34 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
-      const result = await commandFacade.testWhisperModelPath({ path: settingsForm.whisperModelPath });
+      const testedPath = settingsForm.whisperModelPath;
+      const result = await commandFacade.testWhisperModelPath({ path: testedPath });
+      const testedPathTrimmed = testedPath.trim();
+      const savedWhisperPath = currentSnapshot.settings.whisperModelPath.trim();
+      const effectiveWhisperPath = currentSnapshot.model.configuredPath.trim();
+      const testedPathIsActive =
+        result.state === "Valid" &&
+        testedPathTrimmed !== "" &&
+        (testedPathTrimmed === savedWhisperPath || testedPathTrimmed === effectiveWhisperPath);
+      if (testedPathIsActive) {
+        const nextSnapshot = await commandFacade.desktopSnapshot();
+        applyDesktopSnapshot(nextSnapshot);
+      }
+      const testedPathNeedsSave = result.state === "Valid" && testedPathTrimmed !== "" && !testedPathIsActive;
+      const validPathMessage = result.message || "Whisper model path is readable.";
       setSettingsFeedback({
         tone: result.state === "Valid" ? "ready" : "blocked",
-        message: result.message || result.setupGuidance,
+        message: testedPathNeedsSave
+          ? `${validPathMessage} Save Whisper to make this path active.`
+          : result.message || result.setupGuidance,
+        metadata:
+          result.state === "Valid"
+            ? {
+                kind: "whisper",
+                fileSizeBytes: result.fileSizeBytes,
+                sha256: result.sha256,
+              }
+            : undefined,
       });
     } catch (error) {
       setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
@@ -448,13 +737,28 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     setCommandError(null);
     setSettingsFeedback(null);
     try {
+      const testedBaseUrl = settingsForm.ollamaBaseUrl;
+      const testedModel = settingsForm.ollamaModel;
       const result = await commandFacade.testOllamaConnection({
-        baseUrl: settingsForm.ollamaBaseUrl,
-        model: settingsForm.ollamaModel,
+        baseUrl: testedBaseUrl,
+        model: testedModel,
       });
+      if (
+        testedBaseUrl.trim() === currentSnapshot.settings.ollamaBaseUrl.trim() &&
+        testedModel.trim() === currentSnapshot.settings.ollamaModel.trim()
+      ) {
+        const nextSnapshot = await commandFacade.desktopSnapshot();
+        applyDesktopSnapshot(nextSnapshot);
+      }
       setSettingsFeedback({
         tone: result.state === "Available" ? "ready" : "blocked",
         message: result.message || result.setupGuidance,
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: result.selectedLocalModelTag,
+          installedLocalModels: result.installedLocalModels,
+          pullCommand: result.pullCommand,
+        },
       });
     } catch (error) {
       setSettingsFeedback({ tone: "blocked", message: commandErrorMessage(error) });
@@ -470,6 +774,47 @@ export default function App({ snapshot, commandFacade }: AppProps) {
 
   function updateOllamaModel(value: string) {
     setSettingsForm((current) => ({ ...current, ollamaModel: value }));
+    setSettingsFeedback(null);
+  }
+
+  function chooseOllamaCandidate(modelTag: string) {
+    setSettingsForm((current) => ({ ...current, ollamaModel: modelTag }));
+    setSettingsFeedback(null);
+  }
+
+  async function copyOllamaPullCommand(pullCommand: string) {
+    if (commandBusy) {
+      return;
+    }
+
+    try {
+      await appClipboardWriter.writeText(pullCommand);
+      setSettingsFeedback({
+        tone: "ready",
+        message: "Pull command copied.",
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: null,
+          installedLocalModels: null,
+          pullCommand,
+        },
+      });
+    } catch (error) {
+      setSettingsFeedback({
+        tone: "blocked",
+        message: `Could not copy pull command: ${commandErrorMessage(error)}`,
+        metadata: {
+          kind: "ollama",
+          selectedLocalModelTag: null,
+          installedLocalModels: null,
+          pullCommand,
+        },
+      });
+    }
+  }
+
+  function updateRawAudioRetentionPolicy(value: SettingsFormState["rawAudioRetentionPolicy"]) {
+    setSettingsForm((current) => ({ ...current, rawAudioRetentionPolicy: value }));
     setSettingsFeedback(null);
   }
 
@@ -494,7 +839,40 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     );
   }
 
+  function saveRawAudioRetentionPolicy() {
+    void runSettingsSnapshotCommand(
+      "save-retention",
+      (commands) =>
+        commands.saveRawAudioRetentionPolicy({
+          rawAudioRetentionPolicy: settingsForm.rawAudioRetentionPolicy,
+        }),
+      "Raw-audio retention saved.",
+    );
+  }
+
+  function requestCalendarAccess() {
+    void runSettingsSnapshotCommand(
+      "request-calendar",
+      (commands) => commands.requestAppleCalendarAccess(),
+      "Calendar permission state refreshed.",
+    );
+  }
+
+  function attachCalendarEvent(event: DesktopSnapshot["calendarContext"]["upcomingEvents"][number]) {
+    if (!selectedMeeting) {
+      return;
+    }
+    void runSnapshotCommand("attach-calendar", (commands) =>
+      commands.attachCalendarEventContext({
+        meetingId: selectedMeeting.id,
+        eventId: event.id,
+        privacyConfirmed: event.privacy === "Unknown",
+      }),
+    );
+  }
+
   const busyCommandTitle = "A desktop command is already running.";
+  const retryDeleteTitle = commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting.";
   const startButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
       : commandBusy
@@ -509,13 +887,56 @@ export default function App({ snapshot, commandFacade }: AppProps) {
         : isRecordingActive
         ? "Stop desktop recording."
         : "No active desktop recording to stop.";
+  const importButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop the active recording before importing audio."
+        : importWavPath.trim()
+          ? "Import the WAV file into private app storage."
+          : "Enter a local WAV source path before importing.";
+  const chooseWavButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : isRecordingActive
+        ? "Stop the active recording before choosing audio."
+        : "Choose a local WAV source file.";
+  const chooseWhisperModelButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : "Choose a local Whisper model file.";
+  const testWhisperButtonTitle = commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle;
+  const saveWhisperButtonTitle = commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle;
+  const testOllamaButtonTitle = commandSurfaceReady
+    ? "Test the configured local Ollama server and model."
+    : commandUnavailableTitle;
+  const saveAnalysisButtonTitle = commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle;
+  const saveRetentionButtonTitle = commandSurfaceReady
+    ? "Save default raw-audio retention."
+    : commandUnavailableTitle;
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
       ? busyCommandTitle
-      : selectedMeeting
-        ? "Transcribe the selected meeting with the configured local Whisper model."
-        : "Select a meeting before transcription.";
+      : !selectedMeeting
+        ? "Select a meeting before transcription."
+        : currentSnapshot.model.kind === "missing"
+          ? "Choose a local Whisper model file before transcription."
+          : currentSnapshot.model.kind === "unsupported"
+            ? "Choose a supported .bin or .gguf Whisper model file before transcription."
+          : currentSnapshot.model.kind === "untested"
+            ? "Run Test path for the saved Whisper model file before transcription."
+            : "Transcribe the selected meeting with the configured local Whisper model.";
+  const retryTranscriptionButtonTitle = !commandSurfaceReady
+    ? commandUnavailableTitle
+    : commandBusy
+      ? busyCommandTitle
+      : !whisperModelReady
+        ? transcribeButtonTitle
+        : "Retry transcription for the selected meeting.";
   const renameButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -528,12 +949,15 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     : commandBusy
       ? busyCommandTitle
       : selectedMeeting
-        ? "Export the selected meeting as JSON."
+        ? `Export the selected meeting as ${exportFormatLabel(selectedExportFormat)}.`
         : "Select a meeting before exporting.";
+  const selectedExportFormatLabel = exportFormatLabel(selectedExportFormat);
   const deleteButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
       ? busyCommandTitle
+      : selectedMeetingHasActiveDeleteBlockingJob
+        ? "Cancel or wait for the active transcription or summary job before deleting private data."
       : selectedMeeting
         ? "Delete app-private data for the selected meeting."
         : "Select a meeting before deleting private data.";
@@ -545,6 +969,8 @@ export default function App({ snapshot, commandFacade }: AppProps) {
         ? "Select a meeting before requesting a summary."
         : selectedMeeting.segments.length === 0
           ? "Generate a transcript before requesting a summary."
+          : ollamaSummaryBlockGuidance
+            ? ollamaSummaryBlockGuidance
           : "Generate a local Ollama summary for the selected meeting.";
   const isLightTheme = theme === "light";
   const themeButtonLabel = isLightTheme ? "Switch to dark mode" : "Switch to light mode";
@@ -553,281 +979,142 @@ export default function App({ snapshot, commandFacade }: AppProps) {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   }
 
+  const recordingControls = (
+    <RecordingControls
+      recording={recording}
+      recordingTitle={recordingTitle}
+      importWavPath={importWavPath}
+      recordingTitleDisabled={recordingTitleDisabled}
+      importWavPathDisabled={importWavPathDisabled}
+      chooseWavDisabled={chooseWavDisabled}
+      startDisabled={startDisabled}
+      importDisabled={importDisabled}
+      stopDisabled={stopDisabled}
+      chooseWavButtonTitle={chooseWavButtonTitle}
+      startButtonTitle={startButtonTitle}
+      importButtonTitle={importButtonTitle}
+      stopButtonTitle={stopButtonTitle}
+      storagePath={currentSnapshot.recording.storage_location.app_private_path}
+      pendingCommand={pendingCommand}
+      onRecordingTitleChange={setRecordingTitle}
+      onImportWavPathChange={setImportWavPath}
+      onChooseWav={chooseImportWavFile}
+      onStartRecording={startRecording}
+      onImportWav={importWavFile}
+      onStopRecording={stopRecording}
+    />
+  );
+
   return (
     <main className="app-shell" data-theme={theme}>
       <section className="workspace" aria-label="Transcript workspace">
-        <header className="topbar">
-          <div className="brand-lockup">
-            <span className="brand-mark" aria-hidden="true">
-              <Waveform size={22} weight="fill" />
-            </span>
-            <div>
-              <p className="eyebrow">Curiosity Transcripts</p>
-              <h1>Transcript workspace</h1>
-            </div>
-          </div>
-          <div className="topbar-controls" aria-label="Workspace controls">
-            <span className="version-badge" aria-label={`Version ${appVersion}`}>
-              v{appVersion}
-            </span>
-            <button
-              type="button"
-              className="theme-toggle"
-              aria-label={themeButtonLabel}
-              aria-pressed={isLightTheme}
-              title={themeButtonLabel}
-              onClick={toggleTheme}
-            >
-              {isLightTheme ? <Moon size={16} weight="regular" /> : <Sun size={16} weight="regular" />}
-              <span>{isLightTheme ? "Dark" : "Light"}</span>
-            </button>
-          </div>
-        </header>
+        <DesktopTopbar
+          appVersion={appVersion}
+          isLightTheme={isLightTheme}
+          themeButtonLabel={themeButtonLabel}
+          onToggleTheme={toggleTheme}
+        />
 
-        {commandError ? (
-          <p role="alert" className="command-error">
-            {commandError}
-          </p>
-        ) : null}
-        {currentSnapshot.exportCommand.state !== "idle" ? (
-          <p role="status" className={`command-outcome ${exportCommandState.tone}`}>
-            <strong>{exportCommandState.label}</strong>
-            <span>{exportCommandState.detail}</span>
-          </p>
-        ) : null}
-        {currentSnapshot.deleteCommand.state !== "idle" ? (
-          <div role="status" className={`command-outcome ${deleteCommandState.tone}`}>
-            <strong>{deleteCommandState.label}</strong>
-            <span>{deleteCommandState.detail}</span>
-            {failedDeleteMeetingId ? (
-              <button
-                type="button"
-                className="button danger"
-                disabled={!commandSurfaceReady || commandBusy}
-                title={commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting."}
-                onClick={retryFailedDelete}
-              >
-                <Trash size={16} weight="regular" />
-                Retry delete
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {summaryFailure ? (
-          <div role="status" className="command-outcome blocked">
-            <strong>{summaryFailure.message}</strong>
-            {summaryFailure.setupGuidance ? <span>{summaryFailure.setupGuidance}</span> : null}
-          </div>
-        ) : null}
+        <DesktopCommandOutcomes
+          commandError={commandError}
+          showExportOutcome={currentSnapshot.exportCommand.state !== "idle"}
+          exportCommandState={exportCommandState}
+          showDeleteOutcome={currentSnapshot.deleteCommand.state !== "idle"}
+          deleteCommandState={deleteCommandState}
+          failedDeleteMeetingId={failedDeleteMeetingId}
+          retryDeleteDisabled={retryDeleteDisabled}
+          retryDeleteTitle={retryDeleteTitle}
+          summaryFailure={summaryFailure ?? null}
+          onRetryDelete={retryFailedDelete}
+        />
 
         <div className="content-grid">
-          <aside className="meeting-pane" aria-label="Meetings">
-            <div className="pane-heading">
-              <p className="eyebrow">History</p>
-              <h2>Meetings</h2>
-            </div>
-            <div className="search-block">
-              <label htmlFor="meeting-search">Search meetings</label>
-              <div className="search-control">
-                <MagnifyingGlass size={16} weight="regular" />
-                <input
-                  id="meeting-search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Title or transcript text"
-                />
-              </div>
-            </div>
-
-            {currentSnapshot.loading ? <SkeletonList /> : null}
-
-            <div className="meeting-list">
-              {meetings.map((meeting) => (
-                <button
-                  type="button"
-                  key={meeting.id}
-                  className={meeting.id === selectedMeeting?.id ? "meeting-row selected" : "meeting-row"}
-                  aria-pressed={meeting.id === selectedMeeting?.id}
-                  aria-current={meeting.id === selectedMeeting?.id ? "page" : undefined}
-                  onClick={() => setSelectedMeetingId(meeting.id)}
-                >
-                  <span className="meeting-title">{meeting.title}</span>
-                  <span className="meeting-meta">
-                    {meeting.startedAt} / {meeting.duration}
-                  </span>
-                  <span className="meeting-state">{meeting.transcriptState}</span>
-                </button>
-              ))}
-            </div>
-
-            {!currentSnapshot.loading && query && meetings.length === 0 ? <p className="empty-state">No meetings match this search.</p> : null}
-          </aside>
+          <MeetingPane
+            query={query}
+            meetings={meetings}
+            selectedMeetingId={selectedMeeting?.id ?? null}
+            loading={currentSnapshot.loading}
+            onQueryChange={setQuery}
+            onSelectMeeting={setSelectedMeetingId}
+          />
 
           <section className="detail-pane" aria-label="Meeting detail">
             {selectedMeeting ? (
               <>
-                <section className="recording-strip" aria-label="Recording controls and status">
-                  <div className="strip-primary">
-                    <IconFrame tone={recording.tone}>
-                      <Waveform size={22} weight="regular" />
-                    </IconFrame>
-                    <div>
-                      <div className="strip-heading-row">
-                        <h2>Recording</h2>
-                        <StatusPill tone={recording.tone} label={recording.label} />
-                      </div>
-                      <p>{recording.detail}</p>
-                    </div>
-                  </div>
-                  <div className="recording-actions">
-                    <label className="recording-title-field" htmlFor="recording-title">
-                      <span>Recording title</span>
-                      <input
-                        id="recording-title"
-                        value={recordingTitle}
-                        onChange={(event) => setRecordingTitle(event.target.value)}
-                        placeholder="Optional meeting title"
-                        disabled={recordingTitleDisabled}
-                      />
-                    </label>
-                    <div className="recording-buttons">
-                      <button
-                        type="button"
-                        className="button primary"
-                        disabled={startDisabled}
-                        title={startButtonTitle}
-                        onClick={startRecording}
-                      >
-                        <Microphone size={16} weight="regular" />
-                        {pendingCommand === "start" ? "Starting recording" : "Start recording"}
-                      </button>
-                      <button
-                        type="button"
-                        className="button"
-                        disabled={stopDisabled}
-                        title={stopButtonTitle}
-                        onClick={stopRecording}
-                      >
-                        <Waveform size={16} weight="regular" />
-                        {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
-                      </button>
-                    </div>
-                    <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
-                  </div>
-                </section>
+                {recordingControls}
 
-                <div className="detail-header">
-                  <div>
-                    <p className="eyebrow">{selectedMeeting.startedAt}</p>
-                    <h2>{selectedMeeting.title}</h2>
-                    <div className="rename-title-row">
-                      <label className="rename-title-field" htmlFor="selected-meeting-title">
-                        <span>Selected meeting title</span>
-                        <input
-                          id="selected-meeting-title"
-                          value={renameTitle}
-                          onChange={(event) => setRenameTitle(event.target.value)}
-                          disabled={!commandSurfaceReady || commandBusy}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="button"
-                        disabled={renameDisabled}
-                        title={renameButtonTitle}
-                        onClick={renameSelectedMeeting}
-                      >
-                        <PencilSimple size={16} weight="regular" />
-                        {pendingCommand === "rename" ? "Renaming" : "Rename"}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="detail-header-actions">
-                    <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
-                    <button
-                      type="button"
-                      className="button primary"
-                      disabled={transcribeDisabled}
-                      title={transcribeButtonTitle}
-                      onClick={transcribeSelectedMeeting}
-                    >
-                      <FileText size={16} weight="regular" />
-                      {pendingCommand === "transcribe" ? "Transcribing" : "Transcribe"}
-                    </button>
-                  </div>
-                </div>
+                <MeetingDetailHeader
+                  meeting={selectedMeeting}
+                  renameTitle={renameTitle}
+                  renameInputDisabled={!commandSurfaceReady || commandBusy}
+                  renameDisabled={renameDisabled}
+                  transcribeDisabled={transcribeDisabled}
+                  renameButtonTitle={renameButtonTitle}
+                  transcribeButtonTitle={transcribeButtonTitle}
+                  pendingCommand={pendingCommand}
+                  onRenameTitleChange={setRenameTitle}
+                  onRename={renameSelectedMeeting}
+                  onTranscribe={transcribeSelectedMeeting}
+                />
 
-                <div className="privacy-row">
-                  <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={selectedMeeting.privacy.storageLabel} value={selectedMeeting.privacy.storagePath} tone="ready" />
-                  <StatusLine icon={<FileText size={18} weight="regular" />} label={exportState.label} value={exportState.detail} tone={exportState.tone} />
-                  <StatusLine icon={<Trash size={18} weight="regular" />} label={deleteState.label} value={deleteState.detail} tone={deleteState.tone} />
-                </div>
+                <MeetingPrivacyRow
+                  storage={{
+                    label: selectedMeeting.privacy.storageLabel,
+                    path: selectedMeeting.privacy.storagePath,
+                  }}
+                  rawAudioRetention={rawAudioRetention}
+                  localProcessing={localProcessingState}
+                  calendarContext={selectedMeetingCalendarContext}
+                  exportState={exportState}
+                  deleteState={deleteState}
+                />
 
                 {analysisDisclosure ? (
-                  <section className="summary-section" aria-label="Structured summary">
-                    <div>
-                      <h3>Structured summary</h3>
-                      <StatusLine
-                        icon={<ShieldCheck size={18} weight="regular" />}
-                        label={analysisDisclosure.label}
-                        value={analysisDisclosure.detail}
-                        tone={analysisDisclosure.tone}
-                      />
-                      {selectedMeeting.analysis?.summary ? (
-                        <p className="summary-text">{selectedMeeting.analysis.summary}</p>
-                      ) : null}
-                    </div>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={summaryDisabled}
-                      title={summaryButtonTitle}
-                      onClick={generateSelectedSummary}
-                    >
-                      <FileText size={16} weight="regular" />
-                      {pendingCommand === "summary" ? "Generating summary" : "Generate summary"}
-                    </button>
-                  </section>
+                  <MeetingSummarySection
+                    disclosure={analysisDisclosure}
+                    summaryText={selectedMeeting.analysis?.summary ?? null}
+                    summaryDisabled={summaryDisabled}
+                    summaryButtonTitle={summaryButtonTitle}
+                    pendingCommand={pendingCommand}
+                    onGenerateSummary={generateSelectedSummary}
+                  />
                 ) : null}
 
-                <section className="transcript-section">
-                  <h3>Transcript</h3>
-                  <div className="segments">
-                    {selectedMeeting.segments.map((segment) => (
-                      <article key={segment.id} className="segment">
-                        <time>{formatTime(segment.startMs)}</time>
-                        <p>{segment.text}</p>
-                        <span>{segment.sourceChannel}</span>
-                      </article>
-                    ))}
-                  </div>
-                </section>
+                <MeetingTranscriptSection
+                  segments={selectedMeeting.segments}
+                  editingSegmentId={editingSegmentId}
+                  segmentDraft={segmentDraft}
+                  segmentDraftDisabled={segmentDraftDisabled}
+                  correctionDisabled={correctionDisabled}
+                  saveCorrectionTitle={saveCorrectionTitle}
+                  cancelCorrectionDisabled={cancelCorrectionDisabled}
+                  editSegmentDisabled={editSegmentDisabled}
+                  editSegmentTitle={editSegmentTitle}
+                  pendingCommand={pendingCommand}
+                  onSegmentDraftChange={setSegmentDraft}
+                  onEditSegment={editTranscriptSegment}
+                  onCancelCorrection={cancelTranscriptCorrection}
+                  onSaveCorrection={saveTranscriptCorrection}
+                />
 
-                <div className="detail-actions">
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={exportDisabled}
-                    title={exportButtonTitle}
-                    onClick={exportSelectedMeeting}
-                  >
-                    <DownloadSimple size={16} weight="regular" />
-                    {pendingCommand === "export" ? "Exporting JSON" : "Export JSON"}
-                  </button>
-                  <button
-                    type="button"
-                    className="button danger"
-                    disabled={deleteDisabled}
-                    title={deleteButtonTitle}
-                    onClick={deleteSelectedMeeting}
-                  >
-                    <Trash size={16} weight="regular" />
-                    {pendingCommand === "delete" ? "Deleting private data" : "Delete private data"}
-                  </button>
-                </div>
+                <MeetingDetailActions
+                  selectedExportFormat={selectedExportFormat}
+                  selectedExportFormatLabel={selectedExportFormatLabel}
+                  exportDisabled={exportDisabled}
+                  deleteDisabled={deleteDisabled}
+                  exportButtonTitle={exportButtonTitle}
+                  deleteButtonTitle={deleteButtonTitle}
+                  pendingCommand={pendingCommand}
+                  onExportFormatChange={setSelectedExportFormat}
+                  onExport={exportSelectedMeeting}
+                  onDelete={deleteSelectedMeeting}
+                />
               </>
             ) : (
-              <p className="empty-state">No meeting selected.</p>
+              <>
+                {recordingControls}
+                <p className="empty-state">No meeting selected.</p>
+              </>
             )}
           </section>
 
@@ -836,294 +1123,114 @@ export default function App({ snapshot, commandFacade }: AppProps) {
               <p className="eyebrow">Processing engine</p>
               <h2>Settings</h2>
             </div>
-            <div className="engine-stack" aria-label="Model and capture status">
-              <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
-              <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
-              {transcriptionJob ? (
-                <>
-                  <StatusLine
-                    icon={<FileText size={18} weight="regular" />}
-                    label={transcriptionJob.label}
-                    value={transcriptionJob.detail}
-                    tone={transcriptionJob.tone}
-                  />
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={cancelTranscriptionDisabled}
-                    title={
-                      commandSurfaceReady
-                        ? "Request cancellation for the active transcription job."
-                        : commandUnavailableTitle
+            <DesktopSettingsEngineStack
+              model={{ label: model.label, value: model.detail, tone: model.tone }}
+              transcription={{
+                label: transcription.label,
+                value: transcription.detail,
+                tone: transcription.tone,
+              }}
+              transcriptionJob={
+                transcriptionJob
+                  ? {
+                      label: transcriptionJob.label,
+                      value: transcriptionJob.detail,
+                      tone: transcriptionJob.tone,
                     }
-                    onClick={cancelTranscriptionJob}
-                  >
-                    {pendingCommand === "cancel-transcription" ? "Canceling transcription" : "Cancel transcription"}
-                  </button>
-                </>
-              ) : null}
-              {summaryJob ? (
-                <>
-                  <StatusLine
-                    icon={<FileText size={18} weight="regular" />}
-                    label={summaryJob.label}
-                    value={summaryJob.detail}
-                    tone={summaryJob.tone}
-                  />
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={cancelSummaryDisabled}
-                    title={
-                      commandSurfaceReady
-                        ? "Request cancellation for the active summary job."
-                        : commandUnavailableTitle
+                  : null
+              }
+              summaryJob={
+                summaryJob
+                  ? {
+                      label: summaryJob.label,
+                      value: summaryJob.detail,
+                      tone: summaryJob.tone,
                     }
-                    onClick={cancelSummaryJob}
-                  >
-                    {pendingCommand === "cancel-summary" ? "Canceling summary" : "Cancel summary"}
-                  </button>
-                </>
-              ) : null}
-              <StatusLine
-                icon={<Microphone size={18} weight="regular" />}
-                label={captureLabel(currentSnapshot.capture.microphone)}
-                value={captureDetail(currentSnapshot.capture.microphone)}
-                tone={captureTone(currentSnapshot.capture.microphone)}
-              />
-              <StatusLine
-                icon={<WarningDiamond size={18} weight="regular" />}
-                label={captureLabel(currentSnapshot.capture.systemAudio)}
-                value={captureDetail(currentSnapshot.capture.systemAudio)}
-                tone={captureTone(currentSnapshot.capture.systemAudio)}
-              />
-              {selectedMeeting ? (
-                <StatusLine
-                  icon={<ShieldCheck size={18} weight="regular" />}
-                  label={analysisDisclosure?.label ?? "Summary unavailable"}
-                  value={analysisDisclosure?.detail ?? "No selected meeting."}
-                  tone={analysisDisclosure?.tone ?? "muted"}
-                />
-              ) : null}
-            </div>
-            <div className="settings-form" aria-label="Local settings">
-              <label className="settings-field" htmlFor="whisper-model-path">
-                <span>Whisper model path</span>
-                <input
-                  id="whisper-model-path"
-                  value={settingsForm.whisperModelPath}
-                  onChange={(event) =>
-                    setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
-                  }
-                  placeholder="/absolute/path/to/ggml-base.en.bin"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
-              <div className="settings-buttons">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle}
-                  onClick={testWhisperModelPath}
-                >
-                  {pendingCommand === "test-whisper" ? "Testing path" : "Test path"}
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle}
-                  onClick={saveWhisperModelPath}
-                >
-                  {pendingCommand === "save-whisper" ? "Saving Whisper" : "Save Whisper"}
-                </button>
-              </div>
-              <label className="settings-field" htmlFor="ollama-base-url">
-                <span>Ollama base URL</span>
-                <input
-                  id="ollama-base-url"
-                  value={settingsForm.ollamaBaseUrl}
-                  onChange={(event) => updateOllamaBaseUrl(event.target.value)}
-                  placeholder="http://127.0.0.1:11434"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
-              <label className="settings-field" htmlFor="ollama-model">
-                <span>Ollama model</span>
-                <input
-                  id="ollama-model"
-                  value={settingsForm.ollamaModel}
-                  onChange={(event) => updateOllamaModel(event.target.value)}
-                  placeholder="qwen3.6:27b"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
-              <div className="settings-buttons">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Test the configured local Ollama server and model." : commandUnavailableTitle}
-                  onClick={testOllamaConnection}
-                >
-                  {pendingCommand === "test-ollama" ? "Testing Ollama" : "Test Ollama"}
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
-                  onClick={saveAnalysisSettings}
-                >
-                  {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
-                </button>
-              </div>
-              {settingsFeedback ? (
-                <p className={`settings-feedback ${settingsFeedback.tone}`} role="status">
-                  {settingsFeedback.message}
-                </p>
-              ) : null}
-            </div>
+                  : null
+              }
+              microphone={microphoneStatus}
+              systemAudio={systemAudioStatus}
+              calendar={calendarStatus}
+              selectedMeetingAnalysis={selectedMeetingAnalysisStatus}
+              canCancelTranscriptionJob={canCancelTranscriptionJob}
+              canRetryTranscriptionJob={canRetryTranscriptionJob}
+              canCancelSummaryJob={canCancelSummaryJob}
+              canRetrySummaryJob={canRetrySummaryJob}
+              cancelTranscriptionDisabled={cancelTranscriptionDisabled}
+              retryTranscriptionDisabled={retryTranscriptionDisabled}
+              cancelSummaryDisabled={cancelSummaryDisabled}
+              retrySummaryDisabled={retrySummaryDisabled}
+              cancelTranscriptionButtonTitle={cancelTranscriptionButtonTitle}
+              retryTranscriptionButtonTitle={retryTranscriptionButtonTitle}
+              cancelSummaryButtonTitle={cancelSummaryButtonTitle}
+              summaryButtonTitle={summaryButtonTitle}
+              pendingCommand={pendingCommand}
+              onCancelTranscriptionJob={cancelTranscriptionJob}
+              onRetryTranscriptionJob={transcribeSelectedMeeting}
+              onCancelSummaryJob={cancelSummaryJob}
+              onRetrySummaryJob={generateSelectedSummary}
+            />
+            <DesktopModelReadiness
+              whisper={setupGuidance.whisper}
+              whisperLabel={whisperSetupLabel(setupGuidance.whisper.state)}
+              whisperTone={whisperReadinessTone}
+              ollama={setupGuidance.ollama}
+              ollamaLabel={ollamaSetupLabel(setupGuidance.ollama)}
+              ollamaTone={ollamaReadinessTone}
+              copyPullCommandDisabled={commandBusy}
+              onCopyPullCommand={copyOllamaPullCommand}
+            />
+            <DesktopModelSetupOptions
+              options={modelSetupOptions}
+              selectedOllamaModel={settingsForm.ollamaModel}
+              settingsInputDisabled={settingsInputDisabled}
+              copyPullCommandDisabled={commandBusy}
+              onCopyPullCommand={copyOllamaPullCommand}
+              onChooseOllamaCandidate={chooseOllamaCandidate}
+            />
+            <DesktopCalendarContext
+              context={calendarContext}
+              label={calendarContextLabel(calendarContext)}
+              tone={calendarTone}
+              pendingCommand={pendingCommand}
+              requestCalendarDisabled={requestCalendarDisabled}
+              requestCalendarTitle={requestCalendarTitle}
+              canAttachEvents={canAttachCalendarEvents}
+              hasSelectedMeeting={hasSelectedMeeting}
+              onRequestCalendarAccess={requestCalendarAccess}
+              onAttachCalendarEvent={attachCalendarEvent}
+            />
+            <DesktopSettingsForm
+              settingsForm={settingsForm}
+              settingsFeedback={settingsFeedback}
+              pendingCommand={pendingCommand}
+              settingsInputDisabled={settingsInputDisabled}
+              settingsActionDisabled={settingsActionDisabled}
+              chooseWhisperModelDisabled={chooseWhisperModelDisabled}
+              chooseWhisperModelButtonTitle={chooseWhisperModelButtonTitle}
+              testWhisperButtonTitle={testWhisperButtonTitle}
+              saveWhisperButtonTitle={saveWhisperButtonTitle}
+              testOllamaButtonTitle={testOllamaButtonTitle}
+              saveAnalysisButtonTitle={saveAnalysisButtonTitle}
+              saveRetentionButtonTitle={saveRetentionButtonTitle}
+              copyPullCommandDisabled={commandBusy}
+              onWhisperModelPathChange={(value) =>
+                setSettingsForm((current) => ({ ...current, whisperModelPath: value }))
+              }
+              onChooseWhisperModel={chooseWhisperModelFile}
+              onTestWhisperModelPath={testWhisperModelPath}
+              onSaveWhisperModelPath={saveWhisperModelPath}
+              onOllamaBaseUrlChange={updateOllamaBaseUrl}
+              onOllamaModelChange={updateOllamaModel}
+              onTestOllamaConnection={testOllamaConnection}
+              onSaveAnalysisSettings={saveAnalysisSettings}
+              onRawAudioRetentionPolicyChange={updateRawAudioRetentionPolicy}
+              onSaveRawAudioRetentionPolicy={saveRawAudioRetentionPolicy}
+              onCopyPullCommand={copyOllamaPullCommand}
+            />
           </aside>
         </div>
       </section>
     </main>
   );
-}
-
-function StatusPill({ tone, label }: { tone: Tone; label: string }) {
-  return <span className={`status-pill ${tone}`}>{label}</span>;
-}
-
-function StatusLine({
-  icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  tone: Tone;
-}) {
-  return (
-    <div className={`status-line ${tone}`}>
-      <span className="status-icon">{icon}</span>
-      <span>
-        <strong>{label}</strong>
-        <small>{value}</small>
-      </span>
-    </div>
-  );
-}
-
-function IconFrame({ children, tone }: { children: React.ReactNode; tone: Tone }) {
-  return <span className={`icon-frame ${tone}`}>{children}</span>;
-}
-
-function SkeletonList() {
-  return (
-    <div className="skeleton-list" aria-label="Loading workspace">
-      <p>Loading workspace</p>
-      <span />
-      <span />
-      <span />
-    </div>
-  );
-}
-
-function settingsFormFromSnapshot(snapshot: DesktopSnapshot): SettingsFormState {
-  return {
-    whisperModelPath: snapshot.settings.whisperModelPath,
-    ollamaBaseUrl: snapshot.settings.ollamaBaseUrl,
-    ollamaModel: snapshot.settings.ollamaModel,
-  };
-}
-
-function selectedTitleFromSnapshot(snapshot: DesktopSnapshot): string {
-  const selected = snapshot.meetings.find((meeting) => meeting.id === snapshot.selectedMeetingId);
-  return selected?.title ?? snapshot.meetings[0]?.title ?? "";
-}
-
-function resolveSelectedMeetingId(snapshot: DesktopSnapshot, current: string | null): string | null {
-  const backendSelected = snapshot.selectedMeetingId;
-  if (backendSelected && snapshot.meetings.some((meeting) => meeting.id === backendSelected)) {
-    return backendSelected;
-  }
-  if (current && snapshot.meetings.some((meeting) => meeting.id === current)) {
-    return current;
-  }
-  return snapshot.meetings[0]?.id ?? null;
-}
-
-function commandAllowedDuringBusy(
-  next: Exclude<PendingCommand, null>,
-  current: PendingCommand,
-): boolean {
-  return (
-    (current === "transcribe" && next === "cancel-transcription") ||
-    (current === "summary" && next === "cancel-summary")
-  );
-}
-
-function snapshotHasActiveCommandJob(snapshot: DesktopSnapshot): boolean {
-  return (
-    snapshot.transcriptionJob?.state === "Running" ||
-    snapshot.transcriptionJob?.state === "CancelRequested" ||
-    snapshot.summaryJob?.state === "Running" ||
-    snapshot.summaryJob?.state === "CancelRequested"
-  );
-}
-
-function preserveCommandJobProgress(
-  current: DesktopSnapshot,
-  next: DesktopSnapshot,
-): DesktopSnapshot {
-  return {
-    ...next,
-    transcriptionJob: preserveJobProgress(current.transcriptionJob, next.transcriptionJob),
-    summaryJob: preserveJobProgress(current.summaryJob, next.summaryJob),
-  };
-}
-
-function preserveJobProgress<T extends DesktopSnapshot["transcriptionJob"]>(
-  current: T,
-  next: T,
-): T {
-  if (!current || !next || current.id !== next.id) {
-    return next;
-  }
-  if (current.state !== "Running" && next.state === "Running") {
-    return current;
-  }
-  return next;
-}
-
-function captureLabel(state: DesktopSnapshot["capture"]["microphone"]) {
-  return mapPermissionState(state).label;
-}
-
-function captureDetail(state: DesktopSnapshot["capture"]["microphone"]) {
-  return mapPermissionState(state).detail;
-}
-
-function captureTone(state: DesktopSnapshot["capture"]["microphone"]): Tone {
-  return mapPermissionState(state).tone;
-}
-
-function commandErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  return "Desktop command failed.";
-}
-
-function formatTime(ms: number) {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }

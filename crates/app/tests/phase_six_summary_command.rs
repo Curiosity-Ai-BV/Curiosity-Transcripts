@@ -91,6 +91,63 @@ fn generate_summary_command_uses_current_transcript_and_persists_structured_resu
 }
 
 #[test]
+fn generate_summary_command_rejects_networked_analysis_before_persistence() {
+    let root = test_root("networked-analysis-gate");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    let run = ModelRun::new(
+        "run-1",
+        "meeting-1",
+        "sha256:audio",
+        "fake-local",
+        "fixture-whisper",
+        false,
+        2_000,
+    );
+    let version = TranscriptVersion::new("version-1", "meeting-1", "run-1", 1, 2_010);
+    store
+        .persist_transcript(
+            &run,
+            &version,
+            &[TranscriptSegment::with_metadata(
+                "segment-1",
+                "meeting-1",
+                0,
+                1_000,
+                "We decided to ship the local recorder.",
+                SourceChannel::Mixed,
+                "run-1",
+                "version-1",
+            )],
+        )
+        .expect("persist transcript");
+
+    let dto = generate_summary_command(
+        &store,
+        &NetworkedAnalyzer::new("hosted-model", "summary-v1"),
+        "meeting-1",
+        3_000,
+    )
+    .expect("networked analysis returns visible gate failure");
+
+    assert!(store
+        .current_analysis_result("meeting-1")
+        .expect("read analysis")
+        .is_none());
+    assert_eq!(dto.state, AnalysisCommandState::Failed);
+    assert!(dto.analysis.is_none());
+    let failure = dto.failure.expect("failure");
+    assert_eq!(failure.code, "hosted_provider_gated");
+    assert!(failure.message.contains("hosted analysis requires"));
+    assert!(failure
+        .setup_guidance
+        .contains("explicit key selection and transcript data-disclosure confirmation"));
+}
+
+#[test]
 fn generate_summary_command_rejects_missing_transcript_before_analyzer_call() {
     let root = test_root("missing-transcript");
     let store = Store::open(root.join("app.db"), root).expect("open store");
@@ -204,5 +261,30 @@ impl MeetingAnalyzer for CancelAfterAnalyzer<'_> {
         let outcome = self.inner.analyze(input);
         self.cancelled.set(true);
         outcome
+    }
+}
+
+struct NetworkedAnalyzer {
+    inner: FakeMeetingAnalyzer,
+}
+
+impl NetworkedAnalyzer {
+    fn new(model_name: &str, prompt_template_version: &str) -> Self {
+        Self {
+            inner: FakeMeetingAnalyzer::new(model_name, prompt_template_version),
+        }
+    }
+}
+
+impl MeetingAnalyzer for NetworkedAnalyzer {
+    fn analyze(&self, input: AnalysisInput) -> AnalysisOutcome {
+        match self.inner.analyze(input) {
+            AnalysisOutcome::Completed(mut analysis) => {
+                analysis.provider = "hosted-test".to_string();
+                analysis.network_used = true;
+                AnalysisOutcome::Completed(analysis)
+            }
+            failure => failure,
+        }
     }
 }

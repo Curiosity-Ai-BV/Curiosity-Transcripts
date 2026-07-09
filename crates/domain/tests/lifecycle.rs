@@ -188,3 +188,19 @@ fn domain_models_include_phase_one_artifact_and_job_states() {
         assert_eq!(job.status, status);
     }
 }
+
+#[test]
+fn processing_job_metadata_defaults_are_legacy_compatible() {
+    let job = curiosity_domain::ProcessingJob::new(
+        "job-1",
+        "meeting-1",
+        JobKind::Transcribe,
+        JobStatus::Queued,
+    );
+
+    assert_eq!(job.started_at_ms, None);
+    assert_eq!(job.finished_at_ms, None);
+    assert!(!job.cancel_requested);
+    assert_eq!(job.idempotency_key, None);
+    assert_eq!(job.last_error, None);
+}

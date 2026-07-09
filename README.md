@@ -89,53 +89,110 @@ Implemented MVP flows:
   model path. Meetings with both mic and system WAV artifacts are transcribed as
   one persisted transcript run with channel-tagged segments.
 - Durable SQLite store for meetings, recording sessions, audio artifacts,
-  processing jobs, transcript versions, edits, exports, search indexes, and
-  analysis results.
-- Deterministic fixture transcription and transcript export helpers for
+  transcription and summary processing jobs, transcript versions, edits, exports,
+  search indexes, and analysis results.
+- Deterministic fixture transcription plus transcript export helpers for
   Markdown, JSON, and SRT.
-- Organizer APIs for meeting detail, list, rename, search, JSON export, and
+- Organizer APIs for meeting detail, list, rename, search, transcript export, and
   delete flows.
 - Structured summary generation with citations, decisions, action items,
   questions, local Ollama wiring, and privacy-gated provider paths.
-- Desktop command wiring for transcript search, JSON export, delete, and
+- Desktop command wiring for transcript search, JSON/Markdown/SRT export, delete, and
   summary generation after a transcript is ready.
+- Imported local WAV workflow through the desktop command, UI, store, and
+  transcription seams.
+- Transcript segment correction through the desktop detail view, command layer,
+  edit-history storage seam, and export/search refresh path.
+- Checked-in desktop command/view contract fixture at
+  `apps/desktop/contracts/desktop-command-view-contract.fixture.json`, guarded by
+  Rust exact-equality and TS command adapter contract tests. CI also uploads
+  `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
+  deterministic release evidence for fixture/schema/source-input hashes,
+  including the Rust fixture owner, calendar context producer, TS command
+  facade/UI mapping, TS runtime contract validator, and TS contract test inputs.
+  This remains fixture-derived contract evidence, not generated DTO ownership.
+- Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
+  missing/readable Whisper paths are typed, readable paths remain compatibility
+  unverified, explicit `Test path` evidence is persisted when run, and
+  transcription is blocked until the saved Whisper path has matching valid
+  file-size evidence. After a successful local Whisper transcription, Settings
+  shows historical successful-transcription evidence for the same model path,
+  file size, and modified time without treating it as a background compatibility
+  check. Ollama availability stays unknown until matching `Test Ollama` evidence
+  exists. The last explicit Ollama observation is shown as available,
+  missing-model, or unavailable-at-last-test evidence without becoming a
+  background health check. Testing the saved local URL/model refreshes the
+  readiness snapshot immediately; unsaved edits remain transient feedback until
+  saved. Settings also exposes manual model setup options:
+  choose an existing local Whisper `.bin` or `.gguf` file, and pick from local
+  Ollama candidate tags with copy-only pull commands. These options do not
+  download models, pull Ollama models, or perform background probes.
+- Read-only Apple Calendar context status in the desktop snapshot and settings
+  pane, plus an explicit macOS Apple Calendar permission request action. The
+  macOS 14+ path requests full Calendar event access, while the macOS 13 support
+  floor uses EventKit's older explicit event-access prompt. When access is
+  granted, the app loads a bounded read-only list of upcoming local Calendar
+  events for manual review, marks unsafe event shapes non-attachable, and lets
+  the user manually attach a safe event as meeting context. Unknown EventKit
+  privacy requires an explicit confirmation before attachment. Private, all-day,
+  recurring, ambiguous, and overlapping events remain blocked. Calendar events
+  never auto-start recordings, and the app does not store calendar tokens or
+  sync hosted calendar data.
 - Debug/test-only `seed_dev_fixture` Tauri command for seeding one private,
   transcript-ready local meeting without microphone, Whisper, or Ollama.
 
 Remaining gaps:
 
-- First-run model download/management UI for Whisper and Ollama.
-- Imported-audio workflow and transcript correction UI.
-- Calendar integration, starting with Apple Calendar context before cloud
-  calendar connectors.
-- Unsigned macOS DMG build/release workflows exist; Developer ID signing,
-  notarization, and expanded contributor onboarding/process docs remain.
+- Model download/management UI for Whisper and Ollama.
+- Richer privacy controls for retention, storage location, provider disclosure,
+  and remaining exported files.
+- App-level encryption-at-rest and keychain-backed secret storage are not
+  implemented in v1. See `docs/at-rest-data-strategy.md` for the current
+  app-private storage decision and future keychain boundary.
+- Real-hardware release confidence for default, no-Whisper, and
+  ScreenCaptureKit system-audio builds.
+- Later cloud calendar connectors.
+- Developer ID signed and notarized macOS DMG workflows exist; Apple signing
+  credentials and expanded contributor onboarding/process docs remain.
+
+## Supported Export Formats
+
+The shipped desktop app exposes JSON, Markdown, and SRT export from the meeting
+detail view. The generic Tauri `export_meeting` command accepts `json`,
+`markdown`, or `srt`; the existing `export_meeting_json` command remains as a
+compatibility path.
+
+JSON remains the deterministic integration format for automation and downstream
+tools. Markdown and SRT are user-facing transcript exports backed by the
+transcription helpers in `crates/transcription`.
 
 ## Roadmap
 
 The roadmap follows the trust-first direction in
 `docs/local-transcript-app-plan.md`: keep the manual local transcript loop
 dependable before adding automation, hosted providers, or broad integrations.
+For the production-readiness sequence, see
+`docs/production-readiness-roadmap.md`.
 
 Near-term product hardening:
 
-- Add first-run model setup for Whisper and Ollama, including model availability
-  states, hashes, and clear recovery guidance when a model is missing or
-  incompatible.
-- Add imported-audio support and a transcript correction UI that preserves the
-  original timing, source channel, transcript version, and export history.
+- Build on the implemented Settings-pane manual readiness guidance with model
+  discovery, download/management, compatibility checks, and richer availability
+  states for Whisper and Ollama.
 - Finish per-meeting privacy controls for raw-audio retention, local-only versus
   hosted-provider use, storage location, and remaining exported files after
   deletion.
+- Keep feature-matrix verification in CI, including macOS CI for the
+  ScreenCaptureKit compile path, and add broader real-hardware release
+  confidence for the supported desktop build variants.
 - Keep the macOS installer path reproducible with ad-hoc signed local builds,
-  then add Developer ID signing and notarization for browser-distributed
-  releases.
+  then keep browser-distributed releases Developer ID signed and notarized.
 
 Calendar roadmap:
 
-- Add Apple Calendar first through a macOS-native provider. The first slice
-  should request permission, show upcoming events, suggest safe meeting context,
-  and let the user manually attach a recording to an event.
+- Build on the implemented Apple Calendar permission, read-only event listing,
+  and safe manual attachment seam with clearer calendar-driven organization
+  flows.
 - Keep auto-start disabled until allowlist rules, ambiguous-event handling,
   private/all-day/recurring-event protections, and always-visible recording
   indicators are verified.
@@ -162,8 +219,9 @@ Engineering hardening before broader contributors:
 - Maintain and extend the existing CI gate for root Rust, desktop Rust, desktop
   npm, release readiness, Pages/release workflow checks, and fail-loud smoke
   commands as new surfaces are added.
-- Keep secrets, OAuth tokens, provider keys, and future encryption keys in the
-  OS keychain rather than SQLite or plain settings files.
+- Keep future secrets, OAuth tokens, provider keys, and encryption keys in the
+  OS keychain rather than SQLite or plain settings files. This is a future
+  implementation boundary, not current v1 support.
 
 ## Workspace Layout
 
@@ -259,6 +317,11 @@ ScreenCaptureKit system-audio feature enabled, then package it into a DMG:
 ./scripts/build-macos-dmg.sh
 ```
 
+Direct DMG builds run `bash scripts/check-publication-readiness.sh` before
+desktop dependency install, tests, Tauri build, and packaging.
+The default command is for signed/notarized release builds and fails if
+Developer ID signing or notarization credentials are missing.
+
 When Developer ID signing credentials are not available, local ad-hoc signed
 verification can use:
 
@@ -273,16 +336,28 @@ apps/desktop/src-tauri/target/release/bundle/macos/
 apps/desktop/src-tauri/target/release/bundle/dmg/
 ```
 
-Browser-distributed macOS releases still require a Developer ID Application
+Browser-distributed macOS releases require a Developer ID Application
 certificate and notarization. See `docs/macos-dmg-release.md` for the release
-checklist, signing environment variables, and manual installer smoke path.
+checklist, GitHub secret names, signing environment variables, and manual
+installer smoke path.
 
 ## GitHub Pages Homepage
 
 The static homepage under `site/` is published by `.github/workflows/pages.yml`.
-On each `main` deployment, GitHub Actions builds the ad-hoc signed,
-non-notarized macOS DMG on a macOS 26 runner, copies it into the Pages artifact,
-and updates the stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+Publishing the moving latest DMG requires an explicit manual workflow dispatch
+from `main` after filled smoke evidence validates with
+`node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`.
+When confirmed, GitHub Actions runs the signing job in the protected
+`macos-signing` environment, builds the Developer ID signed and notarized macOS
+DMG on a macOS 26 runner, copies it into the Pages artifact, and updates the
+stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+The Pages artifact also publishes
+`downloads/Curiosity-Transcripts-latest.dmg.sha256` and
+`downloads/Curiosity-Transcripts-latest.provenance.json` beside the moving
+latest DMG so maintainers and users can inspect the checksum, source ref/SHA,
+runner architecture, asset path, and automated DMG/app verification statuses.
+Those latest-DMG evidence files do not replace filled manual smoke evidence,
+release governance sign-off, or immutable versioned GitHub Release assets.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
@@ -302,16 +377,41 @@ For example, package version `0.1.18` is released from tag `v0.1.18`. A tag that
 does not match the app metadata fails before upload.
 
 The GitHub Pages workflow keeps the moving latest download at
-`downloads/Curiosity-Transcripts-latest.dmg`. Versioned distribution happens
-through GitHub Release assets. The release workflow uploads:
+`downloads/Curiosity-Transcripts-latest.dmg` when manually dispatched after the
+signed/notarized workflow path and filled smoke evidence validation. The moving
+Pages download is accompanied by
+`downloads/Curiosity-Transcripts-latest.dmg.sha256` and
+`downloads/Curiosity-Transcripts-latest.provenance.json`; these are latest-DMG
+publication evidence, not a substitute for manual smoke or versioned release
+evidence. Versioned distribution happens through GitHub Release assets. The
+release workflow
+uploads:
 
 ```text
 Curiosity-Transcripts-<version>-macos-aarch64.dmg
 Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
+Curiosity-Transcripts-<version>-macos-aarch64.provenance.json
 ```
 
-Until Developer ID signing and notarization are configured, release DMGs are
-ad-hoc signed and intended for testing the public release path.
+Release DMGs are Developer ID signed and notarized before upload. Local
+`--no-sign` builds remain available for testing the packaging path without
+Apple credentials.
+
+The first public release architecture is arm64-only macOS. The release workflow
+asserts an `arm64` runner before uploading the draft `macos-aarch64` GitHub
+Release asset, and the stable Pages DMG follows the same signed/notarized Apple
+Silicon release path when manually published after filled smoke evidence
+validation.
+Do not advertise x64 or universal macOS builds unless the workflows, release
+assets, checklist, and public copy change together.
+
+Before treating a build as a release candidate, run the deterministic gates and
+the manual smoke checklist in `docs/release-candidate-checklist.md`. Tag
+workflows leave GitHub Releases as drafts until filled smoke evidence validates
+and a maintainer manually publishes the release. Manual publication also requires
+the release governance sign-off in that checklist; GitHub branch/tag protection
+and live CodeQL or secret-scanning alert state are external checks, not
+repo-local gates.
 
 ## License And Attribution
 
@@ -397,13 +497,26 @@ cd apps/desktop
 CURIOSITY_WHISPER_MODEL=/absolute/path/to/ggml-base.en.bin npm run tauri:dev:system-audio
 ```
 
-The desktop settings pane can save a local Whisper model path. If no path is
-saved, the desktop `transcribe_meeting` command falls back to
-`CURIOSITY_WHISPER_MODEL`. Desktop builds include the native Whisper backend by
-default; use `npm run tauri:dev:no-whisper` only when intentionally testing the
-unavailable-backend state. If the effective model path is missing, the UI should
-show an explicit missing-model state. Model download and management are not yet
-implemented.
+The desktop settings pane can choose a local Whisper model file with a native
+file picker, keep the path editable, save the path, and show first-run readiness
+guidance for missing paths and readable-but-unverified files. Running `Test
+path` stores the last explicit file-size and SHA-256 readability evidence for
+the matching saved path; it does not prove model compatibility. The desktop
+marks an existing file as untested and blocks transcription until that matching
+valid Test path evidence exists and the current file size still matches. If no
+path is saved, the desktop `transcribe_meeting` command falls back to
+`CURIOSITY_WHISPER_MODEL`, which is subject to the same Test path evidence
+requirement. After a successful local Whisper transcription, the settings pane
+shows the last successful transcription timestamp, provider, model name, segment
+count, meeting id, model run id, transcript version id, and model-file size for
+that same path and modified time. This is historical compatibility evidence, not
+a background check and not a substitute for matching `Test path` evidence.
+Settings also shows manual Whisper setup options for existing `.bin` and `.gguf`
+model files; the app does not download or manage Whisper models yet.
+Desktop builds include the native Whisper backend by default; use `npm run
+tauri:dev:no-whisper` only when intentionally testing the unavailable-backend
+state. If the effective model path is missing, the UI should show an explicit
+missing-model state. Model download and management are not yet implemented.
 
 Copy `.env.example` for the optional Whisper smoke environment variables and
 hosted/provider secret placeholders. Ollama base URL and model are configured in
@@ -425,12 +538,18 @@ ollama pull qwen3.6:27b
 `http://127.0.0.1:11434` and `qwen3.6:27b`, and store settings are the runtime
 source of truth. The local Ollama path accepts localhost/loopback URLs only; use
 the hosted provider path, disclosure gate, and explicit secrets for any
-networked provider.
+networked provider. Snapshot readiness guidance does not probe Ollama; availability
+is unknown until the user runs the Settings pane's `Test Ollama` action for the
+matching saved local URL/model. Matching last-test evidence is reported as
+available, missing-model, or unavailable-at-last-test guidance, including
+installed-model evidence or the suggested pull command, but it is not treated as
+current availability. If the tested values are unsaved edits, Settings keeps the
+result as transient feedback until those values are saved.
 
 End-to-end expectation:
 
 1. Start `ollama serve`.
-2. Pull the chosen model, such as `ollama pull qwen3.6:27b`.
+2. Pull the chosen local model manually, such as `ollama pull qwen3.6:27b`.
 3. Open Settings, confirm the Ollama base URL/model, and run the connection
    test.
 4. Record and transcribe a meeting.
@@ -456,6 +575,12 @@ Local analysis presets currently include Ollama model candidates:
 Hosted or networked analysis is gated. OpenAI-compatible hosted providers
 require explicit key selection and explicit transcript data disclosure
 confirmation before any provider call is made.
+
+For at-rest storage, v1 uses app-private SQLite and local artifact files and
+relies on OS/user-account file protections. App-level encryption-at-rest and
+keychain-backed provider secret storage are not implemented yet. The documented
+boundary for current local data, user-owned exports/source files, and future
+keychain use lives in `docs/at-rest-data-strategy.md`.
 
 `deepseek-v3.2:cloud` and DeepSeek V3.2 Speciale are not local defaults. They
 are network/hosted options and must stay behind the hosted disclosure and

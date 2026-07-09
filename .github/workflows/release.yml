@@ -15,6 +15,19 @@ concurrency:
 jobs:
   build-release-dmg:
     runs-on: macos-26
+    environment:
+      name: macos-signing
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,16 +42,26 @@ jobs:
       - name: Check release version sources
         run: node scripts/check-release-workflow.js
 
+      - name: Check publication readiness
+        run: bash scripts/check-publication-readiness.sh
+
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Build ad-hoc signed macOS DMG
-        run: ./scripts/build-macos-dmg.sh --no-sign
+      - name: Configure Apple signing credentials
+        run: ./scripts/configure-apple-signing-ci.sh
+
+      - name: Build signed and notarized macOS DMG
+        run: ./scripts/build-macos-dmg.sh
 
       - name: Stage versioned release assets
         id: stage_assets
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_GIT_SHA: ${{ github.sha }}
+          RELEASE_GIT_REF: ${{ github.ref }}
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
 
@@ -56,9 +79,15 @@ jobs:
           fi
 
           release_asset="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.dmg"
+          provenance_path="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.provenance.json"
           cp "$dmg_path" "$release_asset"
 
           hdiutil verify "$release_asset"
+          hdiutil_verify_status="passed"
+          xcrun stapler validate "$release_asset"
+          stapler_validation_status="passed"
+          spctl -a -vvv -t open --context context:primary-signature "$release_asset"
+          dmg_gatekeeper_assessment_status="passed"
           mount_dir="$(mktemp -d)"
           hdiutil attach "$release_asset" -readonly -nobrowse -mountpoint "$mount_dir"
           if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
@@ -67,14 +96,74 @@ jobs:
             rm -rf "$mount_dir"
             exit 1
           fi
+          readonly_attach_app_presence_status="passed"
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          app_codesign_verification_status="passed"
+          spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
+          app_gatekeeper_assessment_status="passed"
           hdiutil detach "$mount_dir"
           rm -rf "$mount_dir"
 
-          shasum -a 256 "$release_asset" | tee "$release_asset.sha256"
+          checksum_line="$(shasum -a 256 "$release_asset")"
+          printf '%s\n' "$checksum_line" | tee "$release_asset.sha256"
+          checksum="${checksum_line%% *}"
+
+          GITHUB_REF_NAME_VALUE="$RELEASE_REF_NAME" \
+          GITHUB_SHA_VALUE="$RELEASE_GIT_SHA" \
+          GITHUB_REF_VALUE="$RELEASE_GIT_REF" \
+          RUNNER_ARCH="$runner_arch" \
+          DMG_ASSET_PATH="$release_asset" \
+          DMG_SHA256="$checksum" \
+          HDIUTIL_VERIFY_STATUS="$hdiutil_verify_status" \
+          STAPLER_VALIDATION_STATUS="$stapler_validation_status" \
+          DMG_GATEKEEPER_ASSESSMENT_STATUS="$dmg_gatekeeper_assessment_status" \
+          READONLY_ATTACH_APP_PRESENCE_STATUS="$readonly_attach_app_presence_status" \
+          APP_CODESIGN_VERIFICATION_STATUS="$app_codesign_verification_status" \
+          APP_GATEKEEPER_ASSESSMENT_STATUS="$app_gatekeeper_assessment_status" \
+          RELEASE_VERSION="$version" \
+          PROVENANCE_PATH="$provenance_path" \
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const provenance = {
+            "kind": "curiosity-transcripts-release-provenance",
+            "schema_version": 1,
+            "app": {
+              "name": "Curiosity Transcripts",
+              "version": process.env.RELEASE_VERSION,
+            },
+            "release": {
+              "github_ref_name": process.env.GITHUB_REF_NAME_VALUE,
+              "github_sha": process.env.GITHUB_SHA_VALUE,
+              "github_ref": process.env.GITHUB_REF_VALUE,
+            },
+            "runner": {
+              "runner_architecture": process.env.RUNNER_ARCH,
+            },
+            "asset": {
+              "dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH),
+              "dmg_asset_path": process.env.DMG_ASSET_PATH,
+              "dmg_sha256": process.env.DMG_SHA256,
+            },
+            "verification": {
+              "hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS,
+              "stapler_validation": process.env.STAPLER_VALIDATION_STATUS,
+              "dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS,
+              "readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS,
+              "app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS,
+              "app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS,
+            },
+          };
+
+          fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
+          NODE
+          node scripts/check-release-provenance-artifact.js "$provenance_path"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "asset_path=$release_asset" >> "$GITHUB_OUTPUT"
           echo "checksum_path=$release_asset.sha256" >> "$GITHUB_OUTPUT"
+          echo "provenance_path=$provenance_path" >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub Release
         env:
@@ -83,23 +172,54 @@ jobs:
           RELEASE_VERSION: ${{ steps.stage_assets.outputs.version }}
           ASSET_PATH: ${{ steps.stage_assets.outputs.asset_path }}
           CHECKSUM_PATH: ${{ steps.stage_assets.outputs.checksum_path }}
+          PROVENANCE_PATH: ${{ steps.stage_assets.outputs.provenance_path }}
         run: |
           release_notes="$(mktemp)"
           {
             echo "Curiosity Transcripts ${RELEASE_VERSION}"
             echo
-            echo "Ad-hoc signed, non-notarized macOS DMG for testing the open-source release path."
-            echo "Developer ID signed and notarized distribution remains a separate release step."
+            echo "Release scope:"
+            echo "- arm64-only macOS DMG for the first public release target."
+            echo "- Developer ID signed and notarized macOS DMG."
+            echo "- SHA-256 checksum asset uploaded beside the DMG: $(basename "$CHECKSUM_PATH")."
+            echo "- Release provenance manifest uploaded beside the DMG: $(basename "$PROVENANCE_PATH")."
+            echo
+            echo "Automated verification:"
+            echo "- The workflow verifies the disk image, stapled notarization ticket, app bundle signature, and Gatekeeper assessment before upload."
+            echo
+            echo "Manual smoke status:"
+            echo "- Skipped smoke checks are not passes. Record the build, machine, macOS version, model paths, and any skipped microphone, ScreenCaptureKit, Whisper, Ollama, offline, export, delete, or uninstall item before treating this release as ready."
+            echo "- Start from docs/release-candidate-smoke-evidence.template.json, then validate filled manual evidence with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json. This workflow does not validate filled manual evidence automatically."
+            echo "- This workflow leaves this GitHub Release as a draft until filled manual smoke evidence validates with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json."
+            echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'
+            echo
+            echo "Release governance sign-off:"
+            echo "- Start from docs/release-governance-signoff.template.json, then validate filled governance evidence with node scripts/check-release-governance-signoff.js path/to/filled-signoff.json before manual publish."
+            echo "- Before publishing, confirm protected v* tags and release branch rules are active, CodeQL alerts are triaged, Gitleaks and GitHub secret-scanning alerts are triaged, and the publisher is authorized. These are external checks; this workflow does not verify live GitHub settings or alert state."
+            echo
+            echo "Privacy and storage disclosure:"
+            echo "- App-level encryption-at-rest is not implemented in v1. App-private local data relies on OS and user-account file protections; user-owned source files and exports can remain outside the app delete boundary."
           } > "$release_notes"
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
+          release_view_error="$(mktemp)"
+          if release_is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>"$release_view_error")"; then
+            if [ "$release_is_draft" != "true" ]; then
+              echo "::error::GitHub Release $RELEASE_TAG already exists and is published; refusing to edit notes or upload assets."
+              exit 1
+            fi
+
+            gh release edit "$RELEASE_TAG" --draft \
+              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
+              --notes-file "$release_notes"
+          elif grep -Eiq "not found|HTTP 404" "$release_view_error"; then
+            gh release create "$RELEASE_TAG" --draft \
               --title "Curiosity Transcripts ${RELEASE_VERSION}" \
               --notes-file "$release_notes"
           else
-            gh release create "$RELEASE_TAG" \
-              --title "Curiosity Transcripts ${RELEASE_VERSION}" \
-              --notes-file "$release_notes"
+            echo "::error::Unable to inspect GitHub Release $RELEASE_TAG draft status; refusing to create, edit, or upload assets."
+            cat "$release_view_error" >&2
+            exit 1
           fi
 
-          gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
+          rm -f "$release_view_error"
+          gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" "$PROVENANCE_PATH" --clobber

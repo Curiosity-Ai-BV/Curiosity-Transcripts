@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -12,6 +15,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_LINUX_AMD64_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_ARCHIVE: actionlint_1.7.12_linux_amd64.tar.gz
+        run: |
+          curl -LfsS -o "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ACTIONLINT_ARCHIVE}"
+          printf '%s  %s\n' "$ACTIONLINT_LINUX_AMD64_SHA256" "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/$ACTIONLINT_ARCHIVE" -C "$RUNNER_TEMP/actionlint" actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+
+      - name: Check GitHub Actions workflow syntax
+        run: actionlint -color=false
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -19,10 +37,19 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
+      - name: Check critical CI gate metadata
+        run: node scripts/check-ci-critical-gates.js
+
       - name: Set up Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt --component llvm-tools-preview
           rustup default stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
 
       - name: Check publication readiness
         run: bash scripts/check-publication-readiness.sh
@@ -38,6 +65,9 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --check
+
+      - name: Audit Rust workspace dependencies
+        run: cargo audit
 
       - name: Install Tauri Linux system dependencies
         run: |
@@ -58,11 +88,24 @@ jobs:
       - name: Check desktop Rust formatting
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 
+      - name: Audit desktop Rust backend dependencies
+        working-directory: apps/desktop/src-tauri
+        run: cargo audit
+
       - name: Test Rust workspace
         run: cargo test --workspace
 
       - name: Test desktop Rust backend
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Test desktop Rust backend without Whisper
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
+
+      - name: Generate Rust coverage artifacts
+        run: |
+          mkdir -p release-artifacts/coverage/rust
+          cargo llvm-cov --workspace --lcov --output-path release-artifacts/coverage/rust/workspace.lcov
+          cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --lcov --output-path release-artifacts/coverage/rust/desktop-tauri.lcov
 
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -106,10 +149,72 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Generate supply-chain artifacts
+        run: node scripts/generate-supply-chain-artifacts.js
+
+      - name: Check supply-chain artifacts
+        run: node scripts/check-supply-chain-artifacts.js
+
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-artifacts
+          path: release-artifacts/supply-chain
+          if-no-files-found: error
+
+      - name: Audit desktop npm dependencies
+        working-directory: apps/desktop
+        run: npm audit --audit-level=high
+
       - name: Test desktop frontend
         working-directory: apps/desktop
         run: npm run test
 
+      - name: Generate desktop command/view contract artifact
+        run: node scripts/check-desktop-command-view-contract.js --write-artifact
+
+      - name: Validate desktop command/view contract artifact
+        run: node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json
+
+      - name: Upload desktop command/view contract artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-command-view-contract-artifact
+          path: release-artifacts/contracts
+          if-no-files-found: error
+
+      - name: Generate desktop frontend coverage
+        working-directory: apps/desktop
+        run: npm run test:coverage
+
+      - name: Check coverage artifacts
+        run: node scripts/check-coverage-artifacts.js
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-artifacts
+          path: release-artifacts/coverage
+          if-no-files-found: error
+
       - name: Build desktop frontend
         working-directory: apps/desktop
         run: npm run build
+
+  macos-system-audio-check:
+    runs-on: macos-26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Check desktop Rust backend with ScreenCaptureKit system audio
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features --features system-audio-screencapturekit
+
+      - name: Check release desktop Rust backend with ScreenCaptureKit system audio
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --features system-audio-screencapturekit

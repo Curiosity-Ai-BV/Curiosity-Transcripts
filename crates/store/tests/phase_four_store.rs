@@ -2,10 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, Meeting, ModelRun, RecordingSession, RecordingSource,
-    SourceChannel, TranscriptSegment, TranscriptVersion,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, ModelRun,
+    ProcessingJob, RecordingSession, RecordingSource, SourceChannel, TranscriptSegment,
+    TranscriptVersion,
 };
-use curiosity_store::{ArtifactManifest, Store};
+use curiosity_store::{ArtifactManifest, Store, WhisperTranscriptionCompatibilityEvidence};
+use rusqlite::Connection;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -316,6 +318,14 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
     store
         .record_exported_file("meeting-1", &exported_path)
         .expect("record export");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-1-job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Succeeded,
+        ))
+        .expect("insert historical deleted meeting job");
     store.rebuild_search_index().expect("rebuild search");
 
     let report = store.delete_meeting("meeting-1").expect("delete meeting");
@@ -331,6 +341,7 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
             .expect("recording sessions"),
         0
     );
+    assert_eq!(store.count("processing_jobs").expect("processing jobs"), 0);
     assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 0);
     assert_eq!(store.count("transcript_versions").expect("versions"), 0);
     assert_eq!(store.count("transcript_segments").expect("segments"), 0);
@@ -344,11 +355,60 @@ fn delete_meeting_removes_private_rows_and_search_results_but_reports_exports() 
 }
 
 #[test]
+fn delete_meeting_clears_whisper_transcription_evidence_for_deleted_meeting() {
+    let root = test_root("delete-clears-whisper-evidence");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+    store
+        .save_whisper_transcription_compatibility_evidence(
+            &WhisperTranscriptionCompatibilityEvidence {
+                model_path: "/models/ggml-base.en.bin".to_string(),
+                used_at_ms: 1_700_000_003_000,
+                provider: "local-whisper".to_string(),
+                model_name: "ggml-base.en.bin".to_string(),
+                meeting_id: "meeting-1".to_string(),
+                model_run_id: "meeting-1-run-1".to_string(),
+                transcript_version_id: "meeting-1-version-1".to_string(),
+                segment_count: 1,
+                file_size_bytes: 16,
+                modified_at_ms: 1_700_000_004_000,
+            },
+        )
+        .expect("save compatibility evidence");
+
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert_eq!(
+        store
+            .app_settings()
+            .expect("settings")
+            .whisper_transcription_compatibility_evidence,
+        None
+    );
+}
+
+#[test]
 fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searchable() {
     let root = test_root("delete-target-only");
     let store = migrated_store(&root);
     seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
     seed_meeting_with_transcript(&store, "meeting-2", "Design", "keep me");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-1-job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Failed,
+        ))
+        .expect("insert historical deleted meeting job");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-2-job-1",
+            "meeting-2",
+            JobKind::Summarize,
+            JobStatus::Queued,
+        ))
+        .expect("insert kept meeting job");
 
     store.delete_meeting("meeting-1").expect("delete meeting");
 
@@ -358,6 +418,11 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
             .count("recording_sessions")
             .expect("recording sessions"),
         1
+    );
+    assert_eq!(store.count("processing_jobs").expect("processing jobs"), 1);
+    assert_eq!(
+        store.job_status("meeting-2-job-1").expect("kept job"),
+        JobStatus::Queued
     );
     assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 1);
     assert_eq!(store.count("transcript_versions").expect("versions"), 1);
@@ -370,6 +435,142 @@ fn delete_meeting_removes_only_target_private_rows_and_keeps_other_meeting_searc
         .search_meetings("delete")
         .expect("search deleted")
         .is_empty());
+}
+
+#[test]
+fn delete_meeting_rejects_active_transcription_and_summary_jobs_without_private_cleanup() {
+    for (case, kind, cancel_requested) in [
+        ("running-transcription", JobKind::Transcribe, false),
+        ("cancel-requested-summary", JobKind::Summarize, true),
+    ] {
+        let root = test_root(case);
+        let store = migrated_store(&root);
+        seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+        let artifact_path = root.join("meetings/meeting-1/audio/imported.wav");
+        fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
+        fs::write(&artifact_path, b"private audio").expect("artifact file");
+        let manifest_path = root.join("meetings/meeting-1/manifest.json");
+        ArtifactManifest::new(
+            "meeting-1",
+            "meeting-1-session-1",
+            "meeting-1-artifact-1",
+            "meetings/meeting-1/audio/imported.wav",
+            "sha256:meeting-1",
+        )
+        .write(&manifest_path)
+        .expect("write manifest");
+        let mut job = ProcessingJob::new(
+            format!("meeting-1-{case}-job"),
+            "meeting-1",
+            kind,
+            JobStatus::Running,
+        );
+        job.cancel_requested = cancel_requested;
+        store
+            .insert_processing_job(&job)
+            .expect("insert active job");
+        store.rebuild_search_index().expect("rebuild search");
+
+        let err = store
+            .delete_meeting("meeting-1")
+            .expect_err("active jobs must block private data deletion");
+
+        assert!(
+            err.to_string().contains("active processing job"),
+            "{case}: {err}"
+        );
+        assert!(
+            !store
+                .meeting_deleted("meeting-1")
+                .expect("meeting delete intent"),
+            "{case}: meeting should not be marked deleted"
+        );
+        assert!(
+            !store
+                .artifact_tombstoned("meeting-1-artifact-1")
+                .expect("artifact tombstone"),
+            "{case}: artifact should not be tombstoned"
+        );
+        assert!(artifact_path.exists(), "{case}: artifact file remains");
+        assert!(manifest_path.exists(), "{case}: manifest remains");
+        assert_eq!(
+            store
+                .count("recording_sessions")
+                .expect("recording sessions"),
+            1,
+            "{case}: recording session remains"
+        );
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            1,
+            "{case}: processing job remains"
+        );
+        let active_job = store.processing_job(&job.id).expect("active job remains");
+        assert_eq!(active_job.status, JobStatus::Running, "{case}");
+        assert_eq!(
+            active_job.cancel_requested, cancel_requested,
+            "{case}: cancel request flag remains"
+        );
+        assert_eq!(
+            meeting_search_row_count(&root, "meeting-1"),
+            1,
+            "{case}: search row remains"
+        );
+        assert_eq!(
+            ids(&store.search_meetings("delete").expect("search deleted")),
+            vec!["meeting-1"],
+            "{case}: meeting remains searchable"
+        );
+    }
+}
+
+#[test]
+fn delete_meeting_allows_historical_transcription_and_summary_jobs() {
+    for (case, kind, status) in [
+        (
+            "succeeded-transcription",
+            JobKind::Transcribe,
+            JobStatus::Succeeded,
+        ),
+        ("failed-summary", JobKind::Summarize, JobStatus::Failed),
+        (
+            "canceled-transcription",
+            JobKind::Transcribe,
+            JobStatus::Canceled,
+        ),
+        ("retry-summary", JobKind::Summarize, JobStatus::Retry),
+        (
+            "recovery-transcription",
+            JobKind::Transcribe,
+            JobStatus::Recovery,
+        ),
+    ] {
+        let root = test_root(case);
+        let store = migrated_store(&root);
+        seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+        store
+            .insert_processing_job(&ProcessingJob::new(
+                format!("meeting-1-{case}-job"),
+                "meeting-1",
+                kind,
+                status,
+            ))
+            .expect("insert historical job");
+
+        store
+            .delete_meeting("meeting-1")
+            .unwrap_or_else(|err| panic!("{case}: historical job should not block delete: {err}"));
+
+        assert_eq!(
+            store.count("processing_jobs").expect("processing jobs"),
+            0,
+            "{case}: historical job is deleted with private rows"
+        );
+        assert!(
+            store.search_meetings("delete").expect("search").is_empty(),
+            "{case}: deleted meeting should not remain searchable"
+        );
+    }
 }
 
 #[test]
@@ -453,6 +654,149 @@ fn delete_meeting_retry_succeeds_after_file_removal_failure_marks_delete_intent(
         0
     );
     assert!(store.search_meetings("delete").expect("search").is_empty());
+}
+
+#[test]
+fn finalize_pending_delete_intents_removes_leftover_private_cleanup_without_recovering_exports() {
+    let root = test_root("finalize-pending-delete");
+    let export_root = test_root("finalize-pending-delete-export");
+    let store = migrated_store(&root);
+    seed_meeting_with_transcript(&store, "meeting-1", "Planning", "delete me");
+    seed_meeting_with_transcript(&store, "meeting-2", "Design", "keep me");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-1-job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("insert deleted meeting job");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-2-job-1",
+            "meeting-2",
+            JobKind::Summarize,
+            JobStatus::Queued,
+        ))
+        .expect("insert kept meeting job");
+
+    let deleted_artifact_path = root.join("meetings/meeting-1/audio/imported.wav");
+    fs::create_dir_all(
+        deleted_artifact_path
+            .parent()
+            .expect("deleted artifact parent"),
+    )
+    .expect("deleted artifact dir");
+    fs::write(&deleted_artifact_path, b"private audio").expect("deleted artifact file");
+    let kept_artifact_path = root.join("meetings/meeting-2/audio/imported.wav");
+    fs::create_dir_all(kept_artifact_path.parent().expect("kept artifact parent"))
+        .expect("kept artifact dir");
+    fs::write(&kept_artifact_path, b"other private audio").expect("kept artifact file");
+    let manifest_path = root.join("meetings/meeting-1/manifest.json");
+    ArtifactManifest::new(
+        "meeting-1",
+        "meeting-1-session-1",
+        "meeting-1-artifact-1",
+        "meetings/meeting-1/audio/imported.wav",
+        "sha256:meeting-1",
+    )
+    .mark_interrupted_recoverable()
+    .write(&manifest_path)
+    .expect("write pending delete manifest");
+    let exported_path = export_root.join("meeting-1.md");
+    fs::write(&exported_path, b"# exported transcript").expect("export file");
+    store
+        .record_exported_file("meeting-1", &exported_path)
+        .expect("record export");
+
+    store
+        .tombstone_audio_artifact("meeting-1-artifact-1")
+        .expect("tombstone artifact");
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+        .expect("mark meeting deleted");
+
+    let reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].meeting_id, "meeting-1");
+    assert_eq!(
+        reports[0].deleted_private_artifacts,
+        vec![deleted_artifact_path.clone()]
+    );
+    assert_eq!(
+        reports[0].exported_files_outside_app_control,
+        vec![exported_path.clone()]
+    );
+    assert!(!deleted_artifact_path.exists());
+    assert!(!manifest_path.exists());
+    assert!(kept_artifact_path.exists());
+    assert!(exported_path.exists());
+    assert_eq!(store.count("audio_artifacts").expect("audio artifacts"), 1);
+    assert_eq!(
+        store
+            .count("recording_sessions")
+            .expect("recording sessions"),
+        1
+    );
+    assert_eq!(store.count("processing_jobs").expect("processing jobs"), 1);
+    assert_eq!(
+        store.job_status("meeting-2-job-1").expect("kept job"),
+        JobStatus::Queued
+    );
+    assert_eq!(meeting_search_row_count(&root, "meeting-1"), 0);
+    assert_eq!(meeting_search_row_count(&root, "meeting-2"), 1);
+    assert!(store.search_meetings("delete").expect("search").is_empty());
+    assert_eq!(
+        ids(&store.search_meetings("keep").expect("kept search")),
+        vec!["meeting-2"]
+    );
+}
+
+#[test]
+fn finalize_pending_delete_intents_detects_processing_job_as_private_row() {
+    let root = test_root("finalize-pending-delete-job-only");
+    let store = migrated_store(&root);
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Delete job", 1_000))
+        .expect("insert deleted meeting");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-2", "Keep job", 2_000))
+        .expect("insert kept meeting");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-1-job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("insert deleted meeting job");
+    store
+        .insert_processing_job(&ProcessingJob::new(
+            "meeting-2-job-1",
+            "meeting-2",
+            JobKind::Summarize,
+            JobStatus::Queued,
+        ))
+        .expect("insert kept meeting job");
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+        .expect("mark meeting deleted");
+
+    let reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].meeting_id, "meeting-1");
+    assert!(reports[0].deleted_private_artifacts.is_empty());
+    assert_eq!(store.count("processing_jobs").expect("processing jobs"), 1);
+    assert_eq!(
+        store.job_status("meeting-2-job-1").expect("kept job"),
+        JobStatus::Queued
+    );
 }
 
 fn migrated_store(root: &Path) -> Store {
@@ -565,4 +909,14 @@ fn ids(results: &[curiosity_store::MeetingSearchResult]) -> Vec<&str> {
         .iter()
         .map(|result| result.meeting_id.as_str())
         .collect()
+}
+
+fn meeting_search_row_count(root: &Path, meeting_id: &str) -> u64 {
+    let conn = Connection::open(root.join("app.db")).expect("search db connection");
+    conn.query_row(
+        "SELECT COUNT(*) FROM meeting_search WHERE meeting_id = ?1",
+        [meeting_id],
+        |row| row.get(0),
+    )
+    .expect("search row count")
 }

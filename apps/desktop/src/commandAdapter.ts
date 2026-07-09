@@ -1,200 +1,114 @@
-export type CommandRecordingState =
-  | "Idle"
-  | "Recording"
-  | "Paused"
-  | "Stopping"
-  | "Interrupted"
-  | "Recovering"
-  | "Complete";
+import {
+  assertDesktopSnapshotContract,
+  assertMeetingSearchResultsContract,
+  assertOllamaConnectionTestContract,
+  assertWhisperModelPathTestContract,
+} from "./desktopContract";
 
-export type AppPermissionState =
-  | "Ready"
-  | "MicrophoneDenied"
-  | "SystemAudioDenied"
-  | "MicrophoneUnavailable"
-  | "SystemAudioUnavailable";
-export type RawAudioRetentionPolicy = "Retain" | "DeleteAfterTranscription" | "NeverSave";
-export type Tone = "ready" | "active" | "warn" | "blocked" | "muted";
+import type {
+  AppPermissionState,
+  RawAudioRetentionPolicy,
+  PersistedRawAudioRetentionPolicy,
+  ExportFormat,
+  CommandRecordingDto,
+  StatusView,
+  ModelStatus,
+  ModelSetupOptions,
+  WhisperModelPathTestResult,
+  OllamaConnectionTestResult,
+  ExportCommandState,
+  DeleteCommandState,
+  MeetingSearchResult,
+  AnalysisDisclosureState,
+  TranscriptionCommandView,
+  TranscriptSegment,
+  MeetingView,
+  CommandJobView,
+  DesktopSnapshot,
+} from "./desktopContract";
 
-export interface CommandRecordingDto {
-  meeting_id: string;
-  recording_id: string | null;
-  state: CommandRecordingState;
-  permission_state: AppPermissionState;
-  storage_location: { app_private_path: string };
-  raw_audio_retention: RawAudioRetentionPolicy;
-  recoverable: boolean;
-  recovery_action: string;
-}
+export {
+  assertDesktopSnapshotContract,
+} from "./desktopContract";
 
-export interface StatusView {
-  label: string;
-  tone: Tone;
-  detail: string;
-}
-
-export interface CommandSurfaceState {
-  ready: boolean;
-  detail: string;
-}
-
-export interface ModelStatus {
-  kind: "ready" | "missing" | "transcribing";
-  configuredPath: string;
-}
-
-export interface AppSettings {
-  whisperModelPath: string;
-  ollamaBaseUrl: string;
-  ollamaModel: string;
-  exportDirectory: string | null;
-}
-
-export interface WhisperModelPathTestResult {
-  state: "Valid" | "Invalid";
-  message: string;
-  setupGuidance: string;
-}
-
-export interface OllamaConnectionTestResult {
-  state: "Available" | "Unavailable";
-  message: string;
-  setupGuidance: string;
-}
-
-export interface ExportCommandState {
-  state: "idle" | "exporting" | "exported" | "failed";
-  meetingId?: string | null;
-  path?: string | null;
-  message?: string | null;
-}
-
-export interface DeleteCommandState {
-  state: "idle" | "deleting" | "deleted" | "failed";
-  meetingId?: string | null;
-  deletedPrivateArtifacts?: string[];
-  skippedPrivateArtifacts?: string[];
-  remainingExports?: string[];
-  message?: string | null;
-}
-
-export interface MeetingSearchResult {
-  meeting_id: string;
-  title: string;
-}
-
-export interface AnalysisDisclosureState {
-  provider: string;
-  modelName: string;
-  networkUsed: boolean;
-  disclosureRequired: boolean;
-  disclosureConfirmed: boolean;
-  summary?: string | null;
-  createdAtMs?: number | null;
-  promptTemplateVersion?: string | null;
-}
-
-export interface CommandFailureView {
-  code: string;
-  message: string;
-  setupGuidance: string;
-}
-
-export interface AnalysisCommandView {
-  meetingId: string;
-  state: "Complete" | "Failed";
-  analysis?: {
-    provider: string;
-    modelName: string;
-    networkUsed: boolean;
-    summary: string;
-  } | null;
-  failure?: CommandFailureView | null;
-}
-
-export interface TranscriptionCommandView {
-  meetingId: string;
-  state: "Complete" | "Failed";
-  failure?: CommandFailureView | null;
-}
-
-export interface TranscriptSegment {
-  id: string;
-  startMs: number;
-  endMs: number;
-  text: string;
-  sourceChannel: string;
-  modelRunId: string;
-  transcriptVersionId: string;
-}
-
-export interface MeetingView {
-  id: string;
-  title: string;
-  startedAt: string;
-  duration: string;
-  status: string;
-  transcriptState: "Ready" | "Transcribing" | "Unavailable";
-  transcriptText: string;
-  segments: TranscriptSegment[];
-  privacy: {
-    storageLabel: string;
-    storagePath: string;
-    rawAudioRetention: RawAudioRetentionPolicy;
-    localOnly: boolean;
-  };
-  exportState: ExportCommandState;
-  deleteState: DeleteCommandState;
-  analysis: AnalysisDisclosureState | null;
-}
-
-export interface CaptureStatus {
-  microphone: AppPermissionState;
-  systemAudio: AppPermissionState;
-}
-
-export interface CommandJobView {
-  id: string;
-  kind: "Transcription" | "Summary";
-  meetingId: string;
-  state: "Running" | "CancelRequested" | "Complete" | "Failed" | "Canceled";
-  cancelRequested: boolean;
-  startedAtMs: number;
-}
-
-export interface DesktopSnapshot {
-  loading: boolean;
-  commandSurface: CommandSurfaceState;
-  meetings: MeetingView[];
-  selectedMeetingId: string | null;
-  recording: CommandRecordingDto;
-  model: ModelStatus;
-  settings: AppSettings;
-  capture: CaptureStatus;
-  transcription: TranscriptionCommandView | null;
-  transcriptionJob: CommandJobView | null;
-  exportCommand: ExportCommandState;
-  deleteCommand: DeleteCommandState;
-  analysisCommand: AnalysisCommandView | null;
-  summaryJob: CommandJobView | null;
-}
-
+export type {
+  CommandRecordingState,
+  AppPermissionState,
+  RawAudioRetentionPolicy,
+  PersistedRawAudioRetentionPolicy,
+  Tone,
+  ExportFormat,
+  CommandRecordingDto,
+  StatusView,
+  CommandSurfaceState,
+  ModelStatus,
+  WhisperSetupState,
+  OllamaSetupState,
+  OllamaAvailabilityState,
+  WhisperSetupGuidance,
+  OllamaSetupGuidance,
+  FirstRunSetupGuidance,
+  ModelSetupOptions,
+  WhisperModelSetupOptions,
+  OllamaModelSetupOptions,
+  OllamaModelSetupCandidate,
+  CalendarPermissionState,
+  CalendarAvailabilityState,
+  CalendarEventPrivacy,
+  CalendarEventOverlapState,
+  CalendarContextEvent,
+  CalendarContext,
+  MeetingCalendarAttachment,
+  AppSettings,
+  WhisperPathTestEvidence,
+  WhisperTranscriptionCompatibilityEvidence,
+  WhisperModelPathTestResult,
+  OllamaConnectionTestResult,
+  OllamaConnectionTestEvidence,
+  ExportCommandState,
+  DeleteCommandState,
+  MeetingSearchResult,
+  AnalysisDisclosureState,
+  CommandFailureView,
+  AnalysisCommandView,
+  TranscriptionCommandView,
+  TranscriptSegment,
+  MeetingView,
+  CaptureStatus,
+  CommandJobView,
+  DesktopSnapshot,
+} from "./desktopContract";
 export type CommandFetcher = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export interface DesktopCommandFacade {
   desktopSnapshot(): Promise<DesktopSnapshot>;
   searchMeetings(args: { query: string }): Promise<MeetingSearchResult[]>;
   startRecording(args?: { title?: string }): Promise<DesktopSnapshot>;
+  importAudioFile(args: { sourcePath: string; title?: string }): Promise<DesktopSnapshot>;
   stopRecording(): Promise<DesktopSnapshot>;
   transcribeMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
+  correctTranscriptSegment(args: {
+    meetingId: string;
+    segmentId: string;
+    correctedText: string;
+    editedAtMs: number;
+  }): Promise<DesktopSnapshot>;
   cancelTranscription(args: { jobId: string }): Promise<DesktopSnapshot>;
   renameMeeting(args: { meetingId: string; title: string }): Promise<DesktopSnapshot>;
+  exportMeeting(args: { meetingId: string; format: ExportFormat }): Promise<DesktopSnapshot>;
   exportMeetingJson(args: { meetingId: string }): Promise<DesktopSnapshot>;
   deleteMeeting(args: { meetingId: string }): Promise<DesktopSnapshot>;
   generateSummary(args: { meetingId: string }): Promise<DesktopSnapshot>;
   cancelSummary(args: { jobId: string }): Promise<DesktopSnapshot>;
   saveWhisperModelPath(args: { whisperModelPath: string }): Promise<DesktopSnapshot>;
   saveAnalysisSettings(args: { ollamaBaseUrl: string; ollamaModel: string }): Promise<DesktopSnapshot>;
+  saveRawAudioRetentionPolicy(args: { rawAudioRetentionPolicy: PersistedRawAudioRetentionPolicy }): Promise<DesktopSnapshot>;
+  requestAppleCalendarAccess(): Promise<DesktopSnapshot>;
+  attachCalendarEventContext(args: {
+    meetingId: string;
+    eventId: string;
+    privacyConfirmed: boolean;
+  }): Promise<DesktopSnapshot>;
   testWhisperModelPath(args: { path: string }): Promise<WhisperModelPathTestResult>;
   testOllamaConnection(args: { baseUrl: string; model: string }): Promise<OllamaConnectionTestResult>;
 }
@@ -217,115 +131,6 @@ export async function loadDesktopSnapshot({
     return getMockDesktopSnapshot();
   }
   throw new Error("Tauri command surface is unavailable");
-}
-
-export function assertDesktopSnapshotContract(value: unknown): asserts value is DesktopSnapshot {
-  for (const path of REQUIRED_DESKTOP_SNAPSHOT_PATHS) {
-    requireContractPath(value, path, "desktop_snapshot");
-  }
-
-  const root = requireContractRecord(value, "desktop_snapshot");
-  requireBoolean(root.loading, "desktop_snapshot.loading");
-  const commandSurface = requireContractRecord(root.commandSurface, "desktop_snapshot.commandSurface");
-  requireBoolean(commandSurface.ready, "desktop_snapshot.commandSurface.ready");
-  requireString(commandSurface.detail, "desktop_snapshot.commandSurface.detail");
-  requireNullableString(root.selectedMeetingId, "desktop_snapshot.selectedMeetingId");
-
-  requireContractArray(root.meetings, "desktop_snapshot.meetings").forEach((meeting, index) => {
-    const meetingPath = `desktop_snapshot.meetings[${index}]`;
-    for (const path of REQUIRED_MEETING_PATHS) {
-      requireContractPath(meeting, path, meetingPath);
-    }
-
-    const meetingRecord = requireContractRecord(meeting, meetingPath);
-    requireString(meetingRecord.id, `${meetingPath}.id`);
-    requireString(meetingRecord.title, `${meetingPath}.title`);
-    requireString(meetingRecord.startedAt, `${meetingPath}.startedAt`);
-    requireString(meetingRecord.duration, `${meetingPath}.duration`);
-    requireString(meetingRecord.status, `${meetingPath}.status`);
-    requireEnum(meetingRecord.transcriptState, ["Ready", "Transcribing", "Unavailable"], `${meetingPath}.transcriptState`);
-    requireString(meetingRecord.transcriptText, `${meetingPath}.transcriptText`);
-    const privacy = requireContractRecord(meetingRecord.privacy, `${meetingPath}.privacy`);
-    requireString(privacy.storageLabel, `${meetingPath}.privacy.storageLabel`);
-    requireString(privacy.storagePath, `${meetingPath}.privacy.storagePath`);
-    requireEnum(
-      privacy.rawAudioRetention,
-      ["Retain", "DeleteAfterTranscription", "NeverSave"],
-      `${meetingPath}.privacy.rawAudioRetention`,
-    );
-    requireBoolean(privacy.localOnly, `${meetingPath}.privacy.localOnly`);
-    validateExportCommandState(meetingRecord.exportState, `${meetingPath}.exportState`);
-    validateDeleteCommandState(meetingRecord.deleteState, `${meetingPath}.deleteState`);
-    requireContractArray(meetingRecord.segments, `${meetingPath}.segments`).forEach(
-      (segment, segmentIndex) => {
-        const segmentPath = `${meetingPath}.segments[${segmentIndex}]`;
-        for (const path of REQUIRED_SEGMENT_PATHS) {
-          requireContractPath(segment, path, segmentPath);
-        }
-        const segmentRecord = requireContractRecord(segment, segmentPath);
-        requireString(segmentRecord.id, `${segmentPath}.id`);
-        requireNumber(segmentRecord.startMs, `${segmentPath}.startMs`);
-        requireNumber(segmentRecord.endMs, `${segmentPath}.endMs`);
-        requireString(segmentRecord.text, `${segmentPath}.text`);
-        requireString(segmentRecord.sourceChannel, `${segmentPath}.sourceChannel`);
-        requireString(segmentRecord.modelRunId, `${segmentPath}.modelRunId`);
-        requireString(segmentRecord.transcriptVersionId, `${segmentPath}.transcriptVersionId`);
-      },
-    );
-    validateAnalysisDisclosureState(meetingRecord.analysis, `${meetingPath}.analysis`);
-  });
-
-  const recording = requireContractRecord(root.recording, "desktop_snapshot.recording");
-  requireString(recording.meeting_id, "desktop_snapshot.recording.meeting_id");
-  requireNullableString(recording.recording_id, "desktop_snapshot.recording.recording_id");
-  requireEnum(
-    recording.state,
-    ["Idle", "Recording", "Paused", "Stopping", "Interrupted", "Recovering", "Complete"],
-    "desktop_snapshot.recording.state",
-  );
-  requireEnum(
-    recording.permission_state,
-    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
-    "desktop_snapshot.recording.permission_state",
-  );
-  const storageLocation = requireContractRecord(recording.storage_location, "desktop_snapshot.recording.storage_location");
-  requireString(storageLocation.app_private_path, "desktop_snapshot.recording.storage_location.app_private_path");
-  requireEnum(
-    recording.raw_audio_retention,
-    ["Retain", "DeleteAfterTranscription", "NeverSave"],
-    "desktop_snapshot.recording.raw_audio_retention",
-  );
-  requireBoolean(recording.recoverable, "desktop_snapshot.recording.recoverable");
-  requireString(recording.recovery_action, "desktop_snapshot.recording.recovery_action");
-
-  const model = requireContractRecord(root.model, "desktop_snapshot.model");
-  requireEnum(model.kind, ["ready", "missing", "transcribing"], "desktop_snapshot.model.kind");
-  requireString(model.configuredPath, "desktop_snapshot.model.configuredPath");
-
-  const settings = requireContractRecord(root.settings, "desktop_snapshot.settings");
-  requireString(settings.whisperModelPath, "desktop_snapshot.settings.whisperModelPath");
-  requireString(settings.ollamaBaseUrl, "desktop_snapshot.settings.ollamaBaseUrl");
-  requireString(settings.ollamaModel, "desktop_snapshot.settings.ollamaModel");
-  requireNullableString(settings.exportDirectory, "desktop_snapshot.settings.exportDirectory");
-
-  const capture = requireContractRecord(root.capture, "desktop_snapshot.capture");
-  requireEnum(
-    capture.microphone,
-    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
-    "desktop_snapshot.capture.microphone",
-  );
-  requireEnum(
-    capture.systemAudio,
-    ["Ready", "MicrophoneDenied", "SystemAudioDenied", "MicrophoneUnavailable", "SystemAudioUnavailable"],
-    "desktop_snapshot.capture.systemAudio",
-  );
-  validateExportCommandState(root.exportCommand, "desktop_snapshot.exportCommand");
-  validateDeleteCommandState(root.deleteCommand, "desktop_snapshot.deleteCommand");
-
-  validateTranscriptionCommandView(root.transcription, "desktop_snapshot.transcription");
-  validateCommandJobView(root.transcriptionJob, "desktop_snapshot.transcriptionJob");
-  validateAnalysisCommandView(root.analysisCommand, "desktop_snapshot.analysisCommand");
-  validateCommandJobView(root.summaryJob, "desktop_snapshot.summaryJob");
 }
 
 export function isTauriRuntime(): boolean {
@@ -416,6 +221,7 @@ export function mapTranscriptionState(state: TranscriptionCommandView | null): S
 
 export function mapCommandJobState(job: CommandJobView): StatusView {
   const kind = job.kind === "Transcription" ? "Transcription" : "Summary";
+  const retryGuidance = `Retry this ${kind.toLowerCase()} job when you are ready.`;
   if (job.state === "CancelRequested") {
     return {
       label: `${kind} cancel requested`,
@@ -434,7 +240,21 @@ export function mapCommandJobState(job: CommandJobView): StatusView {
     return {
       label: `${kind} failed`,
       tone: "blocked",
-      detail: `${job.meetingId} / ${job.id}`,
+      detail: job.lastError ?? `${job.meetingId} / ${job.id}`,
+    };
+  }
+  if (job.state === "Recovery") {
+    return {
+      label: `${kind} recovered`,
+      tone: "warn",
+      detail: job.lastError ?? retryGuidance,
+    };
+  }
+  if (job.state === "Retry") {
+    return {
+      label: `${kind} retryable`,
+      tone: "warn",
+      detail: job.lastError ?? retryGuidance,
     };
   }
   if (job.state === "Canceled") {
@@ -495,6 +315,20 @@ export function mapModelStatus(model: ModelStatus): StatusView {
       detail: "Choose a local model path before transcription.",
     };
   }
+  if (model.kind === "untested") {
+    return {
+      label: "Whisper path untested",
+      tone: "blocked",
+      detail: "Run Test path for the saved model file before transcription.",
+    };
+  }
+  if (model.kind === "unsupported") {
+    return {
+      label: "Whisper file unsupported",
+      tone: "blocked",
+      detail: "Choose a supported .bin or .gguf Whisper model file before transcription.",
+    };
+  }
   if (model.kind === "transcribing") {
     return {
       label: "Transcribing",
@@ -523,9 +357,10 @@ export function searchMeetings(meetings: MeetingView[], query: string): MeetingV
 }
 
 export function mapExportState(state: ExportCommandState): StatusView {
+  const formatLabel = exportFormatLabel(state.format);
   if (state.state === "exported") {
     return {
-      label: "JSON exported",
+      label: `${formatLabel} exported`,
       tone: "ready",
       detail: state.path || "Export path recorded.",
     };
@@ -534,7 +369,7 @@ export function mapExportState(state: ExportCommandState): StatusView {
     return {
       label: "Exporting",
       tone: "active",
-      detail: "Writing a user-requested JSON export.",
+      detail: `Writing a user-requested ${formatLabel} export.`,
     };
   }
   if (state.state === "failed") {
@@ -549,6 +384,16 @@ export function mapExportState(state: ExportCommandState): StatusView {
     tone: "muted",
     detail: "No export has been requested for this meeting.",
   };
+}
+
+export function exportFormatLabel(format: ExportFormat | null | undefined): string {
+  if (format === "markdown") {
+    return "Markdown";
+  }
+  if (format === "srt") {
+    return "SRT";
+  }
+  return "JSON";
 }
 
 export function mapDeleteState(state: DeleteCommandState): StatusView {
@@ -591,6 +436,43 @@ export function mapDeleteState(state: DeleteCommandState): StatusView {
   };
 }
 
+export function mapRawAudioRetention(policy: RawAudioRetentionPolicy): StatusView {
+  if (policy === "DeleteAfterTranscription") {
+    return {
+      label: "Delete after transcription",
+      tone: "ready",
+      detail: retentionDetail(policy),
+    };
+  }
+  if (policy === "NeverSave") {
+    return {
+      label: "Raw audio not saved",
+      tone: "ready",
+      detail: retentionDetail(policy),
+    };
+  }
+  return {
+    label: "Raw audio retained",
+    tone: "warn",
+    detail: retentionDetail(policy),
+  };
+}
+
+export function mapLocalProcessingState(localOnly: boolean): StatusView {
+  if (localOnly) {
+    return {
+      label: "Stayed local",
+      tone: "ready",
+      detail: "No hosted processing recorded for this meeting.",
+    };
+  }
+  return {
+    label: "Hosted processing used",
+    tone: "warn",
+    detail: "Transcript/summary data may have left this device.",
+  };
+}
+
 export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): StatusView {
   if (!state) {
     return {
@@ -617,6 +499,47 @@ export function mapAnalysisDisclosure(state: AnalysisDisclosureState | null): St
     label: "Local summary",
     tone: "ready",
     detail: `${state.provider} / ${state.modelName}. Transcript stays on this device.`,
+  };
+}
+
+function defaultModelSetupOptions(): ModelSetupOptions {
+  return {
+    whisper: {
+      mode: "ManualFile",
+      title: "Local Whisper file",
+      detail:
+        "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+      chooseLabel: "Choose model",
+      saveLabel: "Save Whisper",
+      testLabel: "Test path",
+      downloadsManaged: false,
+      acceptedExtensions: ["bin", "gguf"],
+    },
+    ollama: {
+      mode: "ManualOllama",
+      title: "Local Ollama models",
+      detail:
+        "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+      automaticPulls: false,
+      candidates: [
+        {
+          id: "ollama-qwen3-6-27b",
+          displayName: "Qwen 3.6 27B",
+          modelTag: "qwen3.6:27b",
+          pullCommand: "ollama pull qwen3.6:27b",
+          defaultCandidate: true,
+          setupNotes: "Install Ollama locally, then run `ollama pull qwen3.6:27b`.",
+        },
+        {
+          id: "ollama-gemma4-31b",
+          displayName: "Gemma 4 31B",
+          modelTag: "gemma4:31b",
+          pullCommand: "ollama pull gemma4:31b",
+          defaultCandidate: true,
+          setupNotes: "Install Ollama locally, then run `ollama pull gemma4:31b`.",
+        },
+      ],
+    },
   };
 }
 
@@ -676,12 +599,69 @@ export function getMockDesktopSnapshot(variant: "default" | "state-matrix" = "de
       variant === "state-matrix"
         ? { kind: "transcribing", configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin" }
         : { kind: "missing", configuredPath: "" },
+    setupGuidance:
+      variant === "state-matrix"
+        ? {
+            whisper: {
+              state: "ReadablePath",
+              configuredPath: "~/Library/Application Support/Curiosity/models/base.en.bin",
+              message: "Whisper model path is readable; compatibility is not verified.",
+              setupGuidance:
+                "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+              compatibilityNote: "Readability does not prove model compatibility.",
+              lastPathTest: null,
+              lastSuccessfulTranscription: null,
+            },
+            ollama: {
+              state: "ConfiguredNotChecked",
+              baseUrl: "http://127.0.0.1:11434",
+              model: "qwen3.6:27b",
+              availability: "UnknownUntilTest",
+              message: "Ollama is configured for a local loopback URL and model.",
+              setupGuidance:
+                "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+              lastConnectionTest: null,
+            },
+          }
+        : {
+            whisper: {
+              state: "MissingPath",
+              configuredPath: "",
+              message: "No Whisper model path is configured.",
+              setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
+              compatibilityNote: "Readability does not prove model compatibility.",
+              lastPathTest: null,
+              lastSuccessfulTranscription: null,
+            },
+            ollama: {
+              state: "ConfiguredNotChecked",
+              baseUrl: "http://127.0.0.1:11434",
+              model: "qwen3.6:27b",
+              availability: "UnknownUntilTest",
+              message: "Ollama is configured for a local loopback URL and model.",
+              setupGuidance:
+                "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+              lastConnectionTest: null,
+            },
+          },
+    modelSetupOptions: defaultModelSetupOptions(),
+    calendarContext: {
+      source: "AppleCalendar",
+      permissionState: "NotRequested",
+      availabilityState: "PermissionRequired",
+      message: "Apple Calendar permission has not been requested.",
+      setupGuidance:
+        "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+      upcomingEvents: [],
+      autoStartEnabled: false,
+    },
     settings: {
       whisperModelPath:
         variant === "state-matrix" ? "~/Library/Application Support/Curiosity/models/base.en.bin" : "",
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "qwen3.6:27b",
       exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain",
     },
     capture:
       variant === "state-matrix"
@@ -726,11 +706,44 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
       recovery_action: "Load the desktop command surface before recording.",
     },
     model: { kind: "missing", configuredPath: "" },
+    setupGuidance: {
+      whisper: {
+        state: "MissingPath",
+        configuredPath: "",
+        message: "No Whisper model path is configured.",
+        setupGuidance: "Enter a local Whisper model path in Settings, save it, then use Test path.",
+        compatibilityNote: "Readability does not prove model compatibility.",
+        lastPathTest: null,
+        lastSuccessfulTranscription: null,
+      },
+      ollama: {
+        state: "ConfiguredNotChecked",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "qwen3.6:27b",
+        availability: "UnknownUntilTest",
+        message: "Ollama is configured for a local loopback URL and model.",
+        setupGuidance:
+          "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+        lastConnectionTest: null,
+      },
+    },
+    modelSetupOptions: defaultModelSetupOptions(),
+    calendarContext: {
+      source: "AppleCalendar",
+      permissionState: "Unavailable",
+      availabilityState: "Unavailable",
+      message: "Apple Calendar context is unavailable until desktop commands load.",
+      setupGuidance:
+        "Calendar context is read-only and recordings never start from calendar events automatically.",
+      upcomingEvents: [],
+      autoStartEnabled: false,
+    },
     settings: {
       whisperModelPath: "",
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "qwen3.6:27b",
       exportDirectory: null,
+      rawAudioRetentionPolicy: "Retain",
     },
     capture: {
       microphone: "MicrophoneUnavailable",
@@ -749,7 +762,10 @@ export function getUnavailableDesktopSnapshot(detail: string): DesktopSnapshot {
   };
 }
 
-function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" | "deleteState">): MeetingView {
+function meeting(
+  input: Omit<MeetingView, "status" | "privacy" | "exportState" | "deleteState" | "calendarAttachment"> &
+    Partial<Pick<MeetingView, "calendarAttachment">>,
+): MeetingView {
   return {
     ...input,
     status: "Complete",
@@ -765,6 +781,7 @@ function meeting(input: Omit<MeetingView, "status" | "privacy" | "exportState" |
     deleteState: {
       state: "idle",
     },
+    calendarAttachment: input.calendarAttachment ?? null,
   };
 }
 
@@ -780,266 +797,39 @@ function segment(
     startMs,
     endMs,
     text,
+    originalText: null,
     sourceChannel,
     modelRunId: "run-1",
     transcriptVersionId: "version-1",
   };
 }
 
-type ContractPath = readonly string[];
-type ContractRecord = Record<string, unknown>;
-
-const REQUIRED_DESKTOP_SNAPSHOT_PATHS: readonly ContractPath[] = [
-  ["loading"],
-  ["commandSurface", "ready"],
-  ["commandSurface", "detail"],
-  ["meetings"],
-  ["selectedMeetingId"],
-  ["recording", "meeting_id"],
-  ["recording", "recording_id"],
-  ["recording", "state"],
-  ["recording", "permission_state"],
-  ["recording", "storage_location", "app_private_path"],
-  ["recording", "raw_audio_retention"],
-  ["recording", "recoverable"],
-  ["recording", "recovery_action"],
-  ["model", "kind"],
-  ["model", "configuredPath"],
-  ["settings", "whisperModelPath"],
-  ["settings", "ollamaBaseUrl"],
-  ["settings", "ollamaModel"],
-  ["settings", "exportDirectory"],
-  ["capture", "microphone"],
-  ["capture", "systemAudio"],
-  ["transcription"],
-  ["transcriptionJob"],
-  ["exportCommand", "state"],
-  ["deleteCommand", "state"],
-  ["analysisCommand"],
-  ["summaryJob"],
-];
-
-const REQUIRED_MEETING_PATHS: readonly ContractPath[] = [
-  ["id"],
-  ["title"],
-  ["startedAt"],
-  ["duration"],
-  ["status"],
-  ["transcriptState"],
-  ["transcriptText"],
-  ["segments"],
-  ["privacy", "storageLabel"],
-  ["privacy", "storagePath"],
-  ["privacy", "rawAudioRetention"],
-  ["privacy", "localOnly"],
-  ["exportState", "state"],
-  ["deleteState", "state"],
-  ["analysis"],
-];
-
-const REQUIRED_SEGMENT_PATHS: readonly ContractPath[] = [
-  ["id"],
-  ["startMs"],
-  ["endMs"],
-  ["text"],
-  ["sourceChannel"],
-  ["modelRunId"],
-  ["transcriptVersionId"],
-];
-
 const DESKTOP_SNAPSHOT_COMMANDS = new Set([
   "desktop_snapshot",
+  "correct_transcript_segment",
   "delete_meeting",
+  "export_meeting",
   "export_meeting_json",
   "generate_summary",
   "cancel_summary",
+  "attach_calendar_event_context",
   "rename_meeting",
+  "request_apple_calendar_access",
   "save_analysis_settings",
+  "save_raw_audio_retention_policy",
   "save_whisper_model_path",
-  "seed_dev_fixture",
+  "import_audio_file",
   "start_microphone_recording",
   "stop_microphone_recording",
   "transcribe_meeting",
   "cancel_transcription",
 ]);
-
-function requireContractPath(value: unknown, path: ContractPath, rootLabel: string): unknown {
-  let current = value;
-  let currentPath = rootLabel;
-
-  for (const field of path) {
-    const record = requireContractRecord(current, currentPath);
-    if (!Object.prototype.hasOwnProperty.call(record, field)) {
-      throw new Error(`desktop_snapshot contract drift: missing ${currentPath}.${field}`);
-    }
-    current = record[field];
-    currentPath = `${currentPath}.${field}`;
-  }
-
-  return current;
-}
-
-function requireContractRecord(value: unknown, pathLabel: string): ContractRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be an object`);
-  }
-  return value as ContractRecord;
-}
-
-function requireContractArray(value: unknown, pathLabel: string): unknown[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be an array`);
-  }
-  return value;
-}
-
-function requireString(value: unknown, pathLabel: string): string {
-  if (typeof value !== "string") {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a string`);
-  }
-  return value;
-}
-
-function requireNullableString(value: unknown, pathLabel: string): string | null {
-  if (value === null) {
-    return value;
-  }
-  return requireString(value, pathLabel);
-}
-
-function requireNumber(value: unknown, pathLabel: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a finite number`);
-  }
-  return value;
-}
-
-function requireBoolean(value: unknown, pathLabel: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be a boolean`);
-  }
-  return value;
-}
-
-function requireEnum<const T extends string>(
-  value: unknown,
-  allowed: readonly T[],
-  pathLabel: string,
-): T {
-  if (typeof value !== "string" || !allowed.includes(value as T)) {
-    throw new Error(`desktop_snapshot contract drift: expected ${pathLabel} to be one of ${allowed.join(", ")}`);
-  }
-  return value as T;
-}
-
-function validateExportCommandState(value: unknown, pathLabel: string): void {
-  const state = requireContractRecord(value, pathLabel);
-  requireEnum(state.state, ["idle", "exporting", "exported", "failed"], `${pathLabel}.state`);
-  if (Object.prototype.hasOwnProperty.call(state, "meetingId")) {
-    requireNullableString(state.meetingId, `${pathLabel}.meetingId`);
-  }
-  if (Object.prototype.hasOwnProperty.call(state, "path")) {
-    requireNullableString(state.path, `${pathLabel}.path`);
-  }
-  if (Object.prototype.hasOwnProperty.call(state, "message")) {
-    requireNullableString(state.message, `${pathLabel}.message`);
-  }
-}
-
-function validateDeleteCommandState(value: unknown, pathLabel: string): void {
-  const state = requireContractRecord(value, pathLabel);
-  requireEnum(state.state, ["idle", "deleting", "deleted", "failed"], `${pathLabel}.state`);
-  if (Object.prototype.hasOwnProperty.call(state, "meetingId")) {
-    requireNullableString(state.meetingId, `${pathLabel}.meetingId`);
-  }
-  if (Object.prototype.hasOwnProperty.call(state, "message")) {
-    requireNullableString(state.message, `${pathLabel}.message`);
-  }
-  for (const field of ["deletedPrivateArtifacts", "skippedPrivateArtifacts", "remainingExports"]) {
-    if (Object.prototype.hasOwnProperty.call(state, field)) {
-      requireContractArray(state[field], `${pathLabel}.${field}`).forEach((item, index) => {
-        requireString(item, `${pathLabel}.${field}[${index}]`);
-      });
-    }
-  }
-}
-
-function validateAnalysisDisclosureState(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const state = requireContractRecord(value, pathLabel);
-  requireString(state.provider, `${pathLabel}.provider`);
-  requireString(state.modelName, `${pathLabel}.modelName`);
-  requireBoolean(state.networkUsed, `${pathLabel}.networkUsed`);
-  requireBoolean(state.disclosureRequired, `${pathLabel}.disclosureRequired`);
-  requireBoolean(state.disclosureConfirmed, `${pathLabel}.disclosureConfirmed`);
-  requireString(state.summary, `${pathLabel}.summary`);
-  requireNumber(state.createdAtMs, `${pathLabel}.createdAtMs`);
-  requireString(state.promptTemplateVersion, `${pathLabel}.promptTemplateVersion`);
-}
-
-function validateCommandFailureView(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const failure = requireContractRecord(value, pathLabel);
-  requireString(failure.code, `${pathLabel}.code`);
-  requireString(failure.message, `${pathLabel}.message`);
-  requireString(failure.setupGuidance, `${pathLabel}.setupGuidance`);
-}
-
-function validateAnalysisResultView(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const analysis = requireContractRecord(value, pathLabel);
-  requireString(analysis.provider, `${pathLabel}.provider`);
-  requireString(analysis.modelName, `${pathLabel}.modelName`);
-  requireBoolean(analysis.networkUsed, `${pathLabel}.networkUsed`);
-  requireString(analysis.summary, `${pathLabel}.summary`);
-}
-
-function validateTranscriptionCommandView(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const command = requireContractRecord(value, pathLabel);
-  requireString(command.meetingId, `${pathLabel}.meetingId`);
-  requireEnum(command.state, ["Complete", "Failed"], `${pathLabel}.state`);
-  validateCommandFailureView(command.failure, `${pathLabel}.failure`);
-}
-
-function validateCommandJobView(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const job = requireContractRecord(value, pathLabel);
-  requireString(job.id, `${pathLabel}.id`);
-  requireEnum(job.kind, ["Transcription", "Summary"], `${pathLabel}.kind`);
-  requireString(job.meetingId, `${pathLabel}.meetingId`);
-  requireEnum(job.state, ["Running", "CancelRequested", "Complete", "Failed", "Canceled"], `${pathLabel}.state`);
-  requireBoolean(job.cancelRequested, `${pathLabel}.cancelRequested`);
-  requireNumber(job.startedAtMs, `${pathLabel}.startedAtMs`);
-}
-
-function validateAnalysisCommandView(value: unknown, pathLabel: string): void {
-  if (value === null) {
-    return;
-  }
-  const command = requireContractRecord(value, pathLabel);
-  requireString(command.meetingId, `${pathLabel}.meetingId`);
-  requireEnum(command.state, ["Complete", "Failed"], `${pathLabel}.state`);
-  validateAnalysisResultView(command.analysis, `${pathLabel}.analysis`);
-  validateCommandFailureView(command.failure, `${pathLabel}.failure`);
-}
-
 function retentionDetail(policy: RawAudioRetentionPolicy): string {
   if (policy === "DeleteAfterTranscription") {
     return "Raw audio will be deleted after transcription.";
   }
   if (policy === "NeverSave") {
-    return "Raw audio is not saved for this meeting.";
+    return "Raw audio was not saved for this meeting.";
   }
   return "Raw audio retained in private app storage.";
 }
@@ -1054,6 +844,15 @@ export function getDesktopCommandFetcher(): CommandFetcher | undefined {
     if (DESKTOP_SNAPSHOT_COMMANDS.has(command)) {
       assertDesktopSnapshotContract(result);
     }
+    if (command === "test_whisper_model_path") {
+      assertWhisperModelPathTestContract(result);
+    }
+    if (command === "test_ollama_connection") {
+      assertOllamaConnectionTestContract(result);
+    }
+    if (command === "search_meetings") {
+      assertMeetingSearchResultsContract(result);
+    }
     return result as T;
   };
 }
@@ -1067,13 +866,22 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
 
   return {
     desktopSnapshot: () => snapshotCommand("desktop_snapshot"),
-    searchMeetings: ({ query }) => fetchCommand<MeetingSearchResult[]>("search_meetings", { query }),
+    searchMeetings: async ({ query }) => {
+      const result = await fetchCommand<unknown>("search_meetings", { query });
+      assertMeetingSearchResultsContract(result);
+      return result;
+    },
     startRecording: (args) =>
       snapshotCommand("start_microphone_recording", args?.title ? { title: args.title } : undefined),
+    importAudioFile: ({ sourcePath, title }) =>
+      snapshotCommand("import_audio_file", title ? { sourcePath, title } : { sourcePath }),
     stopRecording: () => snapshotCommand("stop_microphone_recording"),
     transcribeMeeting: ({ meetingId }) => snapshotCommand("transcribe_meeting", { meetingId }),
+    correctTranscriptSegment: ({ meetingId, segmentId, correctedText, editedAtMs }) =>
+      snapshotCommand("correct_transcript_segment", { meetingId, segmentId, correctedText, editedAtMs }),
     cancelTranscription: ({ jobId }) => snapshotCommand("cancel_transcription", { jobId }),
     renameMeeting: ({ meetingId, title }) => snapshotCommand("rename_meeting", { meetingId, title }),
+    exportMeeting: ({ meetingId, format }) => snapshotCommand("export_meeting", { meetingId, format }),
     exportMeetingJson: ({ meetingId }) => snapshotCommand("export_meeting_json", { meetingId }),
     deleteMeeting: ({ meetingId }) => snapshotCommand("delete_meeting", { meetingId }),
     generateSummary: ({ meetingId }) => snapshotCommand("generate_summary", { meetingId }),
@@ -1082,10 +890,21 @@ export function createDesktopCommandFacade(fetchCommand: CommandFetcher): Deskto
       snapshotCommand("save_whisper_model_path", { whisperModelPath }),
     saveAnalysisSettings: ({ ollamaBaseUrl, ollamaModel }) =>
       snapshotCommand("save_analysis_settings", { ollamaBaseUrl, ollamaModel }),
-    testWhisperModelPath: ({ path }) =>
-      fetchCommand<WhisperModelPathTestResult>("test_whisper_model_path", { path }),
-    testOllamaConnection: ({ baseUrl, model }) =>
-      fetchCommand<OllamaConnectionTestResult>("test_ollama_connection", { baseUrl, model }),
+    saveRawAudioRetentionPolicy: ({ rawAudioRetentionPolicy }) =>
+      snapshotCommand("save_raw_audio_retention_policy", { rawAudioRetentionPolicy }),
+    requestAppleCalendarAccess: () => snapshotCommand("request_apple_calendar_access"),
+    attachCalendarEventContext: ({ meetingId, eventId, privacyConfirmed }) =>
+      snapshotCommand("attach_calendar_event_context", { meetingId, eventId, privacyConfirmed }),
+    testWhisperModelPath: async ({ path }) => {
+      const result = await fetchCommand<unknown>("test_whisper_model_path", { path });
+      assertWhisperModelPathTestContract(result);
+      return result;
+    },
+    testOllamaConnection: async ({ baseUrl, model }) => {
+      const result = await fetchCommand<unknown>("test_ollama_connection", { baseUrl, model });
+      assertOllamaConnectionTestContract(result);
+      return result;
+    },
   };
 }
 

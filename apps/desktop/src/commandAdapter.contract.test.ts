@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import desktopCommandViewContract from "../contracts/desktop-command-view-contract.fixture.json";
 import {
   CommandFetcher,
   createDesktopCommandFacade,
@@ -7,6 +8,15 @@ import {
   getMockDesktopSnapshot,
   loadDesktopSnapshot,
 } from "./commandAdapter";
+
+type DesktopCommandViewContractFixture = {
+  version: number;
+  owner: string;
+  cases: Record<string, unknown>;
+};
+
+const rustContractFixture = desktopCommandViewContract as DesktopCommandViewContractFixture;
+const validWhisperSha256 = "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54";
 
 const tauriInvoke = vi.hoisted(() => vi.fn());
 
@@ -20,6 +30,505 @@ afterEach(() => {
 });
 
 describe("desktop snapshot DTO contract", () => {
+  it.each([
+    "desktop_snapshot.empty",
+    "desktop_snapshot.transcribed_analyzed_meeting",
+    "desktop_snapshot.unsupported_whisper_model",
+    "desktop_snapshot.with_setup_evidence",
+  ])(
+    "accepts the Rust-serialized %s fixture",
+    async (caseName) => {
+      const fixtureCase = rustContractFixture.cases[caseName];
+      const fetchCommand: CommandFetcher = async (command) => {
+        expect(command).toBe("desktop_snapshot");
+        return fixtureCase as never;
+      };
+
+      await expect(
+        loadDesktopSnapshot({
+          fetchCommand,
+          previewFallback: false,
+        }),
+      ).resolves.toEqual(fixtureCase);
+    },
+  );
+
+  it("accepts recovered and retryable command jobs with optional failure detail", async () => {
+    const backendSnapshot = {
+      ...getMockDesktopSnapshot(),
+      transcriptionJob: {
+        id: "transcription-circuit-review-1700000001000",
+        kind: "Transcription",
+        meetingId: "circuit-review",
+        state: "Recovery",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_001_000,
+        lastError: "transcription worker was not running after app restart",
+      },
+      summaryJob: {
+        id: "summary-circuit-review-1700000002000",
+        kind: "Summary",
+        meetingId: "circuit-review",
+        state: "Retry",
+        cancelRequested: false,
+        startedAtMs: 1_700_000_002_000,
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => backendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).resolves.toEqual(backendSnapshot);
+  });
+
+  it("requires first-run setup guidance to be explicit in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete driftedBackendSnapshot.setupGuidance;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance");
+  });
+
+  it("requires manual model setup options to be explicit in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete driftedBackendSnapshot.modelSetupOptions;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions");
+  });
+
+  it("guards manual model setup options against managed pulls and cloud candidates", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const automaticPullSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        ollama: {
+          ...backendSnapshot.modelSetupOptions.ollama,
+          automaticPulls: true,
+        },
+      },
+    };
+    const cloudCandidateSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        ollama: {
+          ...backendSnapshot.modelSetupOptions.ollama,
+          candidates: [
+            ...backendSnapshot.modelSetupOptions.ollama.candidates,
+            {
+              id: "hosted-deepseek-v3-2-speciale",
+              displayName: "DeepSeek V3.2 Speciale",
+              modelTag: "DeepSeek-V3.2-Speciale",
+              pullCommand: "ollama pull DeepSeek-V3.2-Speciale",
+              defaultCandidate: false,
+              setupNotes: "Hosted model must not appear in local setup options.",
+            },
+          ],
+        },
+      },
+    };
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => automaticPullSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.ollama.automaticPulls");
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => cloudCandidateSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.ollama.candidates");
+  });
+
+  it("guards manual Whisper setup options against unsupported extensions", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const extraExtensionSnapshot = {
+      ...backendSnapshot,
+      modelSetupOptions: {
+        ...backendSnapshot.modelSetupOptions,
+        whisper: {
+          ...backendSnapshot.modelSetupOptions.whisper,
+          acceptedExtensions: [...backendSnapshot.modelSetupOptions.whisper.acceptedExtensions, "txt"],
+        },
+      },
+    };
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async () => extraExtensionSnapshot as never,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.modelSetupOptions.whisper.acceptedExtensions");
+  });
+
+  it("guards unsupported Ollama availability in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      setupGuidance: {
+        ...backendSnapshot.setupGuidance,
+        ollama: {
+          ...backendSnapshot.setupGuidance.ollama,
+          availability: "Reachable",
+        },
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.ollama.availability");
+  });
+
+  it.each([
+    [
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+    ],
+    [
+      "MissingModelAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: "ollama pull qwen3.6:27b",
+        failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+      },
+    ],
+    [
+      "UnavailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_004_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: null,
+        pullCommand: null,
+        failureDetail: "Ollama is unavailable.",
+      },
+    ],
+  ] as const)("accepts %s Ollama setup availability with matching evidence in snapshots", async (availability, lastConnectionTest) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          ollama: {
+            ...backendSnapshot.setupGuidance.ollama,
+            availability,
+            lastConnectionTest,
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.setupGuidance.ollama.availability).toBe(availability);
+  });
+
+  it.each([
+    [
+      "UnknownUntilTest keeps evidence",
+      "UnknownUntilTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest",
+    ],
+    [
+      "AvailableAtLastTest has no evidence",
+      "AvailableAtLastTest",
+      null,
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest",
+    ],
+    [
+      "AvailableAtLastTest has unavailable evidence",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: "Ollama is unavailable.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.state",
+    ],
+    [
+      "last-test evidence has a different base URL",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11435",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["qwen3.6:27b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.baseUrl",
+    ],
+    [
+      "last-test evidence has a different requested model",
+      "AvailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "gemma4:31b",
+        testedAtMs: 1_700_000_002_000,
+        state: "Available",
+        selectedLocalModelTag: "gemma4:31b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.requestedModel",
+    ],
+    [
+      "MissingModelAtLastTest has no pull command",
+      "MissingModelAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_003_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: null,
+        failureDetail: "Ollama is reachable, but qwen3.6:27b is not installed.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.pullCommand",
+    ],
+    [
+      "UnavailableAtLastTest has a pull command",
+      "UnavailableAtLastTest",
+      {
+        baseUrl: "http://127.0.0.1:11434",
+        requestedModel: "qwen3.6:27b",
+        testedAtMs: 1_700_000_004_000,
+        state: "Unavailable",
+        selectedLocalModelTag: "qwen3.6:27b",
+        installedLocalModels: ["gemma4:31b"],
+        pullCommand: "ollama pull qwen3.6:27b",
+        failureDetail: "Ollama is unavailable.",
+      },
+      "desktop_snapshot.setupGuidance.ollama.lastConnectionTest.pullCommand",
+    ],
+  ] as const)("rejects inconsistent Ollama setup evidence when %s", async (_name, availability, lastConnectionTest, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          ollama: {
+            ...backendSnapshot.setupGuidance.ollama,
+            availability,
+            lastConnectionTest,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
+  });
+
+  it("guards setup guidance evidence field types in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      setupGuidance: {
+        ...backendSnapshot.setupGuidance,
+        whisper: {
+          ...backendSnapshot.setupGuidance.whisper,
+          lastPathTest: {
+            testedPath: "/models/base.en.bin",
+            testedAtMs: "later",
+            state: "Valid",
+            fileSizeBytes: 16,
+            sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+            failureDetail: null,
+          },
+        },
+        ollama: {
+          ...backendSnapshot.setupGuidance.ollama,
+          lastConnectionTest: {
+            baseUrl: "http://127.0.0.1:11434",
+            requestedModel: "qwen3.6:27b",
+            testedAtMs: 1_700_000_002_000,
+            state: "Available",
+            selectedLocalModelTag: "qwen3.6:27b",
+            installedLocalModels: ["qwen3.6:27b"],
+            pullCommand: null,
+            failureDetail: null,
+          },
+        },
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.lastPathTest.testedAtMs");
+  });
+
+  it("requires calendar context to be explicit and non-recording in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const missingCalendarContext = {
+      ...backendSnapshot,
+    } as Record<string, unknown>;
+    delete missingCalendarContext.calendarContext;
+    const missingFetchCommand: CommandFetcher = async () => missingCalendarContext as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: missingFetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext");
+
+    const autoStartDrift = {
+      ...backendSnapshot,
+      calendarContext: {
+        ...backendSnapshot.calendarContext,
+        autoStartEnabled: true,
+      },
+    };
+    const autoStartFetchCommand: CommandFetcher = async () => autoStartDrift as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: autoStartFetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext.autoStartEnabled");
+  });
+
+  it("guards calendar context event safety fields in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      calendarContext: {
+        ...backendSnapshot.calendarContext,
+        availabilityState: "Ready",
+        permissionState: "Granted",
+        upcomingEvents: [
+          {
+            id: "event-1",
+            title: "Planning Review",
+            calendarTitle: "Work",
+            startsAtMs: 1_700_000_000_000,
+            endsAtMs: 1_700_000_900_000,
+            isAllDay: false,
+            isRecurring: false,
+            privacy: "Secret",
+            overlapState: "None",
+            attachable: true,
+            safetyNote: "Manual attach allowed.",
+          },
+        ],
+      },
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.calendarContext.upcomingEvents[0].privacy");
+  });
+
+  it("requires meeting calendar attachments to use the explicit nullable contract", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      meetings: [
+        {
+          ...backendSnapshot.meetings[0],
+          calendarAttachment: {
+            source: "AppleCalendar",
+            eventId: "event-1",
+            eventTitle: "Design Review",
+            calendarTitle: "Work",
+            startsAtMs: 1_700_000_000_000,
+            endsAtMs: 1_700_000_900_000,
+            privacy: "Secret",
+            privacyConfirmed: false,
+            attachedAtMs: 1_700_000_100_000,
+          },
+        },
+      ],
+    };
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.meetings[0].calendarAttachment.privacy");
+  });
+
   it("fails loudly when a backend snapshot omits a frontend-required recording field", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -59,6 +568,397 @@ describe("desktop snapshot DTO contract", () => {
     );
   });
 
+  it("accepts untested Whisper model readiness in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.model.kind).toBe("untested");
+  });
+
+  it("accepts unsupported Whisper model readiness without treating legacy valid evidence as ready", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: null,
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.model.kind).toBe("unsupported");
+    expect(snapshot.setupGuidance.whisper.state).toBe("UnsupportedFile");
+    expect(snapshot.setupGuidance.whisper.lastPathTest).toBeNull();
+  });
+
+  it("rejects unsupported Whisper model snapshots with stale successful-transcription evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: null,
+            lastSuccessfulTranscription: {
+              modelPath: "/models/notes.txt",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "notes.txt",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(
+      "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription to be null for unsupported Whisper model files",
+    );
+  });
+
+  it("rejects unsupported Whisper model snapshots with stale path-test evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "unsupported",
+          configuredPath: "/models/notes.txt",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "UnsupportedFile",
+            configuredPath: "/models/notes.txt",
+            message: "Whisper model path must use a supported .bin or .gguf file.",
+            setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+            compatibilityNote: "Test path only accepts .bin and .gguf model files.",
+            lastPathTest: {
+              testedPath: "/models/notes.txt",
+              testedAtMs: 1_700_000_001_000,
+              state: "Invalid",
+              fileSizeBytes: null,
+              sha256: null,
+              failureDetail: "Unsupported Whisper model file extension.",
+            },
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest to be null for unsupported Whisper model files",
+    );
+  });
+
+  it.each([
+    ["missing evidence", null, "desktop_snapshot.setupGuidance.whisper.lastPathTest"],
+    [
+      "invalid evidence",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Invalid",
+        fileSizeBytes: null,
+        sha256: null,
+        failureDetail: "not a file",
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.state",
+    ],
+    [
+      "wrong path evidence",
+      {
+        testedPath: "/models/other.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: 16,
+        sha256: validWhisperSha256,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.testedPath",
+    ],
+    [
+      "missing file metadata",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: null,
+        sha256: null,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.fileSizeBytes",
+    ],
+    [
+      "zero file metadata",
+      {
+        testedPath: "/models/base.en.bin",
+        testedAtMs: 1_700_000_001_000,
+        state: "Valid",
+        fileSizeBytes: 0,
+        sha256: validWhisperSha256,
+        failureDetail: null,
+      },
+      "desktop_snapshot.setupGuidance.whisper.lastPathTest.fileSizeBytes",
+    ],
+  ] as const)("rejects ready Whisper snapshots with %s", async (_name, lastPathTest, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "ready",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            message: "Whisper model path is readable; compatibility is not verified.",
+            setupGuidance: "Use Test path before transcription.",
+            compatibilityNote: "Readability does not prove model compatibility.",
+            lastPathTest,
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
+  });
+
+  it("rejects untested Whisper snapshots that already carry matching valid path-test evidence", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            message: "Whisper model path is readable; compatibility is not verified.",
+            setupGuidance: "Use Test path before transcription.",
+            compatibilityNote: "Readability does not prove model compatibility.",
+            lastPathTest: {
+              testedPath: "/models/base.en.bin",
+              testedAtMs: 1_700_000_001_000,
+              state: "Valid",
+              fileSizeBytes: 16,
+              sha256: validWhisperSha256,
+              failureDetail: null,
+            },
+            lastSuccessfulTranscription: null,
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.model.kind");
+  });
+
+  it("accepts Whisper successful-transcription compatibility evidence in snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/base.en.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "base.en.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand,
+      previewFallback: false,
+    });
+
+    expect(snapshot.setupGuidance.whisper.lastSuccessfulTranscription?.modelRunId).toBe("run-1");
+  });
+
+  it("rejects Whisper successful-transcription evidence for a different configured path", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/current.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/current.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/stale.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "stale.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modelPath");
+  });
+
+  it.each([
+    ["empty model path", { modelPath: "" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modelPath"],
+    ["string timestamp", { usedAtMs: "later" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.usedAtMs"],
+    ["empty provider", { provider: "" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.provider"],
+    ["zero segments", { segmentCount: 0 }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.segmentCount"],
+    ["zero file size", { fileSizeBytes: 0 }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.fileSizeBytes"],
+    ["string modified timestamp", { modifiedAtMs: "old" }, "desktop_snapshot.setupGuidance.whisper.lastSuccessfulTranscription.modifiedAtMs"],
+  ] as const)("rejects invalid Whisper compatibility evidence with %s", async (_name, override, path) => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const fetchCommand: CommandFetcher = async () =>
+      ({
+        ...backendSnapshot,
+        model: {
+          ...backendSnapshot.model,
+          kind: "untested",
+          configuredPath: "/models/base.en.bin",
+        },
+        setupGuidance: {
+          ...backendSnapshot.setupGuidance,
+          whisper: {
+            ...backendSnapshot.setupGuidance.whisper,
+            state: "ReadablePath",
+            configuredPath: "/models/base.en.bin",
+            lastSuccessfulTranscription: {
+              modelPath: "/models/base.en.bin",
+              usedAtMs: 1_700_000_003_000,
+              provider: "local-whisper",
+              modelName: "base.en.bin",
+              meetingId: "meeting-1",
+              modelRunId: "run-1",
+              transcriptVersionId: "version-1",
+              segmentCount: 2,
+              fileSizeBytes: 16,
+              modifiedAtMs: 1_700_000_004_000,
+              ...override,
+            },
+          },
+        },
+      }) as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow(path);
+  });
+
   it("requires command readiness to be explicit instead of inferred from detail text", async () => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -75,6 +975,29 @@ describe("desktop snapshot DTO contract", () => {
         previewFallback: false,
       }),
     ).rejects.toThrow("desktop_snapshot.commandSurface.ready");
+  });
+
+  it("requires transcript segments to carry original transcript text explicitly", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const driftedBackendSnapshot = {
+      ...backendSnapshot,
+      meetings: backendSnapshot.meetings.map((meeting) => ({
+        ...meeting,
+        segments: meeting.segments.map((segment) => ({
+          ...segment,
+          originalText: null,
+        })),
+      })),
+    };
+    delete (driftedBackendSnapshot.meetings[0].segments[0] as Record<string, unknown>).originalText;
+    const fetchCommand: CommandFetcher = async () => driftedBackendSnapshot as never;
+
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.meetings[0].segments[0].originalText");
   });
 
   it.each([
@@ -118,6 +1041,27 @@ describe("desktop snapshot DTO contract", () => {
             },
           },
         ],
+      },
+    ],
+    [
+      "desktop_snapshot.exportCommand.format",
+      {
+        exportCommand: {
+          state: "exported",
+          meetingId: "circuit-review",
+          path: "/tmp/circuit-review.md",
+        },
+      },
+    ],
+    [
+      "desktop_snapshot.exportCommand.format",
+      {
+        exportCommand: {
+          state: "exported",
+          meetingId: "circuit-review",
+          format: "pdf",
+          path: "/tmp/circuit-review.pdf",
+        },
       },
     ],
     [
@@ -187,6 +1131,18 @@ describe("desktop snapshot DTO contract", () => {
         },
       },
     ],
+    [
+      "desktop_snapshot.setupGuidance.ollama.availability",
+      {
+        setupGuidance: {
+          ...getMockDesktopSnapshot().setupGuidance,
+          ollama: {
+            ...getMockDesktopSnapshot().setupGuidance.ollama,
+            availability: "Reachable",
+          },
+        },
+      },
+    ],
   ])("fails loudly when %s has the wrong runtime type or enum value", async (path, patch) => {
     const backendSnapshot = getMockDesktopSnapshot();
     const driftedBackendSnapshot = {
@@ -205,6 +1161,45 @@ describe("desktop snapshot DTO contract", () => {
 });
 
 describe("typed desktop command facade", () => {
+  it.each([
+    ["test_whisper_model_path.valid_readable_file", "testWhisperModelPath", { path: "<app-root>/fixture-whisper.bin" }],
+    ["test_whisper_model_path.unsupported_extension", "testWhisperModelPath", { path: "<app-root>/notes.txt" }],
+    ["test_whisper_model_path.missing_path", "testWhisperModelPath", { path: "" }],
+    [
+      "test_ollama_connection.available_configured_model",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
+    ],
+    [
+      "test_ollama_connection.missing_local_model",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
+    ],
+    [
+      "test_ollama_connection.cloud_model_rejected",
+      "testOllamaConnection",
+      { baseUrl: "http://127.0.0.1:11434", model: "deepseek-v3.2:cloud" },
+    ],
+  ] as const)("accepts the Rust-serialized %s fixture through the facade", async (caseName, method, args) => {
+    const fixtureCase = rustContractFixture.cases[caseName];
+    const facade = createDesktopCommandFacade(async () => fixtureCase as never);
+
+    await expect(facade[method](args as never)).resolves.toEqual(fixtureCase);
+  });
+
+  it("accepts invalid unsupported Whisper path tests without readable file metadata", async () => {
+    const fixtureCase = rustContractFixture.cases["test_whisper_model_path.unsupported_extension"];
+    const facade = createDesktopCommandFacade(async () => fixtureCase as never);
+
+    const result = await facade.testWhisperModelPath({ path: "<app-root>/notes.txt" });
+
+    expect(result.state).toBe("Invalid");
+    expect(result.message).toContain(".bin");
+    expect(result.message).toContain(".gguf");
+    expect(result).not.toHaveProperty("fileSizeBytes");
+    expect(result).not.toHaveProperty("sha256");
+  });
+
   it("maps typed facade methods through production command names and args", async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const snapshot = getMockDesktopSnapshot();
@@ -215,6 +1210,8 @@ describe("typed desktop command facade", () => {
           state: "Valid",
           message: "Whisper model path is readable.",
           setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
         } as never;
       }
       if (command === "test_ollama_connection") {
@@ -222,6 +1219,9 @@ describe("typed desktop command facade", () => {
           state: "Available",
           message: "Ollama is reachable.",
           setupGuidance: "",
+          selectedLocalModelTag: "qwen3.6:27b",
+          installedLocalModels: ["qwen3.6:27b"],
+          pullCommand: null,
         } as never;
       }
       if (command === "search_meetings") {
@@ -235,17 +1235,32 @@ describe("typed desktop command facade", () => {
     await facade.desktopSnapshot();
     await facade.searchMeetings({ query: "retention" });
     await facade.startRecording({ title: "MVP sync" });
+    await facade.importAudioFile({ sourcePath: "/Users/adrian/imports/customer-call.wav", title: "Imported call" });
     await facade.stopRecording();
     await facade.transcribeMeeting({ meetingId: "circuit-review" });
+    await facade.correctTranscriptSegment({
+      meetingId: "circuit-review",
+      segmentId: "segment-1",
+      correctedText: "Corrected transcript text.",
+      editedAtMs: 1_700_000_003_000,
+    });
     await facade.cancelTranscription({ jobId: "transcription-circuit-review-1700000001000" });
     await facade.renameMeeting({ meetingId: "circuit-review", title: "Renamed Planning" });
+    await facade.exportMeeting({ meetingId: "circuit-review", format: "markdown" });
     await facade.exportMeetingJson({ meetingId: "circuit-review" });
     await facade.deleteMeeting({ meetingId: "circuit-review" });
     await facade.generateSummary({ meetingId: "circuit-review" });
     await facade.cancelSummary({ jobId: "summary-circuit-review-1700000001000" });
     await facade.saveWhisperModelPath({ whisperModelPath: "/models/base.en.bin" });
     await facade.saveAnalysisSettings({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" });
-    await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
+    await facade.saveRawAudioRetentionPolicy({ rawAudioRetentionPolicy: "DeleteAfterTranscription" });
+    await facade.requestAppleCalendarAccess();
+    await facade.attachCalendarEventContext({
+      meetingId: "circuit-review",
+      eventId: "event-1",
+      privacyConfirmed: true,
+    });
+    const whisperPathTest = await facade.testWhisperModelPath({ path: "/models/base.en.bin" });
     await facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" });
 
     expect(calls).toEqual([
@@ -255,13 +1270,27 @@ describe("typed desktop command facade", () => {
         command: "start_microphone_recording",
         args: { title: "MVP sync" },
       },
+      {
+        command: "import_audio_file",
+        args: { sourcePath: "/Users/adrian/imports/customer-call.wav", title: "Imported call" },
+      },
       { command: "stop_microphone_recording", args: undefined },
       { command: "transcribe_meeting", args: { meetingId: "circuit-review" } },
+      {
+        command: "correct_transcript_segment",
+        args: {
+          meetingId: "circuit-review",
+          segmentId: "segment-1",
+          correctedText: "Corrected transcript text.",
+          editedAtMs: 1_700_000_003_000,
+        },
+      },
       {
         command: "cancel_transcription",
         args: { jobId: "transcription-circuit-review-1700000001000" },
       },
       { command: "rename_meeting", args: { meetingId: "circuit-review", title: "Renamed Planning" } },
+      { command: "export_meeting", args: { meetingId: "circuit-review", format: "markdown" } },
       { command: "export_meeting_json", args: { meetingId: "circuit-review" } },
       { command: "delete_meeting", args: { meetingId: "circuit-review" } },
       { command: "generate_summary", args: { meetingId: "circuit-review" } },
@@ -271,12 +1300,71 @@ describe("typed desktop command facade", () => {
         command: "save_analysis_settings",
         args: { ollamaBaseUrl: "http://127.0.0.1:11434", ollamaModel: "qwen3.6:27b" },
       },
+      {
+        command: "save_raw_audio_retention_policy",
+        args: { rawAudioRetentionPolicy: "DeleteAfterTranscription" },
+      },
+      { command: "request_apple_calendar_access", args: undefined },
+      {
+        command: "attach_calendar_event_context",
+        args: { meetingId: "circuit-review", eventId: "event-1", privacyConfirmed: true },
+      },
       { command: "test_whisper_model_path", args: { path: "/models/base.en.bin" } },
       {
         command: "test_ollama_connection",
         args: { baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" },
       },
     ]);
+    expect(whisperPathTest).toMatchObject({
+      fileSizeBytes: 16,
+      sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+    });
+  });
+
+  it("accepts legacy NeverSave raw-audio retention values from recording and privacy DTO snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    const snapshot = await loadDesktopSnapshot({
+      fetchCommand: async <T,>(): Promise<T> =>
+        ({
+          ...backendSnapshot,
+          recording: {
+            ...backendSnapshot.recording,
+            raw_audio_retention: "NeverSave",
+          },
+          meetings: backendSnapshot.meetings.map((meeting, index) =>
+            index === 0
+              ? {
+                  ...meeting,
+                  privacy: {
+                    ...meeting.privacy,
+                    rawAudioRetention: "NeverSave",
+                  },
+                }
+              : meeting,
+          ),
+        }) as T,
+      previewFallback: false,
+    });
+
+    expect(snapshot.recording.raw_audio_retention).toBe("NeverSave");
+    expect(snapshot.meetings[0].privacy.rawAudioRetention).toBe("NeverSave");
+  });
+
+  it("rejects unsupported NeverSave raw-audio retention values from settings snapshots", async () => {
+    const backendSnapshot = getMockDesktopSnapshot();
+    await expect(
+      loadDesktopSnapshot({
+        fetchCommand: async <T,>(): Promise<T> =>
+          ({
+            ...backendSnapshot,
+            settings: {
+              ...backendSnapshot.settings,
+              rawAudioRetentionPolicy: "NeverSave",
+            },
+          }) as T,
+        previewFallback: false,
+      }),
+    ).rejects.toThrow("desktop_snapshot.settings.rawAudioRetentionPolicy");
   });
 
   it("validates snapshot-returning facade commands before exposing them to App", async () => {
@@ -291,5 +1379,101 @@ describe("typed desktop command facade", () => {
     const facade = createDesktopCommandFacade(async () => driftedBackendSnapshot as never);
 
     await expect(facade.stopRecording()).rejects.toThrow("desktop_snapshot.recording.permission_state");
+  });
+
+  it("validates search result arrays before exposing them to App", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "search_meetings") {
+        return [
+          {
+            meeting_id: "meeting-1",
+            title: "Launch review",
+          },
+        ] as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.searchMeetings({ query: "launch" })).resolves.toEqual([
+      {
+        meeting_id: "meeting-1",
+        title: "Launch review",
+      },
+    ]);
+  });
+
+  it("fails loudly when search results omit required fields", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "search_meetings") {
+        return [{ meeting_id: "meeting-1" }] as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.searchMeetings({ query: "launch" })).rejects.toThrow("search_meetings[0].title");
+  });
+
+  it("validates search results from the production Tauri fetcher", async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    tauriInvoke.mockResolvedValue([{ title: "Missing id" }]);
+    const fetchCommand = getDesktopCommandFetcher();
+
+    expect(fetchCommand).toBeDefined();
+    await expect(fetchCommand!("search_meetings", { query: "launch" })).rejects.toThrow(
+      "search_meetings[0].meeting_id",
+    );
+  });
+
+  it("fails loudly when a valid Whisper path test omits readable file metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_whisper_model_path") {
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.testWhisperModelPath({ path: "/models/base.en.bin" })).rejects.toThrow(
+      "test_whisper_model_path.fileSizeBytes",
+    );
+  });
+
+  it("fails loudly when a valid Whisper path test reports zero-byte metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_whisper_model_path") {
+        return {
+          state: "Valid",
+          message: "Whisper model path is readable.",
+          setupGuidance: "",
+          fileSizeBytes: 0,
+          sha256: validWhisperSha256,
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(facade.testWhisperModelPath({ path: "/models/base.en.bin" })).rejects.toThrow(
+      "test_whisper_model_path.fileSizeBytes",
+    );
+  });
+
+  it("fails loudly when a reachable Ollama test omits setup metadata", async () => {
+    const facade = createDesktopCommandFacade(async (command) => {
+      if (command === "test_ollama_connection") {
+        return {
+          state: "Available",
+          message: "Ollama is reachable.",
+          setupGuidance: "",
+        } as never;
+      }
+      return getMockDesktopSnapshot() as never;
+    });
+
+    await expect(
+      facade.testOllamaConnection({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.6:27b" }),
+    ).rejects.toThrow("test_ollama_connection.selectedLocalModelTag");
   });
 });

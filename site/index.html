@@ -375,6 +375,21 @@
         line-height: 1.55;
       }
 
+      .download-actions {
+        display: grid;
+        gap: 10px;
+        justify-items: start;
+      }
+
+      .evidence-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        color: var(--accent-strong);
+        font-size: 0.9rem;
+        font-weight: 700;
+      }
+
       footer {
         padding: 34px 0 52px;
         color: var(--muted);
@@ -466,7 +481,9 @@
           <p class="lede">
             Curiosity Transcripts records microphone and system audio on macOS,
             transcribes meetings with local Whisper, keeps searchable history in
-            private storage, and exports plain Markdown, JSON, and SRT files.
+            private storage, and exports JSON, Markdown, and SRT from the
+            desktop app. JSON remains the deterministic integration format for
+            automation and downstream tools.
           </p>
           <div class="hero-actions">
             <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
@@ -518,7 +535,7 @@
                 </div>
                 <div class="segment">
                   <strong>02:18</strong>
-                  <div class="line">The macOS DMG should be attached to each deployment and linked from the Pages site.</div>
+                  <div class="line">The latest DMG waits for signed/notarized checks and filled smoke evidence.</div>
                 </div>
               </div>
               <div class="summary">
@@ -529,7 +546,7 @@
                   </div>
                   <div class="mini-panel">
                     <strong>Action</strong>
-                    <span class="line">Verify unsigned DMG before publishing.</span>
+                    <span class="line">Validate filled smoke evidence before publishing.</span>
                   </div>
                 </div>
               </div>
@@ -564,10 +581,12 @@
             </p>
           </article>
           <article class="feature">
-            <h3>Search and export</h3>
+            <h3>Search and transcript export</h3>
             <p>
-              Find meetings with SQLite FTS5, inspect transcript history, export
-              Markdown, JSON, and SRT, then delete private artifacts when needed.
+              Find meetings with SQLite FTS5, inspect transcript history,
+              export JSON, Markdown, or SRT from the desktop app, then delete
+              private artifacts when needed. JSON stays the deterministic
+              integration format for automation.
             </p>
           </article>
           <article class="feature">
@@ -584,17 +603,28 @@
       <section id="download" class="shell section" aria-labelledby="download-title">
         <div class="download-panel">
           <div>
-            <p class="eyebrow">Automated deployment artifact</p>
+            <p class="eyebrow">Manual release artifact</p>
             <h2 id="download-title">Latest macOS DMG</h2>
             <p>
-              Each GitHub Pages deployment publishes the current unsigned macOS
-              DMG to the stable download path below. Signed and notarized
-              distribution remains a separate release step.
+              The latest public DMG is manually published after the signed/notarized workflow and filled smoke evidence validation. That workflow
+              produces a Developer ID signed and notarized arm64 macOS DMG and
+              verifies the disk image, stapled notarization ticket, app
+              signature, and Gatekeeper assessment before publication.
             </p>
           </div>
-          <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
-            Curiosity-Transcripts-latest.dmg
-          </a>
+          <div class="download-actions">
+            <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
+              Curiosity-Transcripts-latest.dmg
+            </a>
+            <div class="evidence-links" aria-label="Latest DMG evidence">
+              <a href="downloads/Curiosity-Transcripts-latest.dmg.sha256" download>
+                Curiosity-Transcripts-latest.dmg.sha256
+              </a>
+              <a href="downloads/Curiosity-Transcripts-latest.provenance.json" download>
+                Curiosity-Transcripts-latest.provenance.json
+              </a>
+            </div>
+          </div>
         </div>
       </section>
     </main>

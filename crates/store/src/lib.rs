@@ -12,9 +12,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobStatus, Meeting, MeetingAnalysis, MeetingStatus, ModelRun,
-    ProcessingJob, RecordingSession, RecordingSource, RecordingStatus, SourceChannel,
-    TranscriptSegment, TranscriptState, TranscriptVersion,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingAnalysis, MeetingStatus,
+    ModelRun, ProcessingJob, RawAudioRetentionPolicy, RecordingSession, RecordingSource,
+    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -26,12 +26,17 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 5;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
 const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
 const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
 const SETTING_OLLAMA_MODEL: &str = "ollama_model";
 const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
+const SETTING_RAW_AUDIO_RETENTION_POLICY: &str = "raw_audio_retention_policy";
+const SETTING_WHISPER_PATH_TEST_EVIDENCE: &str = "whisper_path_test_evidence";
+const SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE: &str =
+    "whisper_transcription_compatibility_evidence";
+const SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE: &str = "ollama_connection_test_evidence";
 
 /// Typed store failure for storage, path safety, recovery, and invariant errors.
 #[derive(Debug)]
@@ -152,6 +157,86 @@ pub struct AppSettings {
     pub ollama_base_url: String,
     pub ollama_model: String,
     pub export_directory: Option<String>,
+    pub raw_audio_retention_policy: RawAudioRetentionPolicy,
+    pub whisper_path_test_evidence: Option<WhisperPathTestEvidence>,
+    pub whisper_transcription_compatibility_evidence:
+        Option<WhisperTranscriptionCompatibilityEvidence>,
+    pub ollama_connection_test_evidence: Option<OllamaConnectionTestEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperPathTestEvidence {
+    pub tested_path: String,
+    pub tested_at_ms: u64,
+    pub state: String,
+    pub file_size_bytes: Option<u64>,
+    pub sha256: Option<String>,
+    pub failure_detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperTranscriptionCompatibilityEvidence {
+    pub model_path: String,
+    pub used_at_ms: u64,
+    pub provider: String,
+    pub model_name: String,
+    pub meeting_id: String,
+    pub model_run_id: String,
+    pub transcript_version_id: String,
+    pub segment_count: u64,
+    pub file_size_bytes: u64,
+    pub modified_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaConnectionTestEvidence {
+    pub base_url: String,
+    pub requested_model: String,
+    pub tested_at_ms: u64,
+    pub state: String,
+    pub selected_local_model_tag: Option<String>,
+    pub installed_local_models: Option<Vec<String>>,
+    pub pull_command: Option<String>,
+    pub failure_detail: Option<String>,
+}
+
+impl WhisperPathTestEvidence {
+    fn is_valid_snapshot_evidence(&self) -> bool {
+        match self.state.as_str() {
+            "Valid" => {
+                matches!(self.file_size_bytes, Some(size) if size > 0)
+                    && self.sha256.as_deref().map(is_lower_hex_sha256) == Some(true)
+            }
+            "Invalid" => self
+                .sha256
+                .as_deref()
+                .map(is_lower_hex_sha256)
+                .unwrap_or(true),
+            _ => false,
+        }
+    }
+}
+
+impl WhisperTranscriptionCompatibilityEvidence {
+    fn is_valid_snapshot_evidence(&self) -> bool {
+        !self.model_path.trim().is_empty()
+            && !self.provider.trim().is_empty()
+            && !self.model_name.trim().is_empty()
+            && !self.meeting_id.trim().is_empty()
+            && !self.model_run_id.trim().is_empty()
+            && !self.transcript_version_id.trim().is_empty()
+            && self.segment_count > 0
+            && self.file_size_bytes > 0
+    }
+}
+
+impl OllamaConnectionTestEvidence {
+    fn is_valid_snapshot_evidence(&self) -> bool {
+        matches!(self.state.as_str(), "Available" | "Unavailable")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,6 +247,23 @@ pub struct MeetingSummary {
     pub ended_at_ms: Option<u64>,
     pub status: String,
     pub transcript_state: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeetingCalendarContext {
+    pub meeting_id: String,
+    pub source: String,
+    pub event_id: String,
+    pub event_title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub is_all_day: bool,
+    pub is_recurring: bool,
+    pub privacy: String,
+    pub overlap_state: String,
+    pub privacy_confirmed: bool,
+    pub attached_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,6 +286,33 @@ pub struct CompletedAudioArtifact {
     pub artifact_id: String,
     pub sha256: String,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawAudioRetentionCleanupCandidate {
+    artifact_id: String,
+    path: String,
+    retention_policy: RawAudioRetentionPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawAudioRetentionCleanupPlan {
+    artifact_id: String,
+    path: PathBuf,
+    existed_at_preflight: bool,
+}
+
+type ProcessingJobRow = (
+    String,
+    String,
+    String,
+    String,
+    u32,
+    Option<String>,
+    Option<u64>,
+    Option<u64>,
+    bool,
+    Option<String>,
+);
 
 impl Store {
     pub fn open(db_path: impl AsRef<Path>, app_root: impl Into<PathBuf>) -> StoreResult<Self> {
@@ -210,8 +339,8 @@ impl Store {
 
     pub fn migrate(&self) -> StoreResult<()> {
         let _existing_version = self.schema_version()?;
-        // v0/v1 migrations below are idempotent. Branch on this value when
-        // adding non-idempotent v2+ migrations.
+        // v0-v2 migrations below are idempotent. Branch on this value when
+        // adding non-idempotent v3+ migrations.
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS meetings (
@@ -232,7 +361,8 @@ impl Store {
                 ended_at_ms INTEGER,
                 sample_rate_hz INTEGER NOT NULL,
                 status TEXT NOT NULL,
-                recovery_note TEXT
+                recovery_note TEXT,
+                raw_audio_retention_policy TEXT NOT NULL DEFAULT 'Retain'
             );
 
             CREATE TABLE IF NOT EXISTS audio_artifacts (
@@ -256,13 +386,33 @@ impl Store {
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL,
-                last_error TEXT
+                last_error TEXT,
+                started_at_ms INTEGER,
+                finished_at_ms INTEGER,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT
             );
 
             CREATE TABLE IF NOT EXISTS exported_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 meeting_id TEXT NOT NULL,
                 path TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS meeting_calendar_context (
+                meeting_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                event_title TEXT NOT NULL,
+                calendar_title TEXT NOT NULL,
+                starts_at_ms INTEGER NOT NULL,
+                ends_at_ms INTEGER NOT NULL,
+                is_all_day INTEGER NOT NULL,
+                is_recurring INTEGER NOT NULL,
+                privacy TEXT NOT NULL,
+                overlap_state TEXT NOT NULL,
+                privacy_confirmed INTEGER NOT NULL,
+                attached_at_ms INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS model_runs (
@@ -345,6 +495,19 @@ impl Store {
             "tombstoned",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        self.ensure_column(
+            "recording_sessions",
+            "raw_audio_retention_policy",
+            "TEXT NOT NULL DEFAULT 'Retain'",
+        )?;
+        self.ensure_column("processing_jobs", "started_at_ms", "INTEGER")?;
+        self.ensure_column("processing_jobs", "finished_at_ms", "INTEGER")?;
+        self.ensure_column(
+            "processing_jobs",
+            "cancel_requested",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_column("processing_jobs", "idempotency_key", "TEXT")?;
         self.conn
             .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         Ok(())
@@ -399,8 +562,9 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO recording_sessions (
-                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status, recovery_note
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status,
+                recovery_note, raw_audio_retention_policy
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ",
             params![
                 session.id,
@@ -410,7 +574,8 @@ impl Store {
                 session.ended_at_ms,
                 session.sample_rate_hz,
                 enum_name(session.status),
-                session.recovery_note
+                session.recovery_note,
+                enum_name(session.raw_audio_retention_policy)
             ],
         )?;
         Ok(())
@@ -497,8 +662,9 @@ impl Store {
         self.conn.execute(
             "
             INSERT INTO processing_jobs (
-                id, meeting_id, kind, status, attempts, last_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                id, meeting_id, kind, status, attempts, last_error,
+                started_at_ms, finished_at_ms, cancel_requested, idempotency_key
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ",
             params![
                 job.id,
@@ -506,10 +672,231 @@ impl Store {
                 enum_name(job.kind),
                 enum_name(job.status),
                 job.attempts,
-                job.last_error
+                job.last_error,
+                job.started_at_ms,
+                job.finished_at_ms,
+                job.cancel_requested,
+                job.idempotency_key
             ],
         )?;
         Ok(())
+    }
+
+    pub fn request_processing_job_cancel(&self, job_id: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE processing_jobs
+            SET cancel_requested = 1
+            WHERE id = ?1
+              AND status = 'Running'
+            ",
+            params![job_id],
+        )?;
+        if self.conn.changes() == 0 {
+            let status = self
+                .conn
+                .query_row(
+                    "SELECT status FROM processing_jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(status) = status else {
+                return Err(format!("processing job not found: {job_id}").into());
+            };
+            let status = parse_job_status(&status)?;
+            if status == JobStatus::Running {
+                return Ok(());
+            }
+            return Err(format!("processing job is not running: {job_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn complete_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Succeeded, finished_at_ms, None)
+    }
+
+    pub fn cancel_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Canceled, finished_at_ms, None)
+    }
+
+    pub fn fail_processing_job(
+        &self,
+        job_id: &str,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<()> {
+        self.finish_processing_job(job_id, JobStatus::Failed, finished_at_ms, Some(last_error))
+    }
+
+    pub fn recover_processing_job(
+        &self,
+        job_id: &str,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<()> {
+        self.finish_processing_job(
+            job_id,
+            JobStatus::Recovery,
+            finished_at_ms,
+            Some(last_error),
+        )
+    }
+
+    fn finish_processing_job(
+        &self,
+        job_id: &str,
+        status: JobStatus,
+        finished_at_ms: u64,
+        last_error: Option<&str>,
+    ) -> StoreResult<()> {
+        self.conn.execute(
+            "
+            UPDATE processing_jobs
+            SET status = ?2,
+                finished_at_ms = ?3,
+                last_error = ?4,
+                cancel_requested = 0
+            WHERE id = ?1
+              AND status = 'Running'
+            ",
+            params![job_id, enum_name(status), finished_at_ms, last_error],
+        )?;
+        if self.conn.changes() == 0 {
+            let current_status = self
+                .conn
+                .query_row(
+                    "SELECT status FROM processing_jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(current_status) = current_status else {
+                return Err(format!("processing job not found: {job_id}").into());
+            };
+            let current_status = parse_job_status(&current_status)?;
+            if current_status == JobStatus::Running {
+                return Err(format!("processing job was not updated: {job_id}").into());
+            }
+            return Err(format!("processing job is not running: {job_id}").into());
+        }
+        Ok(())
+    }
+
+    pub fn active_transcription_job_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<ProcessingJob>> {
+        self.active_processing_job_for_meeting(meeting_id, JobKind::Transcribe)
+    }
+
+    pub fn active_summary_job_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<ProcessingJob>> {
+        self.active_processing_job_for_meeting(meeting_id, JobKind::Summarize)
+    }
+
+    fn active_processing_job_for_meeting(
+        &self,
+        meeting_id: &str,
+        kind: JobKind,
+    ) -> StoreResult<Option<ProcessingJob>> {
+        self.processing_job_for_query(
+            "
+            SELECT
+                id,
+                meeting_id,
+                kind,
+                status,
+                attempts,
+                last_error,
+                started_at_ms,
+                finished_at_ms,
+                cancel_requested,
+                idempotency_key
+            FROM processing_jobs
+            WHERE meeting_id = ?1
+              AND kind = ?2
+              AND status = 'Running'
+            ORDER BY started_at_ms DESC, id DESC
+            LIMIT 1
+            ",
+            params![meeting_id, enum_name(kind)],
+        )
+    }
+
+    pub fn recover_active_transcription_jobs(
+        &self,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        self.recover_active_processing_jobs(JobKind::Transcribe, finished_at_ms, last_error)
+    }
+
+    pub fn recover_active_summary_jobs(
+        &self,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        self.recover_active_processing_jobs(JobKind::Summarize, finished_at_ms, last_error)
+    }
+
+    fn recover_active_processing_jobs(
+        &self,
+        kind: JobKind,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result =
+            self.recover_active_processing_jobs_in_transaction(kind, finished_at_ms, last_error);
+        match result {
+            Ok(jobs) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(jobs)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn recover_active_processing_jobs_in_transaction(
+        &self,
+        kind: JobKind,
+        finished_at_ms: u64,
+        last_error: &str,
+    ) -> StoreResult<Vec<ProcessingJob>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT processing_jobs.id
+            FROM processing_jobs
+            JOIN meetings
+              ON meetings.id = processing_jobs.meeting_id
+            WHERE processing_jobs.kind = ?1
+              AND processing_jobs.status = 'Running'
+              AND meetings.status != 'Deleted'
+              AND meetings.deleted_at_ms IS NULL
+            ORDER BY processing_jobs.started_at_ms DESC, processing_jobs.id DESC
+            ",
+        )?;
+        let job_ids = stmt
+            .query_map(params![enum_name(kind)], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut jobs = Vec::with_capacity(job_ids.len());
+        for job_id in job_ids {
+            self.recover_processing_job(&job_id, finished_at_ms, last_error)?;
+            jobs.push(self.processing_job(&job_id)?);
+        }
+        Ok(jobs)
     }
 
     pub fn app_settings(&self) -> StoreResult<AppSettings> {
@@ -529,25 +916,42 @@ impl Store {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string()),
             export_directory,
+            raw_audio_retention_policy: parse_raw_audio_retention_policy(
+                self.setting_value(SETTING_RAW_AUDIO_RETENTION_POLICY)?
+                    .filter(|value| !value.trim().is_empty())
+                    .as_deref()
+                    .unwrap_or("Retain"),
+            )?,
+            whisper_path_test_evidence: self.optional_setting_json(
+                SETTING_WHISPER_PATH_TEST_EVIDENCE,
+                WhisperPathTestEvidence::is_valid_snapshot_evidence,
+            )?,
+            whisper_transcription_compatibility_evidence: self.optional_setting_json(
+                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+            )?,
+            ollama_connection_test_evidence: self.optional_setting_json(
+                SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
+                OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
+            )?,
         })
     }
 
     pub fn save_whisper_model_path(&self, whisper_model_path: &str) -> StoreResult<AppSettings> {
-        self.upsert_setting(SETTING_WHISPER_MODEL_PATH, whisper_model_path.trim())?;
-        self.app_settings()
-    }
-
-    pub fn save_analysis_settings(
-        &self,
-        ollama_base_url: &str,
-        ollama_model: &str,
-    ) -> StoreResult<AppSettings> {
-        let ollama_base_url = default_if_blank(ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
-        let ollama_model = default_if_blank(ollama_model, DEFAULT_OLLAMA_MODEL);
+        let whisper_model_path = whisper_model_path.trim();
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
         let result = (|| {
-            self.upsert_setting(SETTING_OLLAMA_BASE_URL, ollama_base_url)?;
-            self.upsert_setting(SETTING_OLLAMA_MODEL, ollama_model)?;
+            self.upsert_setting(SETTING_WHISPER_MODEL_PATH, whisper_model_path)?;
+            self.clear_setting_when_json::<WhisperPathTestEvidence, _>(
+                SETTING_WHISPER_PATH_TEST_EVIDENCE,
+                WhisperPathTestEvidence::is_valid_snapshot_evidence,
+                |evidence| evidence.tested_path != whisper_model_path,
+            )?;
+            self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
+                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+                |evidence| evidence.model_path != whisper_model_path,
+            )?;
             Ok(())
         })();
         match result {
@@ -563,6 +967,83 @@ impl Store {
                 Err(err)
             }
         }
+    }
+
+    pub fn save_analysis_settings(
+        &self,
+        ollama_base_url: &str,
+        ollama_model: &str,
+    ) -> StoreResult<AppSettings> {
+        let ollama_base_url = default_if_blank(ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
+        let ollama_model = default_if_blank(ollama_model, DEFAULT_OLLAMA_MODEL);
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let result = (|| {
+            self.upsert_setting(SETTING_OLLAMA_BASE_URL, ollama_base_url)?;
+            self.upsert_setting(SETTING_OLLAMA_MODEL, ollama_model)?;
+            self.clear_setting_when_json::<OllamaConnectionTestEvidence, _>(
+                SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
+                OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
+                |evidence| {
+                    evidence.base_url != ollama_base_url || evidence.requested_model != ollama_model
+                },
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                self.app_settings()
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    pub fn save_whisper_path_test_evidence(
+        &self,
+        evidence: &WhisperPathTestEvidence,
+    ) -> StoreResult<AppSettings> {
+        if !evidence.is_valid_snapshot_evidence() {
+            return Err("invalid Whisper path test evidence".into());
+        }
+        let value = serde_json::to_string(evidence)?;
+        self.upsert_setting(SETTING_WHISPER_PATH_TEST_EVIDENCE, &value)?;
+        self.app_settings()
+    }
+
+    pub fn save_whisper_transcription_compatibility_evidence(
+        &self,
+        evidence: &WhisperTranscriptionCompatibilityEvidence,
+    ) -> StoreResult<AppSettings> {
+        if !evidence.is_valid_snapshot_evidence() {
+            return Err("invalid Whisper transcription compatibility evidence".into());
+        }
+        let value = serde_json::to_string(evidence)?;
+        self.upsert_setting(SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE, &value)?;
+        self.app_settings()
+    }
+
+    pub fn save_ollama_connection_test_evidence(
+        &self,
+        evidence: &OllamaConnectionTestEvidence,
+    ) -> StoreResult<AppSettings> {
+        if !evidence.is_valid_snapshot_evidence() {
+            return Err("invalid Ollama connection test evidence".into());
+        }
+        let value = serde_json::to_string(evidence)?;
+        self.upsert_setting(SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE, &value)?;
+        self.app_settings()
+    }
+
+    pub fn save_raw_audio_retention_policy(&self, policy: &str) -> StoreResult<AppSettings> {
+        let policy = parse_raw_audio_retention_policy(policy.trim())?;
+        self.upsert_setting(SETTING_RAW_AUDIO_RETENTION_POLICY, enum_name(policy))?;
+        self.app_settings()
     }
 
     pub fn count(&self, table: &str) -> StoreResult<u64> {
@@ -868,6 +1349,310 @@ impl Store {
         )?)
     }
 
+    pub fn recording_session_raw_audio_retention_policy(
+        &self,
+        recording_id: &str,
+    ) -> StoreResult<RawAudioRetentionPolicy> {
+        let policy = self.conn.query_row(
+            "SELECT raw_audio_retention_policy FROM recording_sessions WHERE id = ?1",
+            params![recording_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        parse_raw_audio_retention_policy(&policy)
+    }
+
+    pub fn latest_recording_session_raw_audio_retention_policy_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<RawAudioRetentionPolicy>> {
+        let policy = self
+            .conn
+            .query_row(
+                "
+                SELECT raw_audio_retention_policy
+                FROM recording_sessions
+                WHERE meeting_id = ?1
+                ORDER BY started_at_ms DESC, id DESC
+                LIMIT 1
+                ",
+                params![meeting_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        policy
+            .map(|policy| parse_raw_audio_retention_policy(&policy))
+            .transpose()
+    }
+
+    pub fn cleanup_raw_audio_artifacts_after_transcription<S: AsRef<str>>(
+        &self,
+        meeting_id: &str,
+        artifact_ids: &[S],
+    ) -> StoreResult<RawAudioRetentionCleanupReport> {
+        let mut plans = Vec::new();
+        let mut preflight_failures = Vec::new();
+
+        for artifact_id in artifact_ids {
+            let artifact_id = artifact_id.as_ref();
+            let Some(candidate) =
+                self.raw_audio_retention_cleanup_candidate(meeting_id, artifact_id)?
+            else {
+                continue;
+            };
+            if candidate.retention_policy != RawAudioRetentionPolicy::DeleteAfterTranscription {
+                continue;
+            }
+            let Some(path) = self.private_app_path(&candidate.path) else {
+                preflight_failures.push(format!(
+                    "{}: {}",
+                    candidate.artifact_id,
+                    self.reported_path(&candidate.path).display()
+                ));
+                continue;
+            };
+            if path.exists() {
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "Raw audio retention cleanup preflight failed: {}: cannot inspect {}: {error}",
+                        candidate.artifact_id,
+                        path.display()
+                    )
+                })?;
+                if !metadata.is_file() {
+                    preflight_failures.push(format!(
+                        "{}: {} is not a file",
+                        candidate.artifact_id,
+                        path.display()
+                    ));
+                    continue;
+                }
+                if let Some(parent) = path.parent() {
+                    let parent_metadata = fs::metadata(parent).map_err(|error| {
+                        format!(
+                            "Raw audio retention cleanup preflight failed: {}: cannot inspect parent {}: {error}",
+                            candidate.artifact_id,
+                            parent.display()
+                        )
+                    })?;
+                    if !parent_metadata.is_dir() || parent_metadata.permissions().readonly() {
+                        preflight_failures.push(format!(
+                            "{}: parent {} is not writable",
+                            candidate.artifact_id,
+                            parent.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let existed_at_preflight = path.exists();
+            plans.push(RawAudioRetentionCleanupPlan {
+                artifact_id: candidate.artifact_id,
+                path,
+                existed_at_preflight,
+            });
+        }
+
+        if !preflight_failures.is_empty() {
+            preflight_failures.sort();
+            return Err(format!(
+                "Raw audio retention cleanup preflight failed: {}",
+                preflight_failures.join(", ")
+            )
+            .into());
+        }
+
+        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let tombstone_result = (|| -> StoreResult<()> {
+            for plan in &plans {
+                self.tombstone_audio_artifact(&plan.artifact_id)?;
+            }
+            Ok(())
+        })();
+        match tombstone_result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+
+        let mut report = RawAudioRetentionCleanupReport::default();
+        for plan in &plans {
+            if plan.existed_at_preflight {
+                match fs::remove_file(&plan.path) {
+                    Ok(()) => report.deleted_private_artifacts.push(plan.path.clone()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        report.missing_private_artifacts.push(plan.path.clone());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                report.missing_private_artifacts.push(plan.path.clone());
+            }
+        }
+        report.deleted_private_artifacts.sort();
+        report.missing_private_artifacts.sort();
+        report.skipped_private_artifacts.sort();
+        Ok(report)
+    }
+
+    fn raw_audio_retention_cleanup_candidate(
+        &self,
+        meeting_id: &str,
+        artifact_id: &str,
+    ) -> StoreResult<Option<RawAudioRetentionCleanupCandidate>> {
+        let row = self
+            .conn
+            .query_row(
+                "
+                SELECT
+                    audio_artifacts.id,
+                    audio_artifacts.path,
+                    recording_sessions.raw_audio_retention_policy
+                FROM audio_artifacts
+                JOIN recording_sessions
+                  ON recording_sessions.id = audio_artifacts.recording_session_id
+                WHERE audio_artifacts.id = ?1
+                  AND recording_sessions.meeting_id = ?2
+                  AND audio_artifacts.retained = 1
+                  AND audio_artifacts.tombstoned = 0
+                  AND audio_artifacts.write_status = 'Complete'
+                  AND recording_sessions.status IN ('Complete', 'Recovered')
+                  AND lower(audio_artifacts.path) LIKE '%.wav'
+                ",
+                params![artifact_id, meeting_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(artifact_id, path, policy)| {
+            Ok(RawAudioRetentionCleanupCandidate {
+                artifact_id,
+                path,
+                retention_policy: parse_raw_audio_retention_policy(&policy)?,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn finalize_pending_raw_audio_retention_cleanup(
+        &self,
+    ) -> StoreResult<RawAudioRetentionCleanupReport> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT audio_artifacts.id,
+                   audio_artifacts.path
+            FROM audio_artifacts
+            JOIN recording_sessions
+              ON recording_sessions.id = audio_artifacts.recording_session_id
+            JOIN meetings
+              ON meetings.id = recording_sessions.meeting_id
+            WHERE audio_artifacts.retained = 0
+              AND audio_artifacts.tombstoned = 1
+              AND audio_artifacts.write_status = 'Complete'
+              AND recording_sessions.raw_audio_retention_policy = 'DeleteAfterTranscription'
+              AND recording_sessions.status IN ('Complete', 'Recovered')
+              AND meetings.status != 'Deleted'
+              AND meetings.deleted_at_ms IS NULL
+              AND lower(audio_artifacts.path) LIKE '%.wav'
+            ORDER BY audio_artifacts.id ASC
+            ",
+        )?;
+        let pending_artifacts = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut plans = Vec::new();
+        let mut preflight_failures = Vec::new();
+        for (artifact_id, artifact_path) in pending_artifacts {
+            let Some(path) = self.private_app_path(&artifact_path) else {
+                preflight_failures.push(format!(
+                    "{}: {}",
+                    artifact_id,
+                    self.reported_path(&artifact_path).display()
+                ));
+                continue;
+            };
+            if path.exists() {
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!(
+                        "Pending raw audio retention cleanup failed: {artifact_id}: cannot inspect {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !metadata.is_file() {
+                    preflight_failures.push(format!(
+                        "{}: {} is not a file",
+                        artifact_id,
+                        path.display()
+                    ));
+                    continue;
+                }
+                if let Some(parent) = path.parent() {
+                    let parent_metadata = fs::metadata(parent).map_err(|error| {
+                        format!(
+                            "Pending raw audio retention cleanup failed: {artifact_id}: cannot inspect parent {}: {error}",
+                            parent.display()
+                        )
+                    })?;
+                    if !parent_metadata.is_dir() || parent_metadata.permissions().readonly() {
+                        preflight_failures.push(format!(
+                            "{}: parent {} is not writable",
+                            artifact_id,
+                            parent.display()
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let existed_at_preflight = path.exists();
+            plans.push(RawAudioRetentionCleanupPlan {
+                artifact_id,
+                path,
+                existed_at_preflight,
+            });
+        }
+
+        if !preflight_failures.is_empty() {
+            preflight_failures.sort();
+            return Err(format!(
+                "Pending raw audio retention cleanup failed: {}",
+                preflight_failures.join(", ")
+            )
+            .into());
+        }
+
+        let mut report = RawAudioRetentionCleanupReport::default();
+        for plan in &plans {
+            if plan.existed_at_preflight {
+                match fs::remove_file(&plan.path) {
+                    Ok(()) => report.deleted_private_artifacts.push(plan.path.clone()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        report.missing_private_artifacts.push(plan.path.clone());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                report.missing_private_artifacts.push(plan.path.clone());
+            }
+        }
+        report.deleted_private_artifacts.sort();
+        report.missing_private_artifacts.sort();
+        report.skipped_private_artifacts.sort();
+        Ok(report)
+    }
+
     pub fn repair_startup(&self) -> StoreResult<RepairReport> {
         let mut report = RepairReport::default();
         for manifest_path in manifest_paths(&self.app_root)? {
@@ -1052,6 +1837,82 @@ impl Store {
         parse_job_status(&status)
     }
 
+    pub fn processing_job(&self, job_id: &str) -> StoreResult<ProcessingJob> {
+        self.processing_job_for_query(
+            "
+            SELECT
+                id,
+                meeting_id,
+                kind,
+                status,
+                attempts,
+                last_error,
+                started_at_ms,
+                finished_at_ms,
+                cancel_requested,
+                idempotency_key
+            FROM processing_jobs
+            WHERE id = ?1
+            ",
+            params![job_id],
+        )?
+        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.into())
+    }
+
+    fn processing_job_for_query<P>(
+        &self,
+        sql: &str,
+        params: P,
+    ) -> StoreResult<Option<ProcessingJob>>
+    where
+        P: rusqlite::Params,
+    {
+        let (
+            id,
+            meeting_id,
+            kind,
+            status,
+            attempts,
+            last_error,
+            started_at_ms,
+            finished_at_ms,
+            cancel_requested,
+            idempotency_key,
+        ): ProcessingJobRow = match self
+            .conn
+            .query_row(sql, params, |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            })
+            .optional()?
+        {
+            Some(job) => job,
+            None => return Ok(None),
+        };
+        Ok(Some(ProcessingJob {
+            id,
+            meeting_id,
+            kind: parse_job_kind(&kind)?,
+            status: parse_job_status(&status)?,
+            attempts,
+            last_error,
+            started_at_ms,
+            finished_at_ms,
+            cancel_requested,
+            idempotency_key,
+        }))
+    }
+
     pub fn record_exported_file(&self, meeting_id: &str, path: &Path) -> StoreResult<()> {
         self.conn.execute(
             "INSERT INTO exported_files (meeting_id, path) VALUES (?1, ?2)",
@@ -1070,6 +1931,89 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(files)
+    }
+
+    pub fn attach_meeting_calendar_context(
+        &self,
+        context: &MeetingCalendarContext,
+    ) -> StoreResult<MeetingCalendarContext> {
+        self.ensure_active_meeting_exists(&context.meeting_id)?;
+        self.conn.execute(
+            "
+            INSERT INTO meeting_calendar_context (
+                meeting_id, source, event_id, event_title, calendar_title,
+                starts_at_ms, ends_at_ms, is_all_day, is_recurring, privacy,
+                overlap_state, privacy_confirmed, attached_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(meeting_id) DO UPDATE SET
+                source = excluded.source,
+                event_id = excluded.event_id,
+                event_title = excluded.event_title,
+                calendar_title = excluded.calendar_title,
+                starts_at_ms = excluded.starts_at_ms,
+                ends_at_ms = excluded.ends_at_ms,
+                is_all_day = excluded.is_all_day,
+                is_recurring = excluded.is_recurring,
+                privacy = excluded.privacy,
+                overlap_state = excluded.overlap_state,
+                privacy_confirmed = excluded.privacy_confirmed,
+                attached_at_ms = excluded.attached_at_ms
+            ",
+            params![
+                context.meeting_id,
+                context.source,
+                context.event_id,
+                context.event_title,
+                context.calendar_title,
+                context.starts_at_ms,
+                context.ends_at_ms,
+                context.is_all_day,
+                context.is_recurring,
+                context.privacy,
+                context.overlap_state,
+                context.privacy_confirmed,
+                context.attached_at_ms
+            ],
+        )?;
+        self.meeting_calendar_context(&context.meeting_id)?
+            .ok_or_else(|| "calendar context attachment was not persisted".into())
+    }
+
+    pub fn meeting_calendar_context(
+        &self,
+        meeting_id: &str,
+    ) -> StoreResult<Option<MeetingCalendarContext>> {
+        self.conn
+            .query_row(
+                "
+                SELECT
+                    meeting_id, source, event_id, event_title, calendar_title,
+                    starts_at_ms, ends_at_ms, is_all_day, is_recurring, privacy,
+                    overlap_state, privacy_confirmed, attached_at_ms
+                FROM meeting_calendar_context
+                WHERE meeting_id = ?1
+                ",
+                params![meeting_id],
+                |row| {
+                    Ok(MeetingCalendarContext {
+                        meeting_id: row.get(0)?,
+                        source: row.get(1)?,
+                        event_id: row.get(2)?,
+                        event_title: row.get(3)?,
+                        calendar_title: row.get(4)?,
+                        starts_at_ms: row.get(5)?,
+                        ends_at_ms: row.get(6)?,
+                        is_all_day: row.get(7)?,
+                        is_recurring: row.get(8)?,
+                        privacy: row.get(9)?,
+                        overlap_state: row.get(10)?,
+                        privacy_confirmed: row.get(11)?,
+                        attached_at_ms: row.get(12)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn write_recoverable_artifact_manifest(
@@ -1289,20 +2233,12 @@ impl Store {
     }
 
     pub fn delete_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
-        let mut report = DeleteReport::default();
-
-        let mut exports = self
-            .conn
-            .prepare("SELECT path FROM exported_files WHERE meeting_id = ?1 ORDER BY path")?;
-        report.exported_files_outside_app_control = exports
-            .query_map(params![meeting_id], |row| {
-                Ok(PathBuf::from(row.get::<_, String>(0)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(exports);
+        let mut report = self.delete_report_for_meeting(meeting_id)?;
 
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let result = self.mark_meeting_delete_intent_in_transaction(meeting_id);
+        let result = self
+            .ensure_no_active_delete_blocking_processing_job(meeting_id)
+            .and_then(|()| self.mark_meeting_delete_intent_in_transaction(meeting_id));
         match result {
             Ok(()) => {
                 if let Err(err) = self.conn.execute_batch("COMMIT") {
@@ -1316,7 +2252,40 @@ impl Store {
             }
         }
 
-        for artifact_path in self.private_artifacts_for_delete(meeting_id)? {
+        let private_artifacts = self.private_artifacts_for_delete(meeting_id)?;
+        self.finalize_deleted_meeting_cleanup(meeting_id, private_artifacts, &mut report)?;
+        Ok(report)
+    }
+
+    pub fn finalize_pending_delete_intents(
+        &self,
+    ) -> StoreResult<Vec<PendingDeleteFinalizationReport>> {
+        let meeting_ids = self.deleted_meeting_ids()?;
+        let mut reports = Vec::new();
+        for meeting_id in meeting_ids {
+            let private_artifacts = self.private_artifacts_for_delete(&meeting_id)?;
+            let has_private_rows = self.private_rows_remain_for_delete(&meeting_id)?;
+            let has_private_manifest = self.private_manifest_exists(&meeting_id)?;
+            if private_artifacts.is_empty() && !has_private_rows && !has_private_manifest {
+                continue;
+            }
+
+            let mut report = self.delete_report_for_meeting(&meeting_id)?;
+            self.finalize_deleted_meeting_cleanup(&meeting_id, private_artifacts, &mut report)?;
+            reports.push(PendingDeleteFinalizationReport::from_delete_report(
+                meeting_id, report,
+            ));
+        }
+        Ok(reports)
+    }
+
+    fn finalize_deleted_meeting_cleanup(
+        &self,
+        meeting_id: &str,
+        private_artifacts: Vec<String>,
+        report: &mut DeleteReport,
+    ) -> StoreResult<()> {
+        for artifact_path in private_artifacts {
             let Some(path) = self.private_app_path(&artifact_path) else {
                 report
                     .skipped_private_artifacts
@@ -1346,7 +2315,7 @@ impl Store {
         self.delete_private_manifests(meeting_id)?;
         report.deleted_private_artifacts.sort();
         report.skipped_private_artifacts.sort();
-        Ok(report)
+        Ok(())
     }
 
     pub fn meeting_deleted(&self, meeting_id: &str) -> StoreResult<bool> {
@@ -2037,6 +3006,51 @@ impl Store {
         Ok(())
     }
 
+    fn ensure_no_active_delete_blocking_processing_job(&self, meeting_id: &str) -> StoreResult<()> {
+        if let Some(job) = self.active_transcription_job_for_meeting(meeting_id)? {
+            return Err(format!(
+                "Cannot delete private data while meeting {meeting_id} has an active processing job: {}",
+                job.id
+            )
+            .into());
+        }
+        if let Some(job) = self.active_summary_job_for_meeting(meeting_id)? {
+            return Err(format!(
+                "Cannot delete private data while meeting {meeting_id} has an active processing job: {}",
+                job.id
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn delete_report_for_meeting(&self, meeting_id: &str) -> StoreResult<DeleteReport> {
+        let mut report = DeleteReport::default();
+        let mut exports = self
+            .conn
+            .prepare("SELECT path FROM exported_files WHERE meeting_id = ?1 ORDER BY path")?;
+        report.exported_files_outside_app_control = exports
+            .query_map(params![meeting_id], |row| {
+                Ok(PathBuf::from(row.get::<_, String>(0)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(report)
+    }
+
+    fn deleted_meeting_ids(&self) -> StoreResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id FROM meetings
+            WHERE status = 'Deleted' OR deleted_at_ms IS NOT NULL
+            ORDER BY id
+            ",
+        )?;
+        let meeting_ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(meeting_ids)
+    }
+
     fn mark_meeting_delete_intent_in_transaction(&self, meeting_id: &str) -> StoreResult<()> {
         self.conn.execute(
             "UPDATE meetings SET status = 'Deleted', deleted_at_ms = COALESCE(deleted_at_ms, 0) WHERE id = ?1",
@@ -2057,6 +3071,11 @@ impl Store {
             "DELETE FROM meeting_search WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
+        self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
+            SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
+            WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
+            |evidence| evidence.meeting_id == meeting_id,
+        )?;
         Ok(())
     }
 
@@ -2075,6 +3094,32 @@ impl Store {
             .query_map(params![meeting_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(artifacts)
+    }
+
+    fn private_rows_remain_for_delete(&self, meeting_id: &str) -> StoreResult<bool> {
+        let remains = self.conn.query_row(
+            "
+            SELECT CASE WHEN
+                EXISTS(SELECT 1 FROM recording_sessions WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM analysis_results WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM transcript_segments WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM transcript_versions WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM model_runs WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM processing_jobs WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM meeting_calendar_context WHERE meeting_id = ?1)
+                OR EXISTS(SELECT 1 FROM meeting_search WHERE meeting_id = ?1)
+                OR EXISTS(
+                    SELECT 1 FROM transcript_segment_edits
+                    WHERE transcript_version_id IN (
+                        SELECT id FROM transcript_versions WHERE meeting_id = ?1
+                    )
+                )
+            THEN 1 ELSE 0 END
+            ",
+            params![meeting_id],
+            |row| row.get::<_, u8>(0),
+        )?;
+        Ok(remains != 0)
     }
 
     fn delete_private_meeting_rows(&self, meeting_id: &str) -> StoreResult<()> {
@@ -2104,6 +3149,18 @@ impl Store {
             params![meeting_id],
         )?;
         self.conn.execute(
+            "DELETE FROM processing_jobs WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM meeting_calendar_context WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM meeting_search WHERE meeting_id = ?1",
+            params![meeting_id],
+        )?;
+        self.conn.execute(
             "
             DELETE FROM audio_artifacts
             WHERE recording_session_id IN (
@@ -2117,6 +3174,25 @@ impl Store {
             params![meeting_id],
         )?;
         Ok(())
+    }
+
+    fn private_manifest_exists(&self, meeting_id: &str) -> StoreResult<bool> {
+        for manifest_path in manifest_paths(&self.app_root)? {
+            let manifest = ArtifactManifest::read(&manifest_path)?;
+            if manifest.meeting_id != meeting_id {
+                continue;
+            }
+            let Some(relative_path) = manifest_path.strip_prefix(&self.app_root).ok() else {
+                continue;
+            };
+            if self
+                .private_app_path(&relative_path.to_string_lossy())
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn delete_private_manifests(&self, meeting_id: &str) -> StoreResult<()> {
@@ -2200,6 +3276,43 @@ impl Store {
             .map_err(Into::into)
     }
 
+    fn optional_setting_json<T, F>(&self, key: &str, is_valid: F) -> StoreResult<Option<T>>
+    where
+        T: for<'de> Deserialize<'de>,
+        F: Fn(&T) -> bool,
+    {
+        let Some(value) = self.setting_value(key)? else {
+            return Ok(None);
+        };
+        match serde_json::from_str(&value) {
+            Ok(value) if is_valid(&value) => Ok(Some(value)),
+            Ok(_) => Ok(None),
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn clear_setting_when_json<T, F>(
+        &self,
+        key: &str,
+        is_valid: F,
+        should_clear: impl FnOnce(&T) -> bool,
+    ) -> StoreResult<()>
+    where
+        T: for<'de> Deserialize<'de>,
+        F: Fn(&T) -> bool,
+    {
+        let Some(value) = self.setting_value(key)? else {
+            return Ok(());
+        };
+        match serde_json::from_str::<T>(&value) {
+            Ok(value) if !is_valid(&value) => self.delete_setting(key)?,
+            Ok(value) if should_clear(&value) => self.delete_setting(key)?,
+            Ok(_) => {}
+            Err(_) => self.delete_setting(key)?,
+        }
+        Ok(())
+    }
+
     fn upsert_setting(&self, key: &str, value: &str) -> StoreResult<()> {
         self.conn.execute(
             "
@@ -2209,6 +3322,12 @@ impl Store {
             ",
             params![key, value],
         )?;
+        Ok(())
+    }
+
+    fn delete_setting(&self, key: &str) -> StoreResult<()> {
+        self.conn
+            .execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 
@@ -2310,6 +3429,32 @@ pub struct DeleteReport {
     pub deleted_private_artifacts: Vec<PathBuf>,
     pub skipped_private_artifacts: Vec<PathBuf>,
     pub exported_files_outside_app_control: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RawAudioRetentionCleanupReport {
+    pub deleted_private_artifacts: Vec<PathBuf>,
+    pub missing_private_artifacts: Vec<PathBuf>,
+    pub skipped_private_artifacts: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingDeleteFinalizationReport {
+    pub meeting_id: String,
+    pub deleted_private_artifacts: Vec<PathBuf>,
+    pub skipped_private_artifacts: Vec<PathBuf>,
+    pub exported_files_outside_app_control: Vec<PathBuf>,
+}
+
+impl PendingDeleteFinalizationReport {
+    fn from_delete_report(meeting_id: String, report: DeleteReport) -> Self {
+        Self {
+            meeting_id,
+            deleted_private_artifacts: report.deleted_private_artifacts,
+            skipped_private_artifacts: report.skipped_private_artifacts,
+            exported_files_outside_app_control: report.exported_files_outside_app_control,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2447,8 +3592,11 @@ fn recoverable_artifact_entries(manifest: &ArtifactManifest) -> Vec<ArtifactMani
 
 fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
     let meetings = root.join("meetings");
-    if !meetings.exists() {
-        return Ok(Vec::new());
+    match fs::symlink_metadata(&meetings) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
     }
     let mut paths = Vec::new();
     for entry in fs::read_dir(meetings)? {
@@ -2519,6 +3667,15 @@ impl StoreEnum for RecordingStatus {
             RecordingStatus::Recovered => "Recovered",
             RecordingStatus::Complete => "Complete",
             RecordingStatus::Failed => "Failed",
+        }
+    }
+}
+
+impl StoreEnum for RawAudioRetentionPolicy {
+    fn as_store_str(&self) -> &'static str {
+        match self {
+            RawAudioRetentionPolicy::Retain => "Retain",
+            RawAudioRetentionPolicy::DeleteAfterTranscription => "DeleteAfterTranscription",
         }
     }
 }
@@ -2643,6 +3800,13 @@ fn is_pending_sha256(sha256: &str) -> bool {
     // pending hashes became artifact-scoped. New app writes use the prefixed
     // `sha256:pending:<artifact-id>` form.
     sha256 == PENDING_SHA_PREFIX || sha256.starts_with("sha256:pending:")
+}
+
+fn is_lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {
@@ -2828,6 +3992,16 @@ fn parse_repair_status_value(status: &str) -> Result<RepairStatus, String> {
     }
 }
 
+fn parse_job_kind(kind: &str) -> StoreResult<JobKind> {
+    match kind {
+        "Transcribe" => Ok(JobKind::Transcribe),
+        "Summarize" => Ok(JobKind::Summarize),
+        "Export" => Ok(JobKind::Export),
+        "Index" => Ok(JobKind::Index),
+        other => Err(format!("unknown job kind: {other}").into()),
+    }
+}
+
 fn parse_job_status(status: &str) -> StoreResult<JobStatus> {
     match status {
         "Queued" => Ok(JobStatus::Queued),
@@ -2838,6 +4012,14 @@ fn parse_job_status(status: &str) -> StoreResult<JobStatus> {
         "Retry" => Ok(JobStatus::Retry),
         "Recovery" => Ok(JobStatus::Recovery),
         other => Err(format!("unknown job status: {other}").into()),
+    }
+}
+
+fn parse_raw_audio_retention_policy(policy: &str) -> StoreResult<RawAudioRetentionPolicy> {
+    match policy {
+        "Retain" => Ok(RawAudioRetentionPolicy::Retain),
+        "DeleteAfterTranscription" => Ok(RawAudioRetentionPolicy::DeleteAfterTranscription),
+        other => Err(format!("unsupported raw audio retention policy: {other}").into()),
     }
 }
 

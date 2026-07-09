@@ -1,0 +1,572 @@
+{
+  "cases": {
+    "desktop_snapshot.empty": {
+      "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [],
+      "model": {
+        "configuredPath": "",
+        "kind": "missing"
+      },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": null,
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
+        "whisperModelPath": ""
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": null,
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "",
+          "lastPathTest": null,
+          "lastSuccessfulTranscription": null,
+          "message": "No Whisper model path is configured.",
+          "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
+          "state": "MissingPath"
+        }
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "desktop_snapshot.transcribed_analyzed_meeting": {
+      "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [
+        {
+          "analysis": {
+            "createdAtMs": 3000,
+            "disclosureConfirmed": false,
+            "disclosureRequired": false,
+            "modelName": "qwen3:30b",
+            "networkUsed": false,
+            "promptTemplateVersion": "summary-v1",
+            "provider": "ollama",
+            "summary": "Local summary"
+          },
+          "calendarAttachment": null,
+          "deleteState": {
+            "state": "idle"
+          },
+          "duration": "In progress",
+          "exportState": {
+            "state": "idle"
+          },
+          "id": "meeting-1",
+          "privacy": {
+            "localOnly": true,
+            "rawAudioRetention": "Retain",
+            "storageLabel": "Private storage",
+            "storagePath": "meetings/meeting-1/audio"
+          },
+          "segments": [
+            {
+              "endMs": 1200,
+              "id": "segment-1",
+              "modelRunId": "run-1",
+              "originalText": null,
+              "sourceChannel": "Microphone",
+              "startMs": 0,
+              "text": "We decided to keep transcripts local.",
+              "transcriptVersionId": "version-1"
+            }
+          ],
+          "startedAt": "1000 ms",
+          "status": "Created",
+          "title": "Planning",
+          "transcriptState": "Ready",
+          "transcriptText": "We decided to keep transcripts local."
+        }
+      ],
+      "model": {
+        "configuredPath": "",
+        "kind": "missing"
+      },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": "meeting-1",
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
+        "whisperModelPath": ""
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": null,
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "",
+          "lastPathTest": null,
+          "lastSuccessfulTranscription": null,
+          "message": "No Whisper model path is configured.",
+          "setupGuidance": "Enter a local Whisper model path in Settings, save it, then use Test path.",
+          "state": "MissingPath"
+        }
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "desktop_snapshot.unsupported_whisper_model": {
+      "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [],
+      "model": {
+        "configuredPath": "<app-root>/notes.txt",
+        "kind": "unsupported"
+      },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": null,
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
+        "whisperModelPath": "<app-root>/notes.txt"
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "UnknownUntilTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": null,
+          "message": "Ollama is configured for a local loopback URL and model.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Start Ollama manually, install the selected local model if needed, then run Test Ollama. Availability is unknown until Test Ollama runs.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Test path only accepts .bin and .gguf model files.",
+          "configuredPath": "<app-root>/notes.txt",
+          "lastPathTest": null,
+          "lastSuccessfulTranscription": null,
+          "message": "Whisper model path must use a supported .bin or .gguf file.",
+          "setupGuidance": "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file.",
+          "state": "UnsupportedFile"
+        }
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "desktop_snapshot.with_setup_evidence": {
+      "analysisCommand": null,
+      "calendarContext": {
+        "autoStartEnabled": false,
+        "availabilityState": "PermissionRequired",
+        "message": "Apple Calendar permission has not been requested.",
+        "permissionState": "NotRequested",
+        "setupGuidance": "Use Request calendar access when you want Curiosity to read upcoming local Calendar events. Calendar events never start recordings automatically.",
+        "source": "AppleCalendar",
+        "upcomingEvents": []
+      },
+      "capture": {
+        "microphone": "Ready",
+        "systemAudio": "SystemAudioUnavailable"
+      },
+      "commandSurface": {
+        "detail": "Connected to local desktop commands.",
+        "ready": true
+      },
+      "deleteCommand": {
+        "state": "idle"
+      },
+      "exportCommand": {
+        "state": "idle"
+      },
+      "loading": false,
+      "meetings": [],
+      "model": {
+        "configuredPath": "<app-root>/fixture-whisper.bin",
+        "kind": "ready"
+      },
+      "modelSetupOptions": {
+        "ollama": {
+          "automaticPulls": false,
+          "candidates": [
+            {
+              "defaultCandidate": true,
+              "displayName": "Qwen 3.6 27B",
+              "id": "ollama-qwen3-6-27b",
+              "modelTag": "qwen3.6:27b",
+              "pullCommand": "ollama pull qwen3.6:27b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull qwen3.6:27b`."
+            },
+            {
+              "defaultCandidate": true,
+              "displayName": "Gemma 4 31B",
+              "id": "ollama-gemma4-31b",
+              "modelTag": "gemma4:31b",
+              "pullCommand": "ollama pull gemma4:31b",
+              "setupNotes": "Install Ollama locally, then run `ollama pull gemma4:31b`."
+            }
+          ],
+          "detail": "Start Ollama locally and install one of the listed local model tags manually before running Test Ollama.",
+          "mode": "ManualOllama",
+          "title": "Local Ollama models"
+        },
+        "whisper": {
+          "acceptedExtensions": [
+            "bin",
+            "gguf"
+          ],
+          "chooseLabel": "Choose model",
+          "detail": "Choose an existing whisper.cpp-compatible .bin or .gguf model file. Curiosity does not download Whisper models yet.",
+          "downloadsManaged": false,
+          "mode": "ManualFile",
+          "saveLabel": "Save Whisper",
+          "testLabel": "Test path",
+          "title": "Local Whisper file"
+        }
+      },
+      "recording": {
+        "meeting_id": "",
+        "permission_state": "Ready",
+        "raw_audio_retention": "Retain",
+        "recording_id": null,
+        "recoverable": false,
+        "recovery_action": "Start a desktop recording to create private microphone and system audio WAV artifacts.",
+        "state": "Idle",
+        "storage_location": {
+          "app_private_path": "<app-root>"
+        }
+      },
+      "selectedMeetingId": null,
+      "settings": {
+        "exportDirectory": null,
+        "ollamaBaseUrl": "http://127.0.0.1:11434",
+        "ollamaModel": "qwen3.6:27b",
+        "rawAudioRetentionPolicy": "Retain",
+        "whisperModelPath": "<app-root>/fixture-whisper.bin"
+      },
+      "setupGuidance": {
+        "ollama": {
+          "availability": "AvailableAtLastTest",
+          "baseUrl": "http://127.0.0.1:11434",
+          "lastConnectionTest": {
+            "baseUrl": "http://127.0.0.1:11434",
+            "failureDetail": null,
+            "installedLocalModels": [
+              "gemma4:31b",
+              "qwen3.6:27b"
+            ],
+            "pullCommand": null,
+            "requestedModel": "qwen3.6:27b",
+            "selectedLocalModelTag": "qwen3.6:27b",
+            "state": "Available",
+            "testedAtMs": 1700000002000
+          },
+          "message": "Last explicit Test Ollama reached qwen3.6:27b; summaries were available at that test.",
+          "model": "qwen3.6:27b",
+          "setupGuidance": "Availability is not checked in the background. Run Test Ollama again after changing Ollama, models, or the base URL.",
+          "state": "ConfiguredNotChecked"
+        },
+        "whisper": {
+          "compatibilityNote": "Readability does not prove model compatibility.",
+          "configuredPath": "<app-root>/fixture-whisper.bin",
+          "lastPathTest": {
+            "failureDetail": null,
+            "fileSizeBytes": 16,
+            "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
+            "state": "Valid",
+            "testedAtMs": 1700000001000,
+            "testedPath": "<app-root>/fixture-whisper.bin"
+          },
+          "lastSuccessfulTranscription": null,
+          "message": "Whisper model path is readable; compatibility is not verified.",
+          "setupGuidance": "Use Test path for file evidence, then transcribe a sample to verify compatibility.",
+          "state": "ReadablePath"
+        }
+      },
+      "summaryJob": null,
+      "transcription": null,
+      "transcriptionJob": null
+    },
+    "test_ollama_connection.available_configured_model": {
+      "installedLocalModels": [
+        "gemma4:31b",
+        "qwen3.6:27b"
+      ],
+      "message": "Ollama is reachable and qwen3.6:27b is installed.",
+      "pullCommand": null,
+      "selectedLocalModelTag": "qwen3.6:27b",
+      "setupGuidance": "",
+      "state": "Available"
+    },
+    "test_ollama_connection.cloud_model_rejected": {
+      "installedLocalModels": null,
+      "message": "hosted or cloud model tags cannot use the local Ollama privacy path.",
+      "pullCommand": null,
+      "selectedLocalModelTag": null,
+      "setupGuidance": "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
+      "state": "Unavailable"
+    },
+    "test_ollama_connection.missing_local_model": {
+      "installedLocalModels": [
+        "gemma4:31b"
+      ],
+      "message": "Ollama is reachable, but qwen3.6:27b is not installed.",
+      "pullCommand": "ollama pull qwen3.6:27b",
+      "selectedLocalModelTag": "qwen3.6:27b",
+      "setupGuidance": "Install the selected model with `ollama pull qwen3.6:27b`, then retry. Installed local models: gemma4:31b.",
+      "state": "Unavailable"
+    },
+    "test_whisper_model_path.missing_path": {
+      "message": "No Whisper model path is configured.",
+      "setupGuidance": "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
+      "state": "Invalid"
+    },
+    "test_whisper_model_path.unsupported_extension": {
+      "message": "Whisper model path must use a supported .bin or .gguf file.",
+      "setupGuidance": "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
+      "state": "Invalid"
+    },
+    "test_whisper_model_path.valid_readable_file": {
+      "fileSizeBytes": 16,
+      "message": "Whisper model path is readable; compatibility is not verified by this test.",
+      "setupGuidance": "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility.",
+      "sha256": "2fb703c1815700a864ff2bbc42767fd52dc5b77635f0dfc132860420b8a94acf",
+      "state": "Valid"
+    }
+  },
+  "owner": "apps/desktop/src-tauri/src/main.rs",
+  "version": 1
+}

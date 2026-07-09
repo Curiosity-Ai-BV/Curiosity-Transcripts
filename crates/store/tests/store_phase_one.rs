@@ -2,12 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use curiosity_domain::{
-    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus, RecordingSession,
-    RecordingSource, RecordingStatus,
+    ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingStatus,
+    RawAudioRetentionPolicy, RecordingSession, RecordingSource, RecordingStatus,
 };
 use curiosity_store::{
-    ArtifactManifest, DeleteReport, RecoverableArtifact, RepairConflict, RepairStatus, Store,
-    WriteStatus,
+    ArtifactManifest, DeleteReport, MeetingCalendarContext, RecoverableArtifact, RepairConflict,
+    RepairStatus, Store, WriteStatus,
 };
 use rusqlite::Connection;
 
@@ -86,7 +86,7 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     let store = Store::open(&db_path, root.clone()).expect("open store");
     store.migrate().expect("migrate legacy schema");
 
-    assert_eq!(store.schema_version().expect("schema version"), 2);
+    assert_eq!(store.schema_version().expect("schema version"), 5);
     let conn = Connection::open(&db_path).expect("read migrated db");
     let columns = conn
         .prepare("PRAGMA table_info(audio_artifacts)")
@@ -98,6 +98,226 @@ fn migrate_upgrades_legacy_audio_artifact_columns_and_sets_schema_version() {
     assert!(columns.contains(&"write_status".to_string()));
     assert!(columns.contains(&"recovery_status".to_string()));
     assert!(columns.contains(&"tombstoned".to_string()));
+}
+
+#[test]
+fn migrate_adds_recording_session_retention_policy_default_for_legacy_rows() {
+    let root = test_root("legacy-session-retention-migrate");
+    let db_path = root.join("app.db");
+    {
+        let conn = Connection::open(&db_path).expect("legacy db");
+        conn.execute_batch(
+            "
+            CREATE TABLE recording_sessions (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                ended_at_ms INTEGER,
+                sample_rate_hz INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                recovery_note TEXT
+            );
+            INSERT INTO recording_sessions (
+                id, meeting_id, source, started_at_ms, ended_at_ms, sample_rate_hz, status, recovery_note
+            ) VALUES (
+                'session-legacy', 'meeting-legacy', 'Imported', 1000, 2000, 48000, 'Complete', NULL
+            );
+            PRAGMA user_version = 3;
+            ",
+        )
+        .expect("legacy schema");
+    }
+
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate legacy schema");
+
+    assert_eq!(store.schema_version().expect("schema version"), 5);
+    let conn = Connection::open(&db_path).expect("read migrated db");
+    let columns = conn
+        .prepare("PRAGMA table_info(recording_sessions)")
+        .expect("table info")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("column names");
+    assert!(columns.contains(&"raw_audio_retention_policy".to_string()));
+    let policy: String = conn
+        .query_row(
+            "SELECT raw_audio_retention_policy FROM recording_sessions WHERE id = 'session-legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("legacy row policy");
+    assert_eq!(policy, "Retain");
+}
+
+#[test]
+fn calendar_context_attachment_round_trips_and_replaces_per_meeting() {
+    let root = test_root("calendar-context-round-trip");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+
+    let first = calendar_context("meeting-1", "event-1", "Design Review", 1_500);
+    store
+        .attach_meeting_calendar_context(&first)
+        .expect("attach first event");
+    let mut replacement = calendar_context("meeting-1", "event-2", "Roadmap Review", 2_500);
+    replacement.privacy = "Unknown".to_string();
+    replacement.privacy_confirmed = true;
+    store
+        .attach_meeting_calendar_context(&replacement)
+        .expect("replace attached event");
+    drop(store);
+
+    let reopened = Store::open(&db_path, root).expect("reopen store");
+    reopened.migrate().expect("migrate reopened");
+    assert_eq!(
+        reopened
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        Some(replacement)
+    );
+}
+
+#[test]
+fn calendar_context_attachment_requires_active_meeting() {
+    let root = test_root("calendar-context-active-meeting");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    let error = store
+        .attach_meeting_calendar_context(&calendar_context(
+            "missing-meeting",
+            "event-1",
+            "Planning",
+            1_500,
+        ))
+        .expect_err("missing meeting should reject attachment");
+    assert!(error.to_string().contains("meeting not found or deleted"));
+}
+
+#[test]
+fn delete_meeting_removes_calendar_context_attachment() {
+    let root = test_root("calendar-context-delete");
+    let store = Store::open(root.join("app.db"), root).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    store
+        .attach_meeting_calendar_context(&calendar_context(
+            "meeting-1",
+            "event-1",
+            "Design Review",
+            1_500,
+        ))
+        .expect("attach event");
+
+    store.delete_meeting("meeting-1").expect("delete meeting");
+
+    assert_eq!(
+        store
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        None
+    );
+}
+
+#[test]
+fn pending_delete_finalization_removes_leftover_calendar_context_attachment() {
+    let root = test_root("calendar-context-pending-delete");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    store
+        .insert_meeting(&Meeting::new_manual("meeting-1", "Planning", 1_000))
+        .expect("insert meeting");
+    store
+        .attach_meeting_calendar_context(&calendar_context(
+            "meeting-1",
+            "event-1",
+            "Design Review",
+            1_500,
+        ))
+        .expect("attach event");
+    drop(store);
+
+    let conn = Connection::open(&db_path).expect("open raw connection");
+    conn.execute(
+        "UPDATE meetings SET status = 'Deleted', deleted_at_ms = 1 WHERE id = 'meeting-1'",
+        [],
+    )
+    .expect("mark pending delete");
+    drop(conn);
+
+    let reopened = Store::open(&db_path, root).expect("reopen store");
+    reopened.migrate().expect("migrate reopened");
+    let reports = reopened
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reopened
+            .meeting_calendar_context("meeting-1")
+            .expect("calendar context"),
+        None
+    );
+}
+
+#[test]
+fn recording_session_retention_policy_round_trips() {
+    let root = test_root("session-retention-round-trip");
+    let store = Store::open(root.join("app.db"), root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    let meeting = Meeting::new_manual("meeting-1", "Planning", 1_000);
+    store.insert_meeting(&meeting).expect("insert meeting");
+    let session = RecordingSession::start(
+        "session-1",
+        "meeting-1",
+        RecordingSource::Imported,
+        1_000,
+        48_000,
+    )
+    .with_raw_audio_retention_policy(RawAudioRetentionPolicy::DeleteAfterTranscription);
+
+    store
+        .insert_recording_session(&session)
+        .expect("insert session");
+
+    assert_eq!(
+        store
+            .recording_session_raw_audio_retention_policy("session-1")
+            .expect("retention policy"),
+        RawAudioRetentionPolicy::DeleteAfterTranscription
+    );
+}
+
+fn calendar_context(
+    meeting_id: &str,
+    event_id: &str,
+    event_title: &str,
+    starts_at_ms: u64,
+) -> MeetingCalendarContext {
+    MeetingCalendarContext {
+        meeting_id: meeting_id.to_string(),
+        source: "AppleCalendar".to_string(),
+        event_id: event_id.to_string(),
+        event_title: event_title.to_string(),
+        calendar_title: "Work".to_string(),
+        starts_at_ms,
+        ends_at_ms: starts_at_ms + 1_800_000,
+        is_all_day: false,
+        is_recurring: false,
+        privacy: "Public".to_string(),
+        overlap_state: "None".to_string(),
+        privacy_confirmed: false,
+        attached_at_ms: starts_at_ms + 500,
+    }
 }
 
 #[test]
@@ -609,6 +829,92 @@ fn startup_repair_ignores_symlinked_meeting_directory_manifest_outside_app_stora
     assert!(repair_report.recovered_artifacts.is_empty());
     assert!(repair_report.conflicts.is_empty());
     assert_eq!(repair_status, RepairStatus::NotNeeded);
+}
+
+#[cfg(unix)]
+#[test]
+fn top_level_meetings_symlink_does_not_recover_or_delete_outside_manifest() {
+    let root = test_root("symlink-top-level-meetings");
+    let outside_root = test_root("symlink-top-level-meetings-outside");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-1",
+            "session-1",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/raw-mic.wav",
+            "sha256:partial",
+        ))
+        .expect("insert artifact");
+    store
+        .insert_processing_job(&curiosity_domain::ProcessingJob::new(
+            "job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("insert job");
+
+    let outside_artifact = outside_root.join("meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(outside_artifact.parent().expect("outside artifact parent"))
+        .expect("outside artifact dir");
+    fs::write(&outside_artifact, b"partial wav").expect("outside artifact file");
+    let outside_manifest = outside_root.join("meeting-1/manifest.json");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(&outside_manifest)
+    .expect("write outside manifest");
+    std::os::unix::fs::symlink(&outside_root, root.join("meetings"))
+        .expect("symlink top-level meetings outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.recovered_jobs.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact recovery status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+
+    let conn = Connection::open(&db_path).expect("open raw connection");
+    conn.execute("DELETE FROM audio_artifacts WHERE id = 'artifact-1'", [])
+        .expect("delete artifact row");
+    conn.execute("DELETE FROM recording_sessions WHERE id = 'session-1'", [])
+        .expect("delete session row");
+    drop(conn);
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+        .expect("mark meeting deleted");
+
+    let reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+    let second_reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete again");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].meeting_id, "meeting-1");
+    assert!(reports[0].deleted_private_artifacts.is_empty());
+    assert!(outside_manifest.exists());
+    assert!(outside_artifact.exists());
+    assert!(second_reports.is_empty());
 }
 
 #[test]

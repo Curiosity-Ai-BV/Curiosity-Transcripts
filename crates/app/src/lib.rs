@@ -14,7 +14,7 @@ use curiosity_domain::{
     AudioArtifact, Meeting, MeetingAnalysis, MeetingStatus, RecordingSession, RecordingSource,
     RecordingStatus,
 };
-use curiosity_store::{Store, StoreError};
+use curiosity_store::{MeetingCalendarContext, Store, StoreError};
 use serde::{Deserialize, Serialize};
 
 /// Result for recording commands that must return the current trust state on failure.
@@ -124,6 +124,33 @@ pub struct MeetingSummaryDto {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CalendarEventAttachmentDto {
+    pub id: String,
+    pub title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub is_all_day: bool,
+    pub is_recurring: bool,
+    pub privacy: String,
+    pub overlap_state: String,
+    pub attachable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MeetingCalendarContextDto {
+    pub source: String,
+    pub event_id: String,
+    pub event_title: String,
+    pub calendar_title: String,
+    pub starts_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub privacy: String,
+    pub privacy_confirmed: bool,
+    pub attached_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MeetingSearchResultDto {
     pub meeting_id: String,
     pub title: String,
@@ -132,7 +159,34 @@ pub struct MeetingSearchResultDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExportedMeetingDto {
     pub meeting_id: String,
+    pub format: ExportFormat,
     pub path: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Json,
+    Markdown,
+    Srt,
+}
+
+impl ExportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+            Self::Srt => "srt",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::Srt => "srt",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -262,7 +316,171 @@ pub fn rename_meeting_command(
     ))
 }
 
+pub fn attach_calendar_event_context_command(
+    store: &Store,
+    meeting_id: &str,
+    event: CalendarEventAttachmentDto,
+    privacy_confirmed: bool,
+    attached_at_ms: u64,
+) -> CommandResult<MeetingCalendarContextDto> {
+    validate_calendar_event_attachment(&event, privacy_confirmed)?;
+    let context = MeetingCalendarContext {
+        meeting_id: meeting_id.to_string(),
+        source: "AppleCalendar".to_string(),
+        event_id: event.id,
+        event_title: event.title,
+        calendar_title: event.calendar_title,
+        starts_at_ms: event.starts_at_ms,
+        ends_at_ms: event.ends_at_ms,
+        is_all_day: event.is_all_day,
+        is_recurring: event.is_recurring,
+        privacy: event.privacy,
+        overlap_state: event.overlap_state,
+        privacy_confirmed,
+        attached_at_ms,
+    };
+    store
+        .attach_meeting_calendar_context(&context)
+        .map(meeting_calendar_context_dto)
+        .map_err(Into::into)
+}
+
+fn validate_calendar_event_attachment(
+    event: &CalendarEventAttachmentDto,
+    privacy_confirmed: bool,
+) -> CommandResult<()> {
+    if !event.attachable {
+        return Err(calendar_attachment_error(
+            "Calendar event is not marked attachable by the desktop safety snapshot.",
+        ));
+    }
+    if event.id.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a stable event identifier.",
+        ));
+    }
+    if event.title.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a non-empty title.",
+        ));
+    }
+    if event.calendar_title.trim().is_empty() {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires a non-empty calendar title.",
+        ));
+    }
+    if event.starts_at_ms >= event.ends_at_ms {
+        return Err(calendar_attachment_error(
+            "Calendar event attachment requires an unambiguous start and end time.",
+        ));
+    }
+    if event.is_all_day {
+        return Err(calendar_attachment_error(
+            "All-day calendar events cannot be attached as meeting context.",
+        ));
+    }
+    if event.is_recurring {
+        return Err(calendar_attachment_error(
+            "Recurring calendar events cannot be attached as meeting context.",
+        ));
+    }
+    if event.overlap_state != "None" {
+        return Err(calendar_attachment_error(
+            "Overlapping or ambiguous calendar events cannot be attached as meeting context.",
+        ));
+    }
+    match event.privacy.as_str() {
+        "Public" => Ok(()),
+        "Unknown" if privacy_confirmed => Ok(()),
+        "Unknown" => Err(calendar_attachment_error(
+            "Calendar event privacy is unknown; confirm it is safe before attaching.",
+        )),
+        "Private" => Err(calendar_attachment_error(
+            "Private calendar events cannot be attached as meeting context.",
+        )),
+        _ => Err(calendar_attachment_error(
+            "Calendar event attachment has an unsupported privacy classification.",
+        )),
+    }
+}
+
+fn calendar_attachment_error(message: &str) -> CommandError {
+    CommandError::Store(StoreError::InvariantViolation(message.to_string()))
+}
+
+pub fn correct_transcript_segment_command(
+    store: &Store,
+    meeting_id: &str,
+    segment_id: &str,
+    corrected_text: &str,
+    edited_at_ms: u64,
+) -> CommandResult<()> {
+    let segment_belongs_to_meeting = store
+        .transcript_segments(meeting_id)?
+        .iter()
+        .any(|segment| segment.id == segment_id);
+    if !segment_belongs_to_meeting {
+        return Err(CommandError::Store(StoreError::NotFound(format!(
+            "transcript segment not found in meeting: {meeting_id}/{segment_id}"
+        ))));
+    }
+
+    store.correct_transcript_segment(segment_id, corrected_text, edited_at_ms)?;
+    Ok(())
+}
+
 pub fn export_meeting_json_command(
+    store: &Store,
+    meeting_id: &str,
+    export_root: impl AsRef<std::path::Path>,
+) -> CommandResult<ExportedMeetingDto> {
+    export_meeting_command(store, meeting_id, ExportFormat::Json, export_root)
+}
+
+pub fn export_meeting_command(
+    store: &Store,
+    meeting_id: &str,
+    format: ExportFormat,
+    export_root: impl AsRef<std::path::Path>,
+) -> CommandResult<ExportedMeetingDto> {
+    if !is_safe_meeting_id(meeting_id) {
+        return Err(CommandError::Store(StoreError::UnsafePath(format!(
+            "meeting id is not a safe export filename: {meeting_id}"
+        ))));
+    }
+
+    if format == ExportFormat::Json {
+        return export_meeting_json(store, meeting_id, export_root);
+    }
+
+    let transcript_segments = store.transcript_segments(meeting_id)?;
+    if transcript_segments.is_empty() {
+        return Err(CommandError::Store(StoreError::InvariantViolation(
+            format!(
+                "Generate a transcript before exporting {}.",
+                format.as_str()
+            ),
+        )));
+    }
+
+    let export_root = export_root.as_ref();
+    fs::create_dir_all(export_root).map_err(StoreError::from)?;
+    let path = export_root.join(safe_export_filename(meeting_id, format)?);
+    let contents = match format {
+        ExportFormat::Json => unreachable!("json export returned before transcript formatting"),
+        ExportFormat::Markdown => curiosity_transcription::export_markdown(&transcript_segments),
+        ExportFormat::Srt => curiosity_transcription::export_srt(&transcript_segments),
+    };
+    fs::write(&path, contents).map_err(StoreError::from)?;
+    store.record_exported_file(meeting_id, &path)?;
+    Ok(ExportedMeetingDto {
+        meeting_id: meeting_id.to_string(),
+        format,
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn export_meeting_json(
     store: &Store,
     meeting_id: &str,
     export_root: impl AsRef<std::path::Path>,
@@ -270,8 +488,18 @@ pub fn export_meeting_json_command(
     let path = store.export_meeting_json(meeting_id, export_root.as_ref())?;
     Ok(ExportedMeetingDto {
         meeting_id: meeting_id.to_string(),
+        format: ExportFormat::Json,
         path: path.to_string_lossy().to_string(),
     })
+}
+
+fn safe_export_filename(meeting_id: &str, format: ExportFormat) -> Result<String, StoreError> {
+    if !is_safe_meeting_id(meeting_id) {
+        return Err(StoreError::UnsafePath(format!(
+            "meeting id is not a safe export filename: {meeting_id}"
+        )));
+    }
+    Ok(format!("{meeting_id}.{}", format.extension()))
 }
 
 pub fn delete_meeting_command(store: &Store, meeting_id: &str) -> CommandResult<DeletedMeetingDto> {
@@ -345,6 +573,18 @@ pub fn generate_summary_command_with_cancellation(
     }
     match outcome {
         AnalysisOutcome::Completed(analysis) => {
+            if analysis.network_used {
+                return Ok(Some(AnalysisCommandDto {
+                    meeting_id: meeting_id.to_string(),
+                    state: AnalysisCommandState::Failed,
+                    analysis: None,
+                    failure: Some(AnalysisFailureDto {
+                        code: "hosted_provider_gated".to_string(),
+                        message: "hosted analysis requires explicit key selection and transcript data-disclosure confirmation before it can run.".to_string(),
+                        setup_guidance: "Configure explicit key selection and transcript data-disclosure confirmation before running hosted analysis.".to_string(),
+                    }),
+                }));
+            }
             store.persist_analysis_result(&analysis)?;
             Ok(Some(AnalysisCommandDto {
                 meeting_id: meeting_id.to_string(),
@@ -374,6 +614,22 @@ fn meeting_summary_dto(summary: curiosity_store::MeetingSummary) -> MeetingSumma
         ended_at_ms: summary.ended_at_ms,
         status: summary.status,
         transcript_state: summary.transcript_state,
+    }
+}
+
+fn meeting_calendar_context_dto(
+    context: curiosity_store::MeetingCalendarContext,
+) -> MeetingCalendarContextDto {
+    MeetingCalendarContextDto {
+        source: context.source,
+        event_id: context.event_id,
+        event_title: context.event_title,
+        calendar_title: context.calendar_title,
+        starts_at_ms: context.starts_at_ms,
+        ends_at_ms: context.ends_at_ms,
+        privacy: context.privacy,
+        privacy_confirmed: context.privacy_confirmed,
+        attached_at_ms: context.attached_at_ms,
     }
 }
 
