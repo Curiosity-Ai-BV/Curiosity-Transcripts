@@ -62,6 +62,7 @@ import {
 } from "./desktopWorkspaceState";
 import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState";
 import { useDesktopTheme } from "./desktopTheme";
+import { deriveRecordingButtonTitles } from "./desktopRecordingButtonTitles";
 
 import "./styles.css";
 
@@ -807,36 +808,15 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
 
   const busyCommandTitle = "A desktop command is already running.";
   const retryDeleteTitle = commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting.";
-  const startButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-      : commandBusy
-        ? busyCommandTitle
-        : isRecordingActive
-          ? "Stop the active recording before starting another one."
-        : "Start desktop recording.";
-  const stopButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-      : commandBusy
-        ? busyCommandTitle
-        : isRecordingActive
-        ? "Stop desktop recording."
-        : "No active desktop recording to stop.";
-  const importButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop the active recording before importing audio."
-        : importWavPath.trim()
-          ? "Import the WAV file into private app storage."
-          : "Enter a local WAV source path before importing.";
-  const chooseWavButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop the active recording before choosing audio."
-        : "Choose a local WAV source file.";
+  const { startButtonTitle, stopButtonTitle, importButtonTitle, chooseWavButtonTitle } =
+    deriveRecordingButtonTitles({
+      commandSurfaceReady,
+      commandUnavailableTitle,
+      commandBusy,
+      busyCommandTitle,
+      isRecordingActive,
+      importWavPath,
+    });
   const chooseWhisperModelButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
