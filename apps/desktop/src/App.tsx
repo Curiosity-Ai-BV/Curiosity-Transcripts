@@ -2,7 +2,6 @@ import {
   CalendarBlank,
   CalendarPlus,
   CheckCircle,
-  CopySimple,
   DownloadSimple,
   FileText,
   FolderOpen,
@@ -40,6 +39,13 @@ import {
   Tone,
 } from "./commandAdapter";
 import {
+  CopyPullCommandButton,
+  IconFrame,
+  SkeletonList,
+  StatusLine,
+  StatusPill,
+} from "./desktopWorkspaceComponents";
+import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
   calendarContextTone,
@@ -55,7 +61,6 @@ import {
   isActiveCommandJob,
   isSelectedActiveCommandJob,
   isSelectedRetryableJob,
-  ollamaPullCommandModelLabel,
   ollamaSetupLabel,
   ollamaSetupTone,
   ollamaSummaryBlocked,
@@ -1832,73 +1837,5 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
         </div>
       </section>
     </main>
-  );
-}
-
-function StatusPill({ tone, label }: { tone: Tone; label: string }) {
-  return <span className={`status-pill ${tone}`}>{label}</span>;
-}
-
-function CopyPullCommandButton({
-  pullCommand,
-  disabled,
-  onCopy,
-}: {
-  pullCommand: string;
-  disabled: boolean;
-  onCopy(pullCommand: string): Promise<void>;
-}) {
-  const modelLabel = ollamaPullCommandModelLabel(pullCommand);
-  return (
-    <button
-      type="button"
-      className="button quiet pull-command-copy-button"
-      disabled={disabled}
-      title="Copy this pull command to the clipboard."
-      aria-label={`Copy pull command for ${modelLabel}`}
-      onClick={() => {
-        void onCopy(pullCommand);
-      }}
-    >
-      <CopySimple size={14} weight="regular" />
-      Copy
-    </button>
-  );
-}
-
-function StatusLine({
-  icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  tone: Tone;
-}) {
-  return (
-    <div className={`status-line ${tone}`}>
-      <span className="status-icon">{icon}</span>
-      <span>
-        <strong>{label}</strong>
-        <small>{value}</small>
-      </span>
-    </div>
-  );
-}
-
-function IconFrame({ children, tone }: { children: React.ReactNode; tone: Tone }) {
-  return <span className={`icon-frame ${tone}`}>{children}</span>;
-}
-
-function SkeletonList() {
-  return (
-    <div className="skeleton-list" aria-label="Loading workspace">
-      <p>Loading workspace</p>
-      <span />
-      <span />
-      <span />
-    </div>
   );
 }
