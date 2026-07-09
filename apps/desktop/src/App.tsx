@@ -28,7 +28,6 @@ import {
   searchMeetings,
   Tone,
 } from "./commandAdapter";
-import { CopyPullCommandButton } from "./desktopWorkspaceComponents";
 import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
@@ -40,6 +39,7 @@ import { DesktopCalendarContext } from "./desktopCalendarContext";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
+import { DesktopSettingsFeedback, type SettingsFeedback } from "./desktopSettingsFeedback";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -143,23 +143,6 @@ async function chooseNativeWhisperModelPath(): Promise<string | null> {
   }
 
   return selected;
-}
-
-interface SettingsFeedback {
-  tone: Tone;
-  message: string;
-  metadata?:
-    | {
-        kind: "whisper";
-        fileSizeBytes: number;
-        sha256: string;
-      }
-    | {
-        kind: "ollama";
-        selectedLocalModelTag: string | null;
-        installedLocalModels: string[] | null;
-        pullCommand: string | null;
-      };
 }
 
 export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
@@ -1365,45 +1348,11 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
                   {pendingCommand === "save-retention" ? "Saving retention" : "Save retention"}
                 </button>
               </div>
-              {settingsFeedback ? (
-                <div className={`settings-feedback ${settingsFeedback.tone}`} role="status">
-                  <span>{settingsFeedback.message}</span>
-                  {settingsFeedback.metadata ? (
-                    <span className="settings-feedback-metadata">
-                      {settingsFeedback.metadata.kind === "whisper" ? (
-                        <>
-                          <span>Size: {settingsFeedback.metadata.fileSizeBytes} bytes</span>
-                          <span>SHA-256: {settingsFeedback.metadata.sha256}</span>
-                        </>
-                      ) : (
-                        <>
-                          {settingsFeedback.metadata.selectedLocalModelTag ? (
-                            <span>Selected model: {settingsFeedback.metadata.selectedLocalModelTag}</span>
-                          ) : null}
-                          {settingsFeedback.metadata.installedLocalModels ? (
-                            <span>
-                              Installed models:{" "}
-                              {settingsFeedback.metadata.installedLocalModels.length > 0
-                                ? settingsFeedback.metadata.installedLocalModels.join(", ")
-                                : "none reported"}
-                            </span>
-                          ) : null}
-                          {settingsFeedback.metadata.pullCommand ? (
-                            <span className="pull-command-copy">
-                              <span>Pull command: {settingsFeedback.metadata.pullCommand}</span>
-                              <CopyPullCommandButton
-                                pullCommand={settingsFeedback.metadata.pullCommand}
-                                disabled={commandBusy}
-                                onCopy={copyOllamaPullCommand}
-                              />
-                            </span>
-                          ) : null}
-                        </>
-                      )}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
+              <DesktopSettingsFeedback
+                feedback={settingsFeedback}
+                copyPullCommandDisabled={commandBusy}
+                onCopyPullCommand={copyOllamaPullCommand}
+              />
             </div>
           </aside>
         </div>
