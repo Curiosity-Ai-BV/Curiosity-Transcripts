@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 mod calendar;
+mod command_outcomes;
 
 use crate::calendar::{
     calendar_context_snapshot, request_apple_calendar_full_access,
@@ -12,6 +13,10 @@ use crate::calendar::{
 };
 #[cfg(test)]
 use crate::calendar::{calendar_event_draft, finalize_calendar_context_events};
+use crate::command_outcomes::{
+    delete_command_state_from_pending_finalization, export_root_for_settings, DeleteCommandState,
+    ExportCommandState,
+};
 use curiosity_analysis::{
     recommended_analysis_model_presets, summary_json_schema, AnalysisClientError,
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
@@ -22,8 +27,8 @@ use curiosity_app::{
     generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
     rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
     AppPermissionState, CalendarEventAttachmentDto, CommandRecordingDto, CommandRecordingState,
-    DeletedMeetingDto, ExportFormat, ExportedMeetingDto, MeetingAnalysisDto,
-    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
+    ExportFormat, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
+    StorageLocationDto,
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
@@ -1678,16 +1683,6 @@ fn cancel_summary_job_for_app_root(
     };
     persist_summary_job_cancel_request(app_root, job_id)?;
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
-}
-
-fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf {
-    settings
-        .export_directory
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| app_root.join("exports"))
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -5274,125 +5269,6 @@ struct MeetingPrivacy {
     storage_path: String,
     raw_audio_retention: RawAudioRetentionPolicy,
     local_only: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportCommandState {
-    state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meeting_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<ExportFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-impl Default for ExportCommandState {
-    fn default() -> Self {
-        Self {
-            state: "idle".to_string(),
-            meeting_id: None,
-            format: None,
-            path: None,
-            message: None,
-        }
-    }
-}
-
-impl ExportCommandState {
-    fn exported(exported: ExportedMeetingDto) -> Self {
-        Self {
-            state: "exported".to_string(),
-            meeting_id: Some(exported.meeting_id),
-            format: Some(exported.format),
-            path: Some(exported.path),
-            message: None,
-        }
-    }
-
-    fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {
-        Self {
-            state: "failed".to_string(),
-            meeting_id: Some(meeting_id.to_string()),
-            format: Some(format),
-            path: None,
-            message: Some(message),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteCommandState {
-    state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meeting_id: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    deleted_private_artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    skipped_private_artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    remaining_exports: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-impl Default for DeleteCommandState {
-    fn default() -> Self {
-        Self {
-            state: "idle".to_string(),
-            meeting_id: None,
-            deleted_private_artifacts: Vec::new(),
-            skipped_private_artifacts: Vec::new(),
-            remaining_exports: Vec::new(),
-            message: None,
-        }
-    }
-}
-
-impl DeleteCommandState {
-    fn deleted(deleted: DeletedMeetingDto) -> Self {
-        Self {
-            state: "deleted".to_string(),
-            meeting_id: Some(deleted.meeting_id),
-            deleted_private_artifacts: deleted.deleted_private_artifacts,
-            skipped_private_artifacts: deleted.skipped_private_artifacts,
-            remaining_exports: deleted.remaining_exports,
-            message: None,
-        }
-    }
-
-    fn failed(meeting_id: &str, message: String) -> Self {
-        Self {
-            state: "failed".to_string(),
-            meeting_id: Some(meeting_id.to_string()),
-            deleted_private_artifacts: Vec::new(),
-            skipped_private_artifacts: Vec::new(),
-            remaining_exports: Vec::new(),
-            message: Some(message),
-        }
-    }
-}
-
-fn delete_command_state_from_pending_finalization(
-    report: PendingDeleteFinalizationReport,
-) -> DeleteCommandState {
-    DeleteCommandState::deleted(DeletedMeetingDto {
-        meeting_id: report.meeting_id,
-        deleted_private_artifacts: paths_to_strings(report.deleted_private_artifacts),
-        skipped_private_artifacts: paths_to_strings(report.skipped_private_artifacts),
-        remaining_exports: paths_to_strings(report.exported_files_outside_app_control),
-    })
-}
-
-fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
-    paths
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect()
 }
 
 #[derive(Clone, Debug, Serialize)]
