@@ -65,6 +65,7 @@ const requiredText = [
   '"readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS',
   '"app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS',
   '"app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS',
+  'node scripts/check-release-provenance-artifact.js "$provenance_path"',
   "Curiosity-Transcripts-latest.dmg.sha256",
   "Curiosity-Transcripts-latest.provenance.json",
   "actions/upload-artifact@v4",
@@ -468,6 +469,16 @@ const pagesWorkflowOrdering = [
     'shasum -a 256 "$latest_asset"',
     "fs.writeFileSync(process.env.PROVENANCE_PATH",
     "Pages latest provenance manifest must be written only after the DMG checksum is generated",
+  ],
+  [
+    "fs.writeFileSync(process.env.PROVENANCE_PATH",
+    'node scripts/check-release-provenance-artifact.js "$provenance_path"',
+    "Pages latest provenance manifest must be machine-validated after it is written",
+  ],
+  [
+    'node scripts/check-release-provenance-artifact.js "$provenance_path"',
+    "uses: actions/upload-artifact@v4",
+    "Pages latest provenance manifest must be machine-validated before artifact upload",
   ],
 ];
 

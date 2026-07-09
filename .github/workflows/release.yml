@@ -158,6 +158,7 @@ jobs:
 
           fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
           NODE
+          node scripts/check-release-provenance-artifact.js "$provenance_path"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "asset_path=$release_asset" >> "$GITHUB_OUTPUT"

@@ -72,7 +72,8 @@ path/to/filled-evidence.json` and a maintainer manually publishes the draft.
 The GitHub Release workflow also uploads a release provenance manifest beside
 the arm64 DMG and checksum so maintainers can inspect the tag/ref/SHA, runner
 architecture, DMG asset path, DMG SHA-256, and automated verification statuses
-before publishing the draft.
+before publishing the draft. The manifest is machine-validated before release
+asset outputs are exposed.
 Real clean-user install, macOS permission, Whisper/Ollama setup, recording,
 transcription, summary, export, delete, relaunch, uninstall, signing, model, and
 hardware smoke remain manual and not yet completed.
@@ -96,8 +97,9 @@ Slice 0 public source-of-truth decisions:
   `Curiosity-Transcripts-latest.provenance.json` beside the moving DMG.
   That manifest records the app version, GitHub ref/SHA, runner architecture,
   latest DMG asset path, matching SHA-256, and automated verification statuses.
-  It is latest-download evidence only; it does not replace manual smoke,
-  governance sign-off, or immutable versioned GitHub Release evidence.
+  The workflow machine-validates it before upload. It is latest-download
+  evidence only; it does not replace manual smoke, governance sign-off, or
+  immutable versioned GitHub Release evidence.
 - First public release architecture: arm64-only macOS DMG. The versioned
   GitHub Release asset is `macos-aarch64`; x64 and universal builds are out of
   scope until a later slice changes workflows, QA, and public copy together.

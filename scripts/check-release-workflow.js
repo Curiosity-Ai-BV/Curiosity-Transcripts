@@ -76,6 +76,7 @@ const requiredWorkflowText = [
   '"readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS',
   '"app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS',
   '"app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS',
+  'node scripts/check-release-provenance-artifact.js "$provenance_path"',
   "Release scope:",
   "arm64-only macOS DMG",
   '$(basename "$CHECKSUM_PATH")',
@@ -522,6 +523,16 @@ const releaseWorkflowOrdering = [
     "shasum -a 256",
     "fs.writeFileSync(process.env.PROVENANCE_PATH",
     "release provenance manifest must be written only after the DMG checksum is generated",
+  ],
+  [
+    "fs.writeFileSync(process.env.PROVENANCE_PATH",
+    'node scripts/check-release-provenance-artifact.js "$provenance_path"',
+    "release provenance manifest must be machine-validated after it is written",
+  ],
+  [
+    'node scripts/check-release-provenance-artifact.js "$provenance_path"',
+    'echo "version=$version" >> "$GITHUB_OUTPUT"',
+    "release provenance manifest must be machine-validated before exposing release asset outputs",
   ],
 ];
 

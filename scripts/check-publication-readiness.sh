@@ -58,6 +58,7 @@ check_file "scripts/check-tauri-security.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "scripts/check-plain-secret-storage.js"
 check_file "scripts/check-release-smoke-evidence.js"
+check_file "scripts/check-release-provenance-artifact.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file ".github/dependabot.yml"
@@ -199,6 +200,10 @@ require_text scripts/check-release-smoke-evidence.js 'automated-release-artifact
 require_text scripts/check-release-smoke-evidence.js 'release-artifacts/supply-chain' 'supply-chain artifact validator requirement'
 require_text scripts/check-release-smoke-evidence.js 'release-artifacts/coverage' 'coverage artifact validator requirement'
 require_text scripts/check-release-smoke-evidence.js 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'contract receipt artifact validator requirement'
+require_text scripts/check-release-provenance-artifact.js 'curiosity-transcripts-release-provenance' 'release provenance artifact validator kind'
+require_text scripts/check-release-provenance-artifact.js 'curiosity-transcripts-pages-latest-provenance' 'Pages latest provenance artifact validator kind'
+require_text .github/workflows/release.yml 'node scripts/check-release-provenance-artifact\.js "\$provenance_path"' 'release provenance artifact workflow validation'
+require_text .github/workflows/pages.yml 'node scripts/check-release-provenance-artifact\.js "\$provenance_path"' 'Pages latest provenance artifact workflow validation'
 require_text docs/release-candidate-checklist.md 'node scripts/check-coverage-artifacts\.js' 'coverage artifact checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact release-candidate output path'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
@@ -522,6 +527,9 @@ if ! node scripts/check-coverage-artifacts.js --self-test >/dev/null; then
   failures=1
 fi
 if ! node --check scripts/check-release-smoke-evidence.js >/dev/null; then
+  failures=1
+fi
+if ! node --check scripts/check-release-provenance-artifact.js >/dev/null; then
   failures=1
 fi
 if ! node <<'NODE'
@@ -956,6 +964,7 @@ require_text scripts/check-tauri-command-surface.js 'snapshot command removed fr
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-release-provenance-artifact\.js --self-test' 'release provenance artifact validator self-test publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-supply-chain-artifacts\.js --self-test' 'supply-chain artifact checker self-test publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
@@ -1136,6 +1145,10 @@ if ! node scripts/check-release-smoke-evidence.js; then
 fi
 
 if ! node scripts/check-release-smoke-evidence.js --self-test; then
+  failures=1
+fi
+
+if ! node scripts/check-release-provenance-artifact.js --self-test; then
   failures=1
 fi
 

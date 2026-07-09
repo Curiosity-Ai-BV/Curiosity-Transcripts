@@ -12,19 +12,20 @@ draft until filled manual smoke evidence validates with
 `node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`;
 after that passes, a maintainer must publish the draft manually.
 The draft release assets must include the arm64 DMG, its `.sha256` checksum,
-and the matching provenance manifest. Before publishing, confirm the provenance
-manifest names the uploaded DMG, repeats the same SHA-256 checksum, and records
-passed automated verification statuses for hdiutil verify, stapler validation,
-DMG Gatekeeper assessment, read-only attach/app presence, app codesign
-verification, and app Gatekeeper assessment.
+and the matching provenance manifest. The workflow machine-validates that the
+provenance manifest names the uploaded DMG, repeats the same SHA-256 checksum,
+and records passed automated verification statuses for hdiutil verify, stapler
+validation, DMG Gatekeeper assessment, read-only attach/app presence, app
+codesign verification, and app Gatekeeper assessment.
 When publishing the Pages latest DMG, confirm the deployed download directory
 contains `Curiosity-Transcripts-latest.dmg`,
 `Curiosity-Transcripts-latest.dmg.sha256`, and
 `Curiosity-Transcripts-latest.provenance.json`, and that the checksum validates
-the moving latest DMG. Treat those Pages latest evidence files as publication
-evidence for the stable download link only; they do not replace filled manual
-smoke evidence, release governance sign-off, or the immutable versioned GitHub
-Release assets.
+the moving latest DMG. The Pages workflow machine-validates the latest
+provenance manifest before upload. Treat those Pages latest evidence files as
+publication evidence for the stable download link only; they do not replace
+filled manual smoke evidence, release governance sign-off, or the immutable
+versioned GitHub Release assets.
 
 Use `docs/release-candidate-smoke-evidence.template.json` as the starting point
 for manual smoke evidence. Validate the checked-in template with no path:

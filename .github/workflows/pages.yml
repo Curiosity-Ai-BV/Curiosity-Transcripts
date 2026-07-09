@@ -178,6 +178,7 @@ jobs:
 
           fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
           NODE
+          node scripts/check-release-provenance-artifact.js "$provenance_path"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
