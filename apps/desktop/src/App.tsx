@@ -2,7 +2,6 @@ import {
   CalendarBlank,
   CalendarPlus,
   CheckCircle,
-  DownloadSimple,
   FileText,
   FolderOpen,
   Microphone,
@@ -47,6 +46,7 @@ import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
 import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
+import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -1185,42 +1185,18 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
                   </div>
                 </section>
 
-                <div className="detail-actions">
-                  <label className="export-format-field">
-                    <span>Export format</span>
-                    <select
-                      value={selectedExportFormat}
-                      disabled={exportDisabled}
-                      onChange={(event) => setSelectedExportFormat(event.target.value as ExportFormat)}
-                    >
-                      <option value="json">JSON</option>
-                      <option value="markdown">Markdown</option>
-                      <option value="srt">SRT</option>
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={exportDisabled}
-                    title={exportButtonTitle}
-                    onClick={exportSelectedMeeting}
-                  >
-                    <DownloadSimple size={16} weight="regular" />
-                    {pendingCommand === "export"
-                      ? `Exporting ${selectedExportFormatLabel}`
-                      : `Export ${selectedExportFormatLabel}`}
-                  </button>
-                  <button
-                    type="button"
-                    className="button danger"
-                    disabled={deleteDisabled}
-                    title={deleteButtonTitle}
-                    onClick={deleteSelectedMeeting}
-                  >
-                    <Trash size={16} weight="regular" />
-                    {pendingCommand === "delete" ? "Deleting private data" : "Delete private data"}
-                  </button>
-                </div>
+                <MeetingDetailActions
+                  selectedExportFormat={selectedExportFormat}
+                  selectedExportFormatLabel={selectedExportFormatLabel}
+                  exportDisabled={exportDisabled}
+                  deleteDisabled={deleteDisabled}
+                  exportButtonTitle={exportButtonTitle}
+                  deleteButtonTitle={deleteButtonTitle}
+                  pendingCommand={pendingCommand}
+                  onExportFormatChange={setSelectedExportFormat}
+                  onExport={exportSelectedMeeting}
+                  onDelete={deleteSelectedMeeting}
+                />
               </>
             ) : (
               <>
