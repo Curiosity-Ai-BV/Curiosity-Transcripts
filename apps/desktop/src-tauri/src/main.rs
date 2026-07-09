@@ -8,6 +8,7 @@ mod import_audio_validation;
 mod local_ollama;
 mod recording_artifact_paths;
 mod recording_manifest_mapping;
+mod recording_recorder;
 mod recording_streams;
 mod whisper_setup;
 
@@ -34,6 +35,12 @@ use crate::recording_artifact_paths::{
     microphone_storage_path, system_audio_artifact_id, system_audio_artifact_relative_path,
 };
 use crate::recording_manifest_mapping::completed_audio_artifacts_from_manifest;
+#[cfg(test)]
+use crate::recording_recorder::can_fallback_to_microphone_recording;
+use crate::recording_recorder::{
+    ActiveMicrophoneRecording, MicrophoneRecorderFactory, MicrophoneStartFailure,
+    RealMicrophoneRecorderFactory, StartedMicrophoneRecording,
+};
 use crate::recording_streams::{
     recording_source_for_streams, required_recording_source_for_streams,
 };
@@ -57,13 +64,9 @@ use curiosity_app::{
     ExportFormat, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
     StorageLocationDto,
 };
-use curiosity_audio::{
-    ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
-    MacosMicrophoneWavRecording, ScreenCaptureKitSystemAudioAdapter, StreamKind,
-    SystemAudioAdapterStatus,
-};
 #[cfg(any(test, debug_assertions))]
 use curiosity_audio::{ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus};
+use curiosity_audio::{ScreenCaptureKitSystemAudioAdapter, StreamKind, SystemAudioAdapterStatus};
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
@@ -2203,156 +2206,6 @@ struct ActiveDesktopRecording {
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
-struct StartedMicrophoneRecording {
-    sample_rate_hz: u32,
-    streams: Vec<StreamKind>,
-    recorder: Box<dyn ActiveMicrophoneRecording>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MicrophoneStartFailure {
-    permission_state: AppPermissionState,
-    message: String,
-    recovery_action: String,
-}
-
-impl MicrophoneStartFailure {
-    fn persistence(message: impl Into<String>) -> Self {
-        Self {
-            permission_state: AppPermissionState::MicrophoneUnavailable,
-            message: message.into(),
-            recovery_action: "Check local storage permissions and retry microphone recording."
-                .to_string(),
-        }
-    }
-
-    #[cfg(test)]
-    fn permission_denied(message: impl Into<String>) -> Self {
-        Self {
-            permission_state: AppPermissionState::MicrophoneDenied,
-            message: message.into(),
-            recovery_action:
-                "Open System Settings; go to Privacy & Security, then Microphone; allow Curiosity Transcripts and retry recording."
-                    .to_string(),
-        }
-    }
-
-    fn from_capture_error(error: CaptureError) -> Self {
-        match error {
-            CaptureError::PermissionDenied(error) => {
-                let permission_state = match error.permission {
-                    CapturePermission::Microphone => AppPermissionState::MicrophoneDenied,
-                    CapturePermission::SystemAudioScreenRecording => {
-                        AppPermissionState::SystemAudioDenied
-                    }
-                };
-                let guidance = error.recovery_guidance();
-                Self {
-                    permission_state,
-                    message: error.to_string(),
-                    recovery_action: guidance.steps.join("; "),
-                }
-            }
-            CaptureError::Unavailable(error) => {
-                let permission_state = match error.capability {
-                    CaptureCapability::Microphone => AppPermissionState::MicrophoneUnavailable,
-                    CaptureCapability::SystemAudio => AppPermissionState::SystemAudioUnavailable,
-                };
-                let guidance = error.recovery_guidance();
-                Self {
-                    permission_state,
-                    message: error.to_string(),
-                    recovery_action: guidance.steps.join("; "),
-                }
-            }
-            CaptureError::Configuration(error) => Self {
-                permission_state: AppPermissionState::MicrophoneUnavailable,
-                message: error.to_string(),
-                recovery_action: "Check the microphone capture configuration and retry recording."
-                    .to_string(),
-            },
-            CaptureError::Recording(error) => Self {
-                permission_state: AppPermissionState::MicrophoneUnavailable,
-                message: error.to_string(),
-                recovery_action:
-                    "Check local storage and microphone availability, then retry recording."
-                        .to_string(),
-            },
-        }
-    }
-}
-
-trait MicrophoneRecorderFactory {
-    fn start(
-        &self,
-        audio_root: &Path,
-        recording_id: &str,
-        started_at_ms: u64,
-    ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure>;
-}
-
-trait ActiveMicrophoneRecording: Send {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String>;
-}
-
-struct RealMicrophoneRecorderFactory;
-
-impl MicrophoneRecorderFactory for RealMicrophoneRecorderFactory {
-    fn start(
-        &self,
-        audio_root: &Path,
-        recording_id: &str,
-        started_at_ms: u64,
-    ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
-        match MacosDesktopWavRecording::start(audio_root, recording_id, started_at_ms) {
-            Ok(recorder) => {
-                let sample_rate_hz = recorder.sample_rate_hz();
-                Ok(StartedMicrophoneRecording {
-                    sample_rate_hz,
-                    streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
-                    recorder: Box::new(recorder),
-                })
-            }
-            Err(error) if can_fallback_to_microphone_recording(&error) => {
-                let recorder =
-                    MacosMicrophoneWavRecording::start(audio_root, recording_id, started_at_ms)
-                        .map_err(MicrophoneStartFailure::from_capture_error)?;
-                let sample_rate_hz = recorder.sample_rate_hz();
-                Ok(StartedMicrophoneRecording {
-                    sample_rate_hz,
-                    streams: vec![StreamKind::Microphone],
-                    recorder: Box::new(recorder),
-                })
-            }
-            Err(error) => Err(MicrophoneStartFailure::from_capture_error(error)),
-        }
-    }
-}
-
-fn can_fallback_to_microphone_recording(error: &CaptureError) -> bool {
-    matches!(
-        error,
-        CaptureError::Unavailable(unavailable)
-            if unavailable.capability == CaptureCapability::SystemAudio
-    ) || matches!(
-        error,
-        CaptureError::PermissionDenied(permission)
-            if permission.permission == CapturePermission::SystemAudioScreenRecording
-    )
-}
-
-impl ActiveMicrophoneRecording for MacosDesktopWavRecording {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
-        (*self).stop(ended_at_ms).map_err(|error| error.to_string())
-    }
-}
-
-impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
-        (*self).stop(ended_at_ms).map_err(|error| error.to_string())
-    }
-}
-
 #[cfg(test)]
 fn import_audio_file_for_app_root(
     app_root: &Path,
@@ -4366,8 +4219,9 @@ struct CaptureProbeStatus {
 mod tests {
     use super::*;
     use curiosity_audio::{
-        ArtifactManifest, AudioArtifactMetadata, CapturePermissionError, CaptureUnavailable,
-        DeviceIdentity, ManifestStatus, RecordingMetadata, StreamKind,
+        ArtifactManifest, AudioArtifactMetadata, CaptureError, CapturePermission,
+        CapturePermissionError, CaptureUnavailable, DeviceIdentity, ManifestStatus,
+        RecordingMetadata, StreamKind,
     };
     use curiosity_domain::{
         AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,
