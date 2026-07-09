@@ -92,7 +92,7 @@
       "status": "pending",
       "evidence": {
         "observations": [
-          "PENDING: record Whisper path readiness, file size, SHA-256, last successful transcription evidence, Ollama URL/model, /api/tags result, and missing-model guidance"
+          "PENDING: record Whisper path readiness, file size, SHA-256, last successful transcription evidence, local loopback Ollama URL without credentials/query/fragment, local model tag, /api/tags output naming the model, and missing-model guidance"
         ],
         "artifacts": [
           "PENDING: attach Settings readiness screenshots and command output paths"

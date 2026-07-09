@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -63,6 +64,16 @@ const weakEvidenceTextValues = new Set([
   "todo",
   "unknown",
 ]);
+const hostedOrCloudOllamaModelValues = new Set(
+  [
+    "deepseek-v3.2:cloud",
+    "ollama-cloud-deepseek-v3-2",
+    "DeepSeek V3.2 Cloud",
+    "hosted-deepseek-v3-2-speciale",
+    "DeepSeek-V3.2-Speciale",
+    "DeepSeek V3.2 Speciale",
+  ].map(normalizeOllamaModelName),
+);
 const criticalResultFields = [
   ["build", "signing", "status"],
   ["build", "signing", "codesignVerified"],
@@ -291,6 +302,80 @@ function meaningfulString(value) {
   }
 
   return !weakEvidenceTextValues.has(value.trim().toLowerCase());
+}
+
+function normalizeOllamaModelName(modelName) {
+  return modelName
+    .trim()
+    .split("")
+    .filter((char) => !/\s/.test(char))
+    .join("")
+    .toLowerCase();
+}
+
+function isLocalOllamaModelTag(value) {
+  const normalized = normalizeOllamaModelName(value);
+  return normalized.length > 0 && !normalized.endsWith(":cloud") && !hostedOrCloudOllamaModelValues.has(normalized);
+}
+
+function tagsEvidenceNamesOllamaModel(tagsEvidence, model) {
+  const normalizedEvidence = normalizeOllamaModelName(tagsEvidence);
+  const normalizedModel = normalizeOllamaModelName(model);
+  return normalizedModel.length > 0 && normalizedEvidence.includes(normalizedModel);
+}
+
+function hasExplicitUrlUserinfo(value) {
+  const authorityStart = value.indexOf("://");
+  if (authorityStart === -1) {
+    return false;
+  }
+
+  const authority = value.slice(authorityStart + 3).split(/[/?#]/, 1)[0];
+  return authority.includes("@");
+}
+
+function hasExplicitUrlQueryOrFragment(value) {
+  return value.includes("?") || value.includes("#");
+}
+
+function isLoopbackHostname(hostname) {
+  if (hostname === "localhost") {
+    return true;
+  }
+
+  const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) {
+    return host.split(".")[0] === "127";
+  }
+  if (ipVersion === 6) {
+    return host === "::1" || host === "0:0:0:0:0:0:0:1";
+  }
+  return false;
+}
+
+function isLocalOllamaBaseUrl(value) {
+  if (!/^https?:\/\//i.test(value)) {
+    return false;
+  }
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    !hasExplicitUrlUserinfo(value) &&
+    !hasExplicitUrlQueryOrFragment(value) &&
+    url.username === "" &&
+    url.password === "" &&
+    url.search === "" &&
+    url.hash === "" &&
+    isLoopbackHostname(url.hostname.toLowerCase())
+  );
 }
 
 function fieldLabel(pathParts) {
@@ -578,6 +663,33 @@ function validateFilledModelSetup(evidence, errors) {
       meaningfulString,
       "meaningful non-placeholder path-test evidence",
     );
+  }
+
+  if (isCompleted(valueAt(evidence, ["modelSetup", "ollama", "status"]))) {
+    requireFilledStringFormat(
+      errors,
+      evidence,
+      ["modelSetup", "ollama", "baseUrl"],
+      isLocalOllamaBaseUrl,
+      "a local loopback http(s) URL without credentials, query, or fragment",
+    );
+    const ollamaModel = requireFilledStringFormat(
+      errors,
+      evidence,
+      ["modelSetup", "ollama", "model"],
+      isLocalOllamaModelTag,
+      "a local Ollama model tag, not a hosted/cloud preset",
+    );
+    const tagsEvidence = requireFilledStringFormat(
+      errors,
+      evidence,
+      ["modelSetup", "ollama", "tagsEvidence"],
+      meaningfulString,
+      "meaningful non-placeholder /api/tags evidence",
+    );
+    if (tagsEvidence && ollamaModel && !tagsEvidenceNamesOllamaModel(tagsEvidence, ollamaModel)) {
+      errors.push("modelSetup.ollama.tagsEvidence must name modelSetup.ollama.model");
+    }
   }
 }
 
@@ -1112,6 +1224,136 @@ function runSelfTests() {
     "filled evidence placeholder Whisper path test evidence",
     validateEvidence(placeholderWhisperPathTestEvidence),
     "modelSetup.whisper.pathTestEvidence",
+  );
+
+  for (const loopbackBaseUrl of [
+    "http://localhost:11434",
+    "https://localhost:11434",
+    "http://127.0.0.1:11434",
+    "http://[::1]:11434",
+  ]) {
+    const loopbackOllamaBaseUrl = createStrictPassedFixture();
+    loopbackOllamaBaseUrl.modelSetup.ollama.baseUrl = loopbackBaseUrl;
+    expectAccepted(
+      `filled evidence loopback Ollama URL ${loopbackBaseUrl}`,
+      validateEvidence(loopbackOllamaBaseUrl),
+    );
+  }
+
+  const remoteOllamaBaseUrl = createStrictPassedFixture();
+  remoteOllamaBaseUrl.modelSetup.ollama.baseUrl = "https://ollama.example.com";
+  expectRejected(
+    "filled evidence remote Ollama base URL",
+    validateEvidence(remoteOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const unsupportedSchemeOllamaBaseUrl = createStrictPassedFixture();
+  unsupportedSchemeOllamaBaseUrl.modelSetup.ollama.baseUrl = "ftp://localhost:11434";
+  expectRejected(
+    "filled evidence unsupported-scheme Ollama base URL",
+    validateEvidence(unsupportedSchemeOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  for (const malformedBaseUrl of ["http:@localhost:11434", "http:/@localhost:11434", "http:localhost:11434"]) {
+    const malformedOllamaBaseUrl = createStrictPassedFixture();
+    malformedOllamaBaseUrl.modelSetup.ollama.baseUrl = malformedBaseUrl;
+    expectRejected(
+      `filled evidence malformed Ollama base URL ${malformedBaseUrl}`,
+      validateEvidence(malformedOllamaBaseUrl),
+      "modelSetup.ollama.baseUrl",
+    );
+  }
+
+  const credentialOllamaBaseUrl = createStrictPassedFixture();
+  credentialOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://user:pass@127.0.0.1:11434";
+  expectRejected(
+    "filled evidence credential-bearing Ollama base URL",
+    validateEvidence(credentialOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const emptyUserinfoOllamaBaseUrl = createStrictPassedFixture();
+  emptyUserinfoOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://@127.0.0.1:11434";
+  expectRejected(
+    "filled evidence empty-userinfo Ollama base URL",
+    validateEvidence(emptyUserinfoOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const queryOllamaBaseUrl = createStrictPassedFixture();
+  queryOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://127.0.0.1:11434?token=secret";
+  expectRejected(
+    "filled evidence query-bearing Ollama base URL",
+    validateEvidence(queryOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const emptyQueryOllamaBaseUrl = createStrictPassedFixture();
+  emptyQueryOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://127.0.0.1:11434?";
+  expectRejected(
+    "filled evidence empty-query-marker Ollama base URL",
+    validateEvidence(emptyQueryOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const fragmentOllamaBaseUrl = createStrictPassedFixture();
+  fragmentOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://127.0.0.1:11434/#token";
+  expectRejected(
+    "filled evidence fragment-bearing Ollama base URL",
+    validateEvidence(fragmentOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const emptyFragmentOllamaBaseUrl = createStrictPassedFixture();
+  emptyFragmentOllamaBaseUrl.modelSetup.ollama.baseUrl = "http://127.0.0.1:11434#";
+  expectRejected(
+    "filled evidence empty-fragment-marker Ollama base URL",
+    validateEvidence(emptyFragmentOllamaBaseUrl),
+    "modelSetup.ollama.baseUrl",
+  );
+
+  const hostedOllamaModelTag = createStrictPassedFixture();
+  hostedOllamaModelTag.modelSetup.ollama.model = "deepseek-v3.2:cloud";
+  expectRejected(
+    "filled evidence hosted Ollama model tag",
+    validateEvidence(hostedOllamaModelTag),
+    "modelSetup.ollama.model",
+  );
+
+  const hostedPresetOllamaModel = createStrictPassedFixture();
+  hostedPresetOllamaModel.modelSetup.ollama.model = "DeepSeek V3.2 Speciale";
+  expectRejected(
+    "filled evidence hosted preset Ollama model",
+    validateEvidence(hostedPresetOllamaModel),
+    "modelSetup.ollama.model",
+  );
+
+  const emptyOllamaModel = createStrictPassedFixture();
+  emptyOllamaModel.modelSetup.ollama.model = " ";
+  emptyOllamaModel.modelSetup.ollama.skipReason = "filled evidence cannot claim passed setup without a local model";
+  expectRejected(
+    "filled evidence empty Ollama model",
+    validateEvidence(emptyOllamaModel),
+    "modelSetup.ollama.model",
+  );
+
+  const weakOllamaTagsEvidence = createStrictPassedFixture();
+  weakOllamaTagsEvidence.modelSetup.ollama.tagsEvidence = "ok";
+  expectRejected(
+    "filled evidence weak Ollama tags evidence",
+    validateEvidence(weakOllamaTagsEvidence),
+    "modelSetup.ollama.tagsEvidence",
+  );
+
+  const genericOllamaTagsEvidence = createStrictPassedFixture();
+  genericOllamaTagsEvidence.modelSetup.ollama.tagsEvidence =
+    "/api/tags returned installed local models before offline smoke.";
+  expectRejected(
+    "filled evidence generic Ollama tags evidence without model name",
+    validateEvidence(genericOllamaTagsEvidence),
+    "modelSetup.ollama.model",
   );
 
   const passedItemWithoutEvidence = createStrictPassedFixture();
