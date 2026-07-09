@@ -64,6 +64,7 @@ import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState"
 import { useDesktopTheme } from "./desktopTheme";
 import { deriveRecordingButtonTitles } from "./desktopRecordingButtonTitles";
 import { deriveSettingsButtonTitles } from "./desktopSettingsButtonTitles";
+import { deriveMeetingActionTitles } from "./desktopMeetingActionTitles";
 
 import "./styles.css";
 
@@ -851,41 +852,18 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
       : !whisperModelReady
         ? transcribeButtonTitle
         : "Retry transcription for the selected meeting.";
-  const renameButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeeting
-        ? "Rename the selected meeting."
-        : "Select a meeting before renaming.";
-  const exportButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeeting
-        ? `Export the selected meeting as ${exportFormatLabel(selectedExportFormat)}.`
-        : "Select a meeting before exporting.";
   const selectedExportFormatLabel = exportFormatLabel(selectedExportFormat);
-  const deleteButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeetingHasActiveDeleteBlockingJob
-        ? "Cancel or wait for the active transcription or summary job before deleting private data."
-      : selectedMeeting
-        ? "Delete app-private data for the selected meeting."
-        : "Select a meeting before deleting private data.";
-  const summaryButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !selectedMeeting
-        ? "Select a meeting before requesting a summary."
-        : selectedMeeting.segments.length === 0
-          ? "Generate a transcript before requesting a summary."
-          : ollamaSummaryBlockGuidance
-            ? ollamaSummaryBlockGuidance
-          : "Generate a local Ollama summary for the selected meeting.";
+  const { renameButtonTitle, exportButtonTitle, deleteButtonTitle, summaryButtonTitle } =
+    deriveMeetingActionTitles({
+      commandSurfaceReady,
+      commandUnavailableTitle,
+      commandBusy,
+      busyCommandTitle,
+      selectedMeeting,
+      selectedExportFormatLabel,
+      selectedMeetingHasActiveDeleteBlockingJob,
+      ollamaSummaryBlockGuidance,
+    });
   const recordingControls = (
     <RecordingControls
       recording={recording}
