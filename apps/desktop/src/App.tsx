@@ -1,15 +1,9 @@
 import {
-  CalendarBlank,
   CalendarPlus,
-  CheckCircle,
-  FileText,
   FolderOpen,
-  Microphone,
   Moon,
-  ShieldCheck,
   Sun,
   Trash,
-  WarningDiamond,
   Waveform,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -35,11 +29,7 @@ import {
   searchMeetings,
   Tone,
 } from "./commandAdapter";
-import {
-  CopyPullCommandButton,
-  StatusLine,
-  StatusPill,
-} from "./desktopWorkspaceComponents";
+import { CopyPullCommandButton, StatusPill } from "./desktopWorkspaceComponents";
 import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
@@ -47,6 +37,7 @@ import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
+import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -430,6 +421,34 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     selectedMeeting.segments.length === 0 ||
     Boolean(ollamaSummaryBlockGuidance) ||
     commandBusy;
+  const microphoneStatus = {
+    label: captureLabel(currentSnapshot.capture.microphone),
+    value: captureDetail(currentSnapshot.capture.microphone),
+    tone: captureTone(currentSnapshot.capture.microphone),
+  };
+  const systemAudioStatus = {
+    label: captureLabel(currentSnapshot.capture.systemAudio),
+    value: captureDetail(currentSnapshot.capture.systemAudio),
+    tone: captureTone(currentSnapshot.capture.systemAudio),
+  };
+  const calendarStatus = {
+    label: calendarContextLabel(calendarContext),
+    value: calendarContext.message,
+    tone: calendarTone,
+  };
+  const selectedMeetingAnalysisStatus = selectedMeeting
+    ? {
+        label: analysisDisclosure?.label ?? "Summary unavailable",
+        value: analysisDisclosure?.detail ?? "No selected meeting.",
+        tone: analysisDisclosure?.tone ?? ("muted" as Tone),
+      }
+    : null;
+  const cancelTranscriptionButtonTitle = commandSurfaceReady
+    ? "Request cancellation for the active transcription job."
+    : commandUnavailableTitle;
+  const cancelSummaryButtonTitle = commandSurfaceReady
+    ? "Request cancellation for the active summary job."
+    : commandUnavailableTitle;
 
   async function runSnapshotCommand(
     pending: Exclude<PendingCommand, null>,
@@ -1154,108 +1173,53 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               <p className="eyebrow">Processing engine</p>
               <h2>Settings</h2>
             </div>
-            <div className="engine-stack" aria-label="Model and capture status">
-              <StatusLine icon={<CheckCircle size={18} weight="regular" />} label={model.label} value={model.detail} tone={model.tone} />
-              <StatusLine icon={<FileText size={18} weight="regular" />} label={transcription.label} value={transcription.detail} tone={transcription.tone} />
-              {transcriptionJob ? (
-                <>
-                  <StatusLine
-                    icon={<FileText size={18} weight="regular" />}
-                    label={transcriptionJob.label}
-                    value={transcriptionJob.detail}
-                    tone={transcriptionJob.tone}
-                  />
-                  {canCancelTranscriptionJob ? (
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={cancelTranscriptionDisabled}
-                      title={
-                        commandSurfaceReady
-                          ? "Request cancellation for the active transcription job."
-                          : commandUnavailableTitle
-                      }
-                      onClick={cancelTranscriptionJob}
-                    >
-                      {pendingCommand === "cancel-transcription" ? "Canceling transcription" : "Cancel transcription"}
-                    </button>
-                  ) : null}
-                  {canRetryTranscriptionJob ? (
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={retryTranscriptionDisabled}
-                      title={retryTranscriptionButtonTitle}
-                      onClick={transcribeSelectedMeeting}
-                    >
-                      {pendingCommand === "transcribe" ? "Retrying transcription" : "Retry transcription"}
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-              {summaryJob ? (
-                <>
-                  <StatusLine
-                    icon={<FileText size={18} weight="regular" />}
-                    label={summaryJob.label}
-                    value={summaryJob.detail}
-                    tone={summaryJob.tone}
-                  />
-                  {canCancelSummaryJob ? (
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={cancelSummaryDisabled}
-                      title={
-                        commandSurfaceReady
-                          ? "Request cancellation for the active summary job."
-                          : commandUnavailableTitle
-                      }
-                      onClick={cancelSummaryJob}
-                    >
-                      {pendingCommand === "cancel-summary" ? "Canceling summary" : "Cancel summary"}
-                    </button>
-                  ) : null}
-                  {canRetrySummaryJob ? (
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={retrySummaryDisabled}
-                      title={summaryButtonTitle}
-                      onClick={generateSelectedSummary}
-                    >
-                      {pendingCommand === "summary" ? "Retrying summary" : "Retry summary"}
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-              <StatusLine
-                icon={<Microphone size={18} weight="regular" />}
-                label={captureLabel(currentSnapshot.capture.microphone)}
-                value={captureDetail(currentSnapshot.capture.microphone)}
-                tone={captureTone(currentSnapshot.capture.microphone)}
-              />
-              <StatusLine
-                icon={<WarningDiamond size={18} weight="regular" />}
-                label={captureLabel(currentSnapshot.capture.systemAudio)}
-                value={captureDetail(currentSnapshot.capture.systemAudio)}
-                tone={captureTone(currentSnapshot.capture.systemAudio)}
-              />
-              <StatusLine
-                icon={<CalendarBlank size={18} weight="regular" />}
-                label={calendarContextLabel(calendarContext)}
-                value={calendarContext.message}
-                tone={calendarTone}
-              />
-              {selectedMeeting ? (
-                <StatusLine
-                  icon={<ShieldCheck size={18} weight="regular" />}
-                  label={analysisDisclosure?.label ?? "Summary unavailable"}
-                  value={analysisDisclosure?.detail ?? "No selected meeting."}
-                  tone={analysisDisclosure?.tone ?? "muted"}
-                />
-              ) : null}
-            </div>
+            <DesktopSettingsEngineStack
+              model={{ label: model.label, value: model.detail, tone: model.tone }}
+              transcription={{
+                label: transcription.label,
+                value: transcription.detail,
+                tone: transcription.tone,
+              }}
+              transcriptionJob={
+                transcriptionJob
+                  ? {
+                      label: transcriptionJob.label,
+                      value: transcriptionJob.detail,
+                      tone: transcriptionJob.tone,
+                    }
+                  : null
+              }
+              summaryJob={
+                summaryJob
+                  ? {
+                      label: summaryJob.label,
+                      value: summaryJob.detail,
+                      tone: summaryJob.tone,
+                    }
+                  : null
+              }
+              microphone={microphoneStatus}
+              systemAudio={systemAudioStatus}
+              calendar={calendarStatus}
+              selectedMeetingAnalysis={selectedMeetingAnalysisStatus}
+              canCancelTranscriptionJob={canCancelTranscriptionJob}
+              canRetryTranscriptionJob={canRetryTranscriptionJob}
+              canCancelSummaryJob={canCancelSummaryJob}
+              canRetrySummaryJob={canRetrySummaryJob}
+              cancelTranscriptionDisabled={cancelTranscriptionDisabled}
+              retryTranscriptionDisabled={retryTranscriptionDisabled}
+              cancelSummaryDisabled={cancelSummaryDisabled}
+              retrySummaryDisabled={retrySummaryDisabled}
+              cancelTranscriptionButtonTitle={cancelTranscriptionButtonTitle}
+              retryTranscriptionButtonTitle={retryTranscriptionButtonTitle}
+              cancelSummaryButtonTitle={cancelSummaryButtonTitle}
+              summaryButtonTitle={summaryButtonTitle}
+              pendingCommand={pendingCommand}
+              onCancelTranscriptionJob={cancelTranscriptionJob}
+              onRetryTranscriptionJob={transcribeSelectedMeeting}
+              onCancelSummaryJob={cancelSummaryJob}
+              onRetrySummaryJob={generateSelectedSummary}
+            />
             <div className="model-readiness" aria-label="Model readiness guidance">
               <div className={`readiness-item ${whisperReadinessTone}`}>
                 <div className="readiness-heading">
