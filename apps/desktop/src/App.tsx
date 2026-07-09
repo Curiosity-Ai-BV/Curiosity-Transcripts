@@ -5,7 +5,6 @@ import {
   DownloadSimple,
   FileText,
   FolderOpen,
-  MagnifyingGlass,
   Microphone,
   Moon,
   PencilSimple,
@@ -41,10 +40,10 @@ import {
 import {
   CopyPullCommandButton,
   IconFrame,
-  SkeletonList,
   StatusLine,
   StatusPill,
 } from "./desktopWorkspaceComponents";
+import { MeetingPane } from "./desktopMeetingPane";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -1107,47 +1106,14 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
         ) : null}
 
         <div className="content-grid">
-          <aside className="meeting-pane" aria-label="Meetings">
-            <div className="pane-heading">
-              <p className="eyebrow">History</p>
-              <h2>Meetings</h2>
-            </div>
-            <div className="search-block">
-              <label htmlFor="meeting-search">Search meetings</label>
-              <div className="search-control">
-                <MagnifyingGlass size={16} weight="regular" />
-                <input
-                  id="meeting-search"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Title or transcript text"
-                />
-              </div>
-            </div>
-
-            {currentSnapshot.loading ? <SkeletonList /> : null}
-
-            <div className="meeting-list">
-              {meetings.map((meeting) => (
-                <button
-                  type="button"
-                  key={meeting.id}
-                  className={meeting.id === selectedMeeting?.id ? "meeting-row selected" : "meeting-row"}
-                  aria-pressed={meeting.id === selectedMeeting?.id}
-                  aria-current={meeting.id === selectedMeeting?.id ? "page" : undefined}
-                  onClick={() => setSelectedMeetingId(meeting.id)}
-                >
-                  <span className="meeting-title">{meeting.title}</span>
-                  <span className="meeting-meta">
-                    {meeting.startedAt} / {meeting.duration}
-                  </span>
-                  <span className="meeting-state">{meeting.transcriptState}</span>
-                </button>
-              ))}
-            </div>
-
-            {!currentSnapshot.loading && query && meetings.length === 0 ? <p className="empty-state">No meetings match this search.</p> : null}
-          </aside>
+          <MeetingPane
+            query={query}
+            meetings={meetings}
+            selectedMeetingId={selectedMeeting?.id ?? null}
+            loading={currentSnapshot.loading}
+            onQueryChange={setQuery}
+            onSelectMeeting={setSelectedMeetingId}
+          />
 
           <section className="detail-pane" aria-label="Meeting detail">
             {selectedMeeting ? (
