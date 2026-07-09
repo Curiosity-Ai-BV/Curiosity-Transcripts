@@ -37,10 +37,12 @@ Important existing strengths:
   checks, root Rust fmt/test/clippy, desktop Rust fmt/test/clippy, fail-loud
   audio and Whisper smoke assertions, desktop Vitest, and frontend build.
   A dedicated critical metadata check runs before publication readiness, and
-  publication readiness repeats it; the shared guard rejects `if:` or
-  `continue-on-error:` metadata on the critical release, security, coverage,
-  smoke, and build gates. The CI workflow token is scoped to top-level
-  `contents: read` permissions for CI jobs.
+  publication readiness repeats it and runs
+  `node scripts/check-ci-critical-gates.js --self-test`; the shared guard
+  rejects `if:` or `continue-on-error:` metadata plus missing or duplicate
+  critical release, security, coverage, smoke, and build gates. The CI workflow
+  token is scoped to top-level `contents: read` permissions for CI jobs. The
+  self-test covers permission drift.
 - Release and Pages workflows build macOS DMGs with Developer ID signing and
   notarization paths, then verify disk image, app signature, stapling, and
   Gatekeeper checks before upload.
@@ -540,6 +542,7 @@ actionlint -color=false
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 node scripts/check-tauri-security.js
+node scripts/check-ci-critical-gates.js --self-test
 # Validates only docs/release-candidate-smoke-evidence.template.json.
 node scripts/check-release-smoke-evidence.js
 node scripts/check-release-smoke-evidence.js --self-test

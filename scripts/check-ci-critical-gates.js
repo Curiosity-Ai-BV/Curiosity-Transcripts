@@ -156,15 +156,133 @@ function validateCriticalGates(text) {
   return errors;
 }
 
-const text = fs.readFileSync(workflowPath, "utf8");
-const errors = validateCriticalGates(text);
+function buildSelfTestWorkflow(options = {}) {
+  const permissionsLines = Object.prototype.hasOwnProperty.call(options, "permissionsLines")
+    ? options.permissionsLines
+    : ["  contents: read"];
+  const omitStep = options.omitStep;
+  const duplicateStep = options.duplicateStep;
+  const stepExtraLines = options.stepExtraLines ?? {};
+  const jobs = new Map();
 
-for (const error of errors) {
-  console.error(`::error file=${workflowLabel}::${error}`);
+  for (const [job, name] of criticalSteps) {
+    if (!jobs.has(job)) {
+      jobs.set(job, []);
+    }
+    jobs.get(job).push(name);
+  }
+
+  const lines = ["name: CI", "", "on:", "  pull_request:", "  push:", ""];
+  if (permissionsLines !== null) {
+    lines.push("permissions:", ...permissionsLines, "");
+  }
+  lines.push("jobs:");
+
+  for (const [job, names] of jobs) {
+    lines.push(`  ${job}:`, "    runs-on: ubuntu-latest", "", "    steps:");
+    for (const name of names) {
+      if (omitStep && omitStep.job === job && omitStep.name === name) {
+        continue;
+      }
+      const copies = duplicateStep && duplicateStep.job === job && duplicateStep.name === name ? 2 : 1;
+      for (let copy = 0; copy < copies; copy += 1) {
+        lines.push(`      - name: ${name}`);
+        for (const extraLine of stepExtraLines[`${job}/${name}`] ?? []) {
+          lines.push(`        ${extraLine}`);
+        }
+        lines.push(`        run: echo ${JSON.stringify(name)}`);
+      }
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
 
-if (errors.length > 0) {
+function failSelfTest(message) {
+  console.error(`::error file=${workflowLabel}::${message}`);
   process.exit(1);
 }
 
-console.log("Critical CI gate metadata passed.");
+function expectSelfTestRejection(label, workflowText, expectedError) {
+  const errors = validateCriticalGates(workflowText);
+  if (!errors.some((error) => error.includes(expectedError))) {
+    failSelfTest(
+      `Self-test did not reject ${label}; expected error containing "${expectedError}", got: ${errors.join("; ") || "none"}`,
+    );
+  }
+}
+
+function runSelfTests() {
+  const [targetJob, targetName] = criticalSteps[0];
+  const targetStep = { job: targetJob, name: targetName };
+  const targetKey = `${targetJob}/${targetName}`;
+  const validWorkflow = buildSelfTestWorkflow();
+  const validErrors = validateCriticalGates(validWorkflow);
+
+  if (validErrors.length > 0) {
+    failSelfTest(`Self-test rejected the valid critical gate fixture: ${validErrors.join("; ")}`);
+  }
+
+  expectSelfTestRejection(
+    "required critical check missing",
+    buildSelfTestWorkflow({ omitStep: targetStep }),
+    `Missing critical CI gate: ${targetJob} / ${targetName}`,
+  );
+  expectSelfTestRejection(
+    "critical check guarded by if",
+    buildSelfTestWorkflow({ stepExtraLines: { [targetKey]: ["if: always()"] } }),
+    `Critical CI gate must not be conditionally skipped: ${targetJob} / ${targetName}`,
+  );
+  expectSelfTestRejection(
+    "critical check using continue-on-error",
+    buildSelfTestWorkflow({ stepExtraLines: { [targetKey]: ["continue-on-error: true"] } }),
+    `Critical CI gate must fail CI when its command fails: ${targetJob} / ${targetName}`,
+  );
+  expectSelfTestRejection(
+    "CI permissions missing contents read",
+    buildSelfTestWorkflow({ permissionsLines: null }),
+    "CI workflow must declare top-level read-only permissions",
+  );
+  expectSelfTestRejection(
+    "CI permissions weakened to contents write",
+    buildSelfTestWorkflow({ permissionsLines: ["  contents: write"] }),
+    "CI workflow permissions must be exactly contents: read",
+  );
+  expectSelfTestRejection(
+    "duplicate critical steps",
+    buildSelfTestWorkflow({ duplicateStep: targetStep }),
+    `Critical CI gate must be unique: ${targetJob} / ${targetName}`,
+  );
+}
+
+function runWorkflowCheck() {
+  const text = fs.readFileSync(workflowPath, "utf8");
+  const errors = validateCriticalGates(text);
+
+  for (const error of errors) {
+    console.error(`::error file=${workflowLabel}::${error}`);
+  }
+
+  if (errors.length > 0) {
+    process.exit(1);
+  }
+
+  console.log("Critical CI gate metadata passed.");
+}
+
+const args = process.argv.slice(2);
+
+if (args.length === 1 && args[0] === "--self-test") {
+  runSelfTests();
+  console.log("Critical CI gate metadata self-tests passed.");
+  process.exit(0);
+}
+
+if (args.length > 0) {
+  console.error("Usage: node scripts/check-ci-critical-gates.js");
+  console.error("       node scripts/check-ci-critical-gates.js --self-test");
+  process.exit(1);
+}
+
+runWorkflowCheck();

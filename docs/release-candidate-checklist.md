@@ -52,8 +52,11 @@ in the release invoke handler and keep snapshot-returning facade commands in the
 `DESKTOP_SNAPSHOT_COMMANDS` runtime validation allowlist. Critical release,
 security, coverage, smoke, and build gates must not carry `if:` or
 `continue-on-error:` metadata; CI runs `node scripts/check-ci-critical-gates.js`
-before publication readiness, and publication readiness repeats that same check.
-The CI workflow token must be limited to top-level `contents: read`.
+before publication readiness, and publication readiness repeats that same check
+and runs `node scripts/check-ci-critical-gates.js --self-test` against mutation
+fixtures for missing, conditional, fail-open, duplicate, and permission-drift
+critical gate regressions. The CI workflow token must be limited to top-level
+`contents: read`.
 It must also run `node scripts/check-plain-secret-storage.js` to guard persisted
 settings, app service DTOs, and desktop command/view DTO/contract shape against
 plain API key, OAuth/access/refresh/calendar token, encryption key, hosted

@@ -160,6 +160,7 @@ require_text docs/production-readiness-roadmap.md 'actionlint -color=false' 'act
 require_text docs/production-readiness-roadmap.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint Linux artifact roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'continue-on-error' 'critical CI gates fail-blocking roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'dedicated critical metadata check runs before publication readiness' 'critical CI metadata pre-publication roadmap documentation'
+require_text docs/production-readiness-roadmap.md 'node scripts/check-ci-critical-gates\.js --self-test' 'critical CI metadata self-test roadmap documentation'
 require_normalized_text docs/production-readiness-roadmap.md 'The CI workflow token is scoped to top-level `contents: read` permissions for CI jobs.' 'CI read-only workflow token roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit roadmap documentation'
 require_text docs/production-readiness-roadmap.md 'Current supply-chain artifact status' 'current supply-chain artifact status'
@@ -242,6 +243,7 @@ require_text docs/release-candidate-checklist.md 'actionlint -color=false' 'acti
 require_text docs/release-candidate-checklist.md 'actionlint_1\.7\.12_linux_amd64\.tar\.gz' 'pinned actionlint release-candidate artifact'
 require_normalized_text docs/release-candidate-checklist.md 'Critical release, security, coverage, smoke, and build gates must not carry `if:` or `continue-on-error:` metadata' 'critical CI gates fail-blocking release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'node scripts/check-ci-critical-gates\.js' 'critical CI metadata release-candidate command'
+require_text docs/release-candidate-checklist.md 'node scripts/check-ci-critical-gates\.js --self-test' 'critical CI metadata self-test release-candidate command'
 require_normalized_text docs/release-candidate-checklist.md 'The CI workflow token must be limited to top-level `contents: read`.' 'CI read-only workflow token release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'cargo install cargo-audit --version 0\.22\.2 --locked' 'pinned cargo-audit release-candidate documentation'
 require_text docs/release-candidate-checklist.md 'branch-protection or alert triage policy' 'CodeQL policy boundary'
@@ -847,11 +849,21 @@ require_text scripts/check-ci-critical-gates.js 'Critical CI gate must be unique
 require_text scripts/check-ci-critical-gates.js 'CI workflow must declare top-level read-only permissions' 'CI workflow permissions required guard'
 require_text scripts/check-ci-critical-gates.js 'CI workflow permissions must be exactly contents: read' 'CI workflow permissions least-privilege guard'
 require_text scripts/check-ci-critical-gates.js 'CI workflow permissions must not be overridden below the workflow level' 'CI workflow permissions override guard'
+require_text scripts/check-ci-critical-gates.js 'required critical check missing' 'critical CI missing-gate self-test'
+require_text scripts/check-ci-critical-gates.js 'critical check guarded by if' 'critical CI conditional self-test'
+require_text scripts/check-ci-critical-gates.js 'critical check using continue-on-error' 'critical CI continue-on-error self-test'
+require_text scripts/check-ci-critical-gates.js 'CI permissions missing contents read' 'critical CI missing-permissions self-test'
+require_text scripts/check-ci-critical-gates.js 'CI permissions weakened to contents write' 'critical CI permissions self-test'
+require_text scripts/check-ci-critical-gates.js 'duplicate critical steps' 'critical CI duplicate self-test'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-ci-critical-gates\.js' 'critical CI metadata publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-ci-critical-gates\.js --self-test; then' 'critical CI metadata self-test publication readiness gate'
 if ! node --check scripts/check-ci-critical-gates.js >/dev/null; then
   failures=1
 fi
 if ! node scripts/check-ci-critical-gates.js; then
+  failures=1
+fi
+if ! node scripts/check-ci-critical-gates.js --self-test; then
   failures=1
 fi
 if ! node <<'NODE'
