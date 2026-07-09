@@ -63,6 +63,7 @@ import {
 import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState";
 import { useDesktopTheme } from "./desktopTheme";
 import { deriveRecordingButtonTitles } from "./desktopRecordingButtonTitles";
+import { deriveSettingsButtonTitles } from "./desktopSettingsButtonTitles";
 
 import "./styles.css";
 
@@ -817,20 +818,19 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
       isRecordingActive,
       importWavPath,
     });
-  const chooseWhisperModelButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : "Choose a local Whisper model file.";
-  const testWhisperButtonTitle = commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle;
-  const saveWhisperButtonTitle = commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle;
-  const testOllamaButtonTitle = commandSurfaceReady
-    ? "Test the configured local Ollama server and model."
-    : commandUnavailableTitle;
-  const saveAnalysisButtonTitle = commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle;
-  const saveRetentionButtonTitle = commandSurfaceReady
-    ? "Save default raw-audio retention."
-    : commandUnavailableTitle;
+  const {
+    chooseWhisperModelButtonTitle,
+    testWhisperButtonTitle,
+    saveWhisperButtonTitle,
+    testOllamaButtonTitle,
+    saveAnalysisButtonTitle,
+    saveRetentionButtonTitle,
+  } = deriveSettingsButtonTitles({
+    commandSurfaceReady,
+    commandUnavailableTitle,
+    commandBusy,
+    busyCommandTitle,
+  });
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
