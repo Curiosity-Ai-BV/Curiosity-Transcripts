@@ -227,7 +227,7 @@
       "status": "pending",
       "evidence": {
         "observations": [
-          "PENDING: record release notes disclosure that app-level encryption-at-rest is not implemented in v1 and user-owned source/export files can remain outside app delete control"
+          "PENDING: record release notes/support copy disclosure that app-level encryption-at-rest is not implemented in v1, app-private data relies on OS/user-account file protections, app delete controls app-private meeting data, and user-owned source files plus exported files can remain outside app delete control"
         ],
         "artifacts": [
           "PENDING: attach release notes or support-copy evidence paths"

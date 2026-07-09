@@ -28,6 +28,53 @@ const expectedManualItemIds = [
 ];
 
 const automatedReleaseArtifactItemId = "automated-release-artifacts";
+const atRestDisclosureItemId = "at-rest-disclosure";
+const completeAtRestDisclosureEvidenceText =
+  "Release notes state app-level encryption-at-rest is not implemented in v1; app-private data relies on OS/user-account file protections; app delete controls app-private meeting data; user-owned source files and exported files can remain outside app deletion control.";
+const atRestDisclosureRequirements = [
+  {
+    label: "app-level encryption-at-rest is not implemented in v1",
+    patternGroups: [
+      [/\bv1\b/],
+      [/\b(?:app|application) level\b/],
+      [/\bencryption at rest\b/],
+      [
+        /\b(?:app|application) level encryption at rest (?:is )?(?:not implemented|not yet implemented)\b/,
+        /\b(?:does not implement|does not include) (?:app|application) level encryption at rest\b/,
+        /\b(?:app|application) level encryption at rest .*?\b(?:does not exist|is unavailable)\b/,
+      ],
+    ],
+  },
+  {
+    label: "app-private data relies on OS/user-account file protections",
+    patternGroups: [
+      [/\bapp private\b/],
+      [/\b(?:data|storage)\b/],
+      [/\b(?:os|operating system)\b/],
+      [/\buser account\b/],
+      [/\bfile protections?\b/],
+      [/\b(?:relies|rely|relying|relied|protected by|backed by|uses)\b/],
+    ],
+  },
+  {
+    label: "app delete controls app-private meeting data",
+    patternGroups: [
+      [/\bapp private\b/],
+      [/\bmeeting data\b/],
+      [/\b(?:app delete|app deletion|delete controls?|deletion controls?|delete boundary|app control)\b/],
+    ],
+  },
+  {
+    label: "user-owned source files and exported files can remain outside app deletion control",
+    patternGroups: [
+      [/\buser owned\b/],
+      [/\bsource files?\b/],
+      [/\b(?:exported files?|export files?|exports?)\b/],
+      [/\boutside\b/],
+      [/\b(?:app delete|app deletion|delete control|deletion control|delete boundary|app control)\b/],
+    ],
+  },
+];
 const requiredAutomatedReleaseArtifactReferences = [
   "release-artifacts/supply-chain",
   "release-artifacts/coverage",
@@ -232,6 +279,20 @@ function createStrictPassedFixture() {
           skipReason: "",
         },
         notes: "Automated release artifacts are attached to the draft release evidence.",
+      };
+    }
+
+    if (item.id === atRestDisclosureItemId) {
+      return {
+        id: item.id,
+        label: item.label.replace("Template label for ", ""),
+        status: "passed",
+        evidence: {
+          observations: [completeAtRestDisclosureEvidenceText],
+          artifacts: ["release-smoke/at-rest-disclosure-release-notes.txt"],
+          skipReason: "",
+        },
+        notes: completeAtRestDisclosureEvidenceText,
       };
     }
 
@@ -502,6 +563,31 @@ function validateAutomatedReleaseArtifactItem(item, prefix, errors) {
   for (const requiredReference of requiredAutomatedReleaseArtifactReferences) {
     if (!artifactReferences.has(requiredReference)) {
       errors.push(`${prefix} requires automated release artifact reference ${requiredReference}`);
+    }
+  }
+}
+
+function normalizeAtRestDisclosureText(value) {
+  return value
+    .toLowerCase()
+    .replace(/[_/\\-]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesAllPatternGroups(value, patternGroups) {
+  return patternGroups.every((patterns) => patterns.some((pattern) => pattern.test(value)));
+}
+
+function validateAtRestDisclosureItem(item, prefix, errors) {
+  const disclosureText = normalizeAtRestDisclosureText(
+    collectMeaningfulStrings([item.notes, item.evidence?.observations]).join("\n"),
+  );
+
+  for (const requirement of atRestDisclosureRequirements) {
+    if (!matchesAllPatternGroups(disclosureText, requirement.patternGroups)) {
+      errors.push(`${prefix} at-rest disclosure requires evidence that ${requirement.label}`);
     }
   }
 }
@@ -927,6 +1013,15 @@ function validateManualItems(evidence, errors, options) {
 
     if (!evidence.isTemplate && !options.allowIncomplete && item.id === automatedReleaseArtifactItemId) {
       validateAutomatedReleaseArtifactItem(item, prefix, errors);
+    }
+
+    if (
+      !evidence.isTemplate &&
+      !options.allowIncomplete &&
+      item.id === atRestDisclosureItemId &&
+      item.status === "passed"
+    ) {
+      validateAtRestDisclosureItem(item, prefix, errors);
     }
   }
 
@@ -1414,6 +1509,85 @@ function runSelfTests() {
     validateEvidence(passedItemWithLowercasePendingEvidence),
     "manualItems[0] passed item",
   );
+
+  const atRestDisclosureItemIndex = createStrictPassedFixture().manualItems.findIndex(
+    (item) => item.id === atRestDisclosureItemId,
+  );
+  const setAtRestDisclosureEvidence = (evidence, disclosureText) => {
+    evidence.manualItems[atRestDisclosureItemIndex].evidence = {
+      observations: [disclosureText],
+      artifacts: ["release-smoke/at-rest-disclosure-release-notes.txt"],
+      skipReason: "",
+    };
+    evidence.manualItems[atRestDisclosureItemIndex].notes = disclosureText;
+  };
+  if (atRestDisclosureItemIndex === -1) {
+    fail(scriptLabel, "Self-test fixture missing at-rest-disclosure manual item");
+  } else {
+    const completeAtRestDisclosure = createStrictPassedFixture();
+    setAtRestDisclosureEvidence(completeAtRestDisclosure, completeAtRestDisclosureEvidenceText);
+    expectAccepted(
+      "passed at-rest disclosure with all boundary categories",
+      validateEvidence(completeAtRestDisclosure),
+    );
+
+    const pathOnlyAtRestDisclosure = createStrictPassedFixture();
+    pathOnlyAtRestDisclosure.manualItems[atRestDisclosureItemIndex].evidence = {
+      observations: ["Release notes attached."],
+      artifacts: [
+        "release-smoke/v1-app-level-encryption-at-rest-not-implemented-app-private-data-os-user-account-file-protections-app-delete-controls-app-private-meeting-data-user-owned-source-files-exported-files-outside-app-delete-control.txt",
+      ],
+      skipReason: "",
+    };
+    pathOnlyAtRestDisclosure.manualItems[atRestDisclosureItemIndex].notes = "Release notes attached.";
+    expectRejected(
+      "passed at-rest disclosure ignores semantic claims in artifact paths",
+      validateEvidence(pathOnlyAtRestDisclosure),
+      "app-level encryption-at-rest is not implemented in v1",
+    );
+
+    const affirmativeEncryptionAtRestDisclosure = createStrictPassedFixture();
+    setAtRestDisclosureEvidence(
+      affirmativeEncryptionAtRestDisclosure,
+      "v1 provides app-level encryption-at-rest without setup. App-private data relies on OS/user-account file protections. App delete controls app-private meeting data. User-owned source files and exported files can remain outside app deletion control.",
+    );
+    expectRejected(
+      "passed at-rest disclosure rejects affirmative encryption-at-rest claim",
+      validateEvidence(affirmativeEncryptionAtRestDisclosure),
+      "app-level encryption-at-rest is not implemented in v1",
+    );
+
+    for (const missingCategory of [
+      {
+        name: "app-level encryption-at-rest is not implemented in v1",
+        disclosureText:
+          "App-private data relies on OS/user-account file protections. App delete controls app-private meeting data. User-owned source files and exported files can remain outside app deletion control.",
+      },
+      {
+        name: "app-private data relies on OS/user-account file protections",
+        disclosureText:
+          "App-level encryption-at-rest is not implemented in v1. App delete controls app-private meeting data. User-owned source files and exported files can remain outside app deletion control.",
+      },
+      {
+        name: "app delete controls app-private meeting data",
+        disclosureText:
+          "App-level encryption-at-rest is not implemented in v1. App-private data relies on OS/user-account file protections. User-owned source files and exported files can remain outside app deletion control.",
+      },
+      {
+        name: "user-owned source files and exported files can remain outside app deletion control",
+        disclosureText:
+          "App-level encryption-at-rest is not implemented in v1. App-private data relies on OS/user-account file protections. App delete controls app-private meeting data.",
+      },
+    ]) {
+      const missingAtRestDisclosureCategory = createStrictPassedFixture();
+      setAtRestDisclosureEvidence(missingAtRestDisclosureCategory, missingCategory.disclosureText);
+      expectRejected(
+        `passed at-rest disclosure missing ${missingCategory.name}`,
+        validateEvidence(missingAtRestDisclosureCategory),
+        missingCategory.name,
+      );
+    }
+  }
 
   const requiredArtifactItemIndex = createStrictPassedFixture().manualItems.findIndex(
     (item) => item.id === "automated-release-artifacts",
