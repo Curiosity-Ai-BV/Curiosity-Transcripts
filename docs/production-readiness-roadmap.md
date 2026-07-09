@@ -455,9 +455,11 @@ to `release-artifacts/coverage/rust`, runs frontend Vitest V8 coverage to
 `node scripts/check-coverage-artifacts.js`, and uploads
 `release-artifacts/coverage`. The checker verifies named critical seam-intent
 evidence in LCOV: source records for `apps/desktop/src/App.tsx`,
-`apps/desktop/src/commandAdapter.ts`, and `apps/desktop/src/desktopContract.ts`
-must include positive `FNDA` hits for named UI, command-adapter facade/mapping,
-and runtime contract-validator seams, while source records for
+`apps/desktop/src/commandAdapter.ts`, `apps/desktop/src/desktopContract.ts`,
+and the extracted desktop component seam modules from recording controls through
+settings form must include positive `FNDA` hits for named UI,
+command-adapter facade/mapping, and runtime contract-validator seams, while
+source records for
 `crates/store/src/lib.rs` and `apps/desktop/src-tauri/src/main.rs` must include
 positive `DA` lines inside anchored Rust spans for delete cleanup, command state,
 raw-audio retention, and export/delete DTO seams. This is a seam-evidence gate
@@ -467,9 +469,8 @@ install pin. It is not generated DTOs, and not a claim of
 comprehensive coverage for all privacy, deletion, recovery, provider, or
 release-metadata paths.
 
-Later work: generated DTOs, additional module splitting, and broader
-seam-by-seam coverage intent checks after those seams are split behind smaller
-facades.
+Later work: generated DTOs, additional module splitting, and broader coverage
+intent checks for remaining seams behind smaller facades.
 
 Success criteria:
 

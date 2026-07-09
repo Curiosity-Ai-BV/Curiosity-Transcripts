@@ -10,6 +10,69 @@ const daLinePattern = /^DA:(\d+),(\d+)(?:,[^,\s]+)?$/;
 const fnLinePattern = /^FN:(\d+),(.+)$/;
 const fndaLinePattern = /^FNDA:(\d+),(.+)$/;
 
+const desktopComponentSeamRequiredPaths = [
+  {
+    expected: "apps/desktop/src/desktopRecordingControls.tsx",
+    alternatives: ["src/desktopRecordingControls.tsx"],
+    requiredFunctions: ["RecordingControls"],
+  },
+  {
+    expected: "apps/desktop/src/desktopMeetingDetailHeader.tsx",
+    alternatives: ["src/desktopMeetingDetailHeader.tsx"],
+    requiredFunctions: ["MeetingDetailHeader"],
+  },
+  {
+    expected: "apps/desktop/src/desktopMeetingPrivacyRow.tsx",
+    alternatives: ["src/desktopMeetingPrivacyRow.tsx"],
+    requiredFunctions: ["MeetingPrivacyRow"],
+  },
+  {
+    expected: "apps/desktop/src/desktopMeetingSummarySection.tsx",
+    alternatives: ["src/desktopMeetingSummarySection.tsx"],
+    requiredFunctions: ["MeetingSummarySection"],
+  },
+  {
+    expected: "apps/desktop/src/desktopMeetingDetailActions.tsx",
+    alternatives: ["src/desktopMeetingDetailActions.tsx"],
+    requiredFunctions: ["MeetingDetailActions"],
+  },
+  {
+    expected: "apps/desktop/src/desktopMeetingTranscriptSection.tsx",
+    alternatives: ["src/desktopMeetingTranscriptSection.tsx"],
+    requiredFunctions: ["MeetingTranscriptSection"],
+  },
+  {
+    expected: "apps/desktop/src/desktopSettingsEngineStack.tsx",
+    alternatives: ["src/desktopSettingsEngineStack.tsx"],
+    requiredFunctions: ["DesktopSettingsEngineStack"],
+  },
+  {
+    expected: "apps/desktop/src/desktopModelReadiness.tsx",
+    alternatives: ["src/desktopModelReadiness.tsx"],
+    requiredFunctions: ["DesktopModelReadiness"],
+  },
+  {
+    expected: "apps/desktop/src/desktopModelSetupOptions.tsx",
+    alternatives: ["src/desktopModelSetupOptions.tsx"],
+    requiredFunctions: ["DesktopModelSetupOptions"],
+  },
+  {
+    expected: "apps/desktop/src/desktopCalendarContext.tsx",
+    alternatives: ["src/desktopCalendarContext.tsx"],
+    requiredFunctions: ["DesktopCalendarContext"],
+  },
+  {
+    expected: "apps/desktop/src/desktopSettingsFeedback.tsx",
+    alternatives: ["src/desktopSettingsFeedback.tsx"],
+    requiredFunctions: ["DesktopSettingsFeedback"],
+  },
+  {
+    expected: "apps/desktop/src/desktopSettingsForm.tsx",
+    alternatives: ["src/desktopSettingsForm.tsx"],
+    requiredFunctions: ["DesktopSettingsForm"],
+  },
+];
+
 const artifacts = [
   {
     label: "frontend LCOV",
@@ -52,6 +115,7 @@ const artifacts = [
           "validateCommandJobView",
         ],
       },
+      ...desktopComponentSeamRequiredPaths,
     ],
   },
   {
@@ -450,6 +514,10 @@ function runSelfTests() {
       },
     ],
   };
+  const frontendComponentArtifact = {
+    label: "self-test frontend component LCOV",
+    requiredPaths: desktopComponentSeamRequiredPaths,
+  };
   const tauriArtifact = {
     label: "self-test Tauri LCOV",
     requiredPaths: [
@@ -508,6 +576,23 @@ function runSelfTests() {
         "end_of_record",
       ])
       .join("\n");
+  }
+
+  function positiveRecordsForRequiredPaths(requiredPaths, lineBase = 100) {
+    return requiredPaths.map((requiredPath, index) => {
+      const line = lineBase + index * 10;
+      const requiredFunctions = requiredPath.requiredFunctions ?? [];
+
+      return {
+        source: requiredPath.expected,
+        functions: requiredFunctions.map((functionName, functionIndex) => [
+          line + functionIndex,
+          functionName,
+        ]),
+        functionHits: requiredFunctions.map((functionName) => [1, functionName]),
+        hits: [[line, 1]],
+      };
+    });
   }
 
   expectRejected(
@@ -835,6 +920,53 @@ function runSelfTests() {
         hits: [[1, 1]],
       },
     ]),
+  );
+  expectRejected(
+    "missing extracted component source",
+    frontendComponentArtifact,
+    lcov(
+      positiveRecordsForRequiredPaths(
+        desktopComponentSeamRequiredPaths.slice(1),
+      ),
+    ),
+    "Missing coverage source path apps/desktop/src/desktopRecordingControls.tsx",
+  );
+  expectRejected(
+    "missing extracted component function evidence",
+    frontendComponentArtifact,
+    lcov([
+      {
+        source: "apps/desktop/src/desktopRecordingControls.tsx",
+        hits: [[100, 1]],
+      },
+      ...positiveRecordsForRequiredPaths(
+        desktopComponentSeamRequiredPaths.slice(1),
+        110,
+      ),
+    ]),
+    "Missing function coverage record RecordingControls",
+  );
+  expectRejected(
+    "zero-hit extracted component function evidence",
+    frontendComponentArtifact,
+    lcov([
+      {
+        source: "apps/desktop/src/desktopRecordingControls.tsx",
+        functions: [[100, "RecordingControls"]],
+        functionHits: [[0, "RecordingControls"]],
+        hits: [[100, 1]],
+      },
+      ...positiveRecordsForRequiredPaths(
+        desktopComponentSeamRequiredPaths.slice(1),
+        110,
+      ),
+    ]),
+    "Function coverage record RecordingControls has no positive FNDA hits",
+  );
+  expectAccepted(
+    "extracted component sources with positive function hits",
+    frontendComponentArtifact,
+    lcov(positiveRecordsForRequiredPaths(desktopComponentSeamRequiredPaths)),
   );
   expectAccepted(
     "Tauri alternative source path with a positive hit",
