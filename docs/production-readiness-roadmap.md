@@ -434,12 +434,12 @@ leakage in publication readiness. CI writes deterministic release evidence to
 `release-artifacts/contracts/desktop-command-view-contract.receipt.json` with
 fixture/schema/source-input hashes, expected case names, forbidden strings, and
 checker status. The source-input evidence covers the Rust producer/fixture owner,
-the Rust calendar context producer, the TypeScript runtime validator, and the
-TypeScript contract test input.
+the Rust calendar context producer, the TypeScript command facade/UI mapping, the
+TypeScript runtime contract validator, and the TypeScript contract test input.
 Rust tests guard exact equality against the generated command/view payload, and
 TS command adapter contract tests consume the same fixture.
 Snapshot-returning commands, setup test commands, and
-`search_meetings` results are also validated at the TypeScript command-adapter
+`search_meetings` results are also validated at the TypeScript desktop contract
 boundary before the desktop shell consumes them. The Tauri command-surface gate
 now guards the frontend-to-release registration subset and the
 `DESKTOP_SNAPSHOT_COMMANDS` validation allowlist so facade drift fails before
@@ -454,19 +454,22 @@ to `release-artifacts/coverage/rust`, runs frontend Vitest V8 coverage to
 `release-artifacts/coverage/frontend`, checks the reports with
 `node scripts/check-coverage-artifacts.js`, and uploads
 `release-artifacts/coverage`. The checker verifies named critical seam-intent
-evidence in LCOV: source records for `apps/desktop/src/App.tsx` and
-`apps/desktop/src/commandAdapter.ts` must include positive `FNDA` hits for the
-named UI and command-adapter seams, and source records for `crates/store/src/lib.rs`
-and `apps/desktop/src-tauri/src/main.rs` must include positive `DA` lines inside
-anchored Rust spans for delete cleanup, command state, raw-audio retention, and
-export/delete DTO seams. This is a seam-evidence gate with no global percentage
+evidence in LCOV: source records for `apps/desktop/src/App.tsx`,
+`apps/desktop/src/commandAdapter.ts`, and `apps/desktop/src/desktopContract.ts`
+must include positive `FNDA` hits for named UI, command-adapter facade/mapping,
+and runtime contract-validator seams, while source records for
+`crates/store/src/lib.rs` and `apps/desktop/src-tauri/src/main.rs` must include
+positive `DA` lines inside anchored Rust spans for delete cleanup, command state,
+raw-audio retention, and export/delete DTO seams. This is a seam-evidence gate
+with no global percentage
 threshold; publication readiness rejects loosening or removing the exact CI
-install pin. It is not generated DTOs or module splitting, and not a claim of
+install pin. It is not generated DTOs, and not a claim of
 comprehensive coverage for all privacy, deletion, recovery, provider, or
 release-metadata paths.
 
-Later work: generated DTOs, module splitting, and broader seam-by-seam coverage
-intent checks after those seams are split behind smaller facades.
+Later work: generated DTOs, additional module splitting, and broader
+seam-by-seam coverage intent checks after those seams are split behind smaller
+facades.
 
 Success criteria:
 

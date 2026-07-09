@@ -31,16 +31,25 @@ const artifacts = [
         expected: "apps/desktop/src/commandAdapter.ts",
         alternatives: ["src/commandAdapter.ts"],
         requiredFunctions: [
-          "assertDesktopSnapshotContract",
           "snapshotCommand",
-          "validateDeleteCommandState",
-          "validateAnalysisDisclosureState",
-          "validateCommandJobView",
           "mapDeleteState",
           "mapRawAudioRetention",
           "mapLocalProcessingState",
           "mapAnalysisDisclosure",
           "mapCommandJobState",
+        ],
+      },
+      {
+        expected: "apps/desktop/src/desktopContract.ts",
+        alternatives: ["src/desktopContract.ts"],
+        requiredFunctions: [
+          "assertDesktopSnapshotContract",
+          "assertWhisperModelPathTestContract",
+          "assertOllamaConnectionTestContract",
+          "assertMeetingSearchResultsContract",
+          "validateDeleteCommandState",
+          "validateAnalysisDisclosureState",
+          "validateCommandJobView",
         ],
       },
     ],
@@ -432,7 +441,12 @@ function runSelfTests() {
       {
         expected: "apps/desktop/src/commandAdapter.ts",
         alternatives: ["src/commandAdapter.ts"],
-        requiredFunctions: ["assertDesktopSnapshotContract", "snapshotCommand"],
+        requiredFunctions: ["snapshotCommand", "mapDeleteState"],
+      },
+      {
+        expected: "apps/desktop/src/desktopContract.ts",
+        alternatives: ["src/desktopContract.ts"],
+        requiredFunctions: ["assertDesktopSnapshotContract", "assertMeetingSearchResultsContract"],
       },
     ],
   };
@@ -502,6 +516,7 @@ function runSelfTests() {
     lcov([
       { source: "apps/desktop/src/Other.tsx", hits: [[1, 1]] },
       { source: "apps/desktop/src/commandAdapter.ts", hits: [[1, 1]] },
+      { source: "apps/desktop/src/desktopContract.ts", hits: [[1, 1]] },
     ]),
     "Missing coverage source path apps/desktop/src/App.tsx",
   );
@@ -511,6 +526,7 @@ function runSelfTests() {
     lcov([
       { source: "apps/desktop/src/App.tsx" },
       { source: "apps/desktop/src/commandAdapter.ts", hits: [[1, 1]] },
+      { source: "apps/desktop/src/desktopContract.ts", hits: [[1, 1]] },
     ]),
     "has no covered line hits",
   );
@@ -526,6 +542,7 @@ function runSelfTests() {
         ],
       },
       { source: "apps/desktop/src/commandAdapter.ts", hits: [[1, 1]] },
+      { source: "apps/desktop/src/desktopContract.ts", hits: [[1, 1]] },
     ]),
     "has no covered line hits",
   );
@@ -536,6 +553,7 @@ function runSelfTests() {
       { source: "apps/desktop/src/App.tsx" },
       { source: "apps/desktop/src/Other.tsx", hits: [[1, 1]] },
       { source: "apps/desktop/src/commandAdapter.ts", hits: [[1, 1]] },
+      { source: "apps/desktop/src/desktopContract.ts", hits: [[1, 1]] },
     ]),
     "has no covered line hits",
   );
@@ -552,6 +570,7 @@ function runSelfTests() {
         hits: [[2, 1]],
       },
       { source: "apps/desktop/src/commandAdapter.ts", hits: [[1, 1]] },
+      { source: "apps/desktop/src/desktopContract.ts", hits: [[1, 1]] },
     ]),
     "has no covered line hits",
   );
@@ -563,6 +582,9 @@ function runSelfTests() {
       "DA:not-a-line,1",
       "end_of_record",
       "SF:apps/desktop/src/commandAdapter.ts",
+      "DA:1,1",
+      "end_of_record",
+      "SF:apps/desktop/src/desktopContract.ts",
       "DA:1,1",
       "end_of_record",
     ].join("\n"),
@@ -578,6 +600,9 @@ function runSelfTests() {
       "SF:apps/desktop/src/commandAdapter.ts",
       "DA:1,1",
       "end_of_record",
+      "SF:apps/desktop/src/desktopContract.ts",
+      "DA:1,1",
+      "end_of_record",
     ].join("\n"),
     "has no covered line hits",
   );
@@ -589,6 +614,9 @@ function runSelfTests() {
       "DA:1,0.5",
       "end_of_record",
       "SF:apps/desktop/src/commandAdapter.ts",
+      "DA:1,1",
+      "end_of_record",
+      "SF:apps/desktop/src/desktopContract.ts",
       "DA:1,1",
       "end_of_record",
     ].join("\n"),
@@ -616,14 +644,26 @@ function runSelfTests() {
       {
         source: "apps/desktop/src/commandAdapter.ts",
         functions: [
+          [10, "snapshotCommand"],
+          [20, "mapDeleteState"],
+        ],
+        functionHits: [
+          [1, "snapshotCommand"],
+          [1, "mapDeleteState"],
+        ],
+        hits: [[7, 1]],
+      },
+      {
+        source: "apps/desktop/src/desktopContract.ts",
+        functions: [
           [10, "assertDesktopSnapshotContract"],
-          [20, "snapshotCommand"],
+          [20, "assertMeetingSearchResultsContract"],
         ],
         functionHits: [
           [1, "assertDesktopSnapshotContract"],
-          [1, "snapshotCommand"],
+          [1, "assertMeetingSearchResultsContract"],
         ],
-        hits: [[7, 1]],
+        hits: [[8, 1]],
       },
     ]),
   );
@@ -640,12 +680,24 @@ function runSelfTests() {
       {
         source: "apps/desktop/src/commandAdapter.ts",
         functions: [
+          [10, "snapshotCommand"],
+          [20, "mapDeleteState"],
+        ],
+        functionHits: [
+          [1, "snapshotCommand"],
+          [1, "mapDeleteState"],
+        ],
+        hits: [[10, 1]],
+      },
+      {
+        source: "apps/desktop/src/desktopContract.ts",
+        functions: [
           [10, "assertDesktopSnapshotContract"],
-          [20, "snapshotCommand"],
+          [20, "assertMeetingSearchResultsContract"],
         ],
         functionHits: [
           [1, "assertDesktopSnapshotContract"],
-          [1, "snapshotCommand"],
+          [1, "assertMeetingSearchResultsContract"],
         ],
         hits: [[10, 1]],
       },
@@ -671,12 +723,24 @@ function runSelfTests() {
       {
         source: "apps/desktop/src/commandAdapter.ts",
         functions: [
+          [10, "snapshotCommand"],
+          [20, "mapDeleteState"],
+        ],
+        functionHits: [
+          [1, "snapshotCommand"],
+          [1, "mapDeleteState"],
+        ],
+        hits: [[10, 1]],
+      },
+      {
+        source: "apps/desktop/src/desktopContract.ts",
+        functions: [
           [10, "assertDesktopSnapshotContract"],
-          [20, "snapshotCommand"],
+          [20, "assertMeetingSearchResultsContract"],
         ],
         functionHits: [
           [1, "assertDesktopSnapshotContract"],
-          [1, "snapshotCommand"],
+          [1, "assertMeetingSearchResultsContract"],
         ],
         hits: [[10, 1]],
       },
@@ -706,12 +770,24 @@ function runSelfTests() {
       {
         source: "apps/desktop/src/commandAdapter.ts",
         functions: [
+          [10, "snapshotCommand"],
+          [20, "mapDeleteState"],
+        ],
+        functionHits: [
+          [1, "snapshotCommand"],
+          [1, "mapDeleteState"],
+        ],
+        hits: [[10, 1]],
+      },
+      {
+        source: "apps/desktop/src/desktopContract.ts",
+        functions: [
           [10, "assertDesktopSnapshotContract"],
-          [20, "snapshotCommand"],
+          [20, "assertMeetingSearchResultsContract"],
         ],
         functionHits: [
           [1, "assertDesktopSnapshotContract"],
-          [1, "snapshotCommand"],
+          [1, "assertMeetingSearchResultsContract"],
         ],
         hits: [[10, 1]],
       },
@@ -737,12 +813,24 @@ function runSelfTests() {
       {
         source: "src/commandAdapter.ts",
         functions: [
+          [10, "snapshotCommand"],
+          [20, "mapDeleteState"],
+        ],
+        functionHits: [
+          [1, "snapshotCommand"],
+          [1, "mapDeleteState"],
+        ],
+        hits: [[1, 1]],
+      },
+      {
+        source: "src/desktopContract.ts",
+        functions: [
           [10, "assertDesktopSnapshotContract"],
-          [20, "snapshotCommand"],
+          [20, "assertMeetingSearchResultsContract"],
         ],
         functionHits: [
           [1, "assertDesktopSnapshotContract"],
-          [1, "snapshotCommand"],
+          [1, "assertMeetingSearchResultsContract"],
         ],
         hits: [[1, 1]],
       },

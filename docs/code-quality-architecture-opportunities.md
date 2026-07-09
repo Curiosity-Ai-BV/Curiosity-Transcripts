@@ -116,19 +116,25 @@ Proposal:
 - Keep `detail` as presentation copy only.
 - Add a frontend contract test proving copy changes do not affect command readiness.
 
-### 6. Desktop DTO Contract Is Duplicated and Shallowly Validated
+### 6. Desktop DTO Contract Ownership Is Still Duplicated
 
 Evidence:
-- Frontend DTOs are declared manually in `apps/desktop/src/commandAdapter.ts:19`.
+- Frontend DTOs are declared manually in `apps/desktop/src/desktopContract.ts`
+  and re-exported through `apps/desktop/src/commandAdapter.ts`.
 - Backend views are independently declared in `apps/desktop/src-tauri/src/main.rs:2226`, `apps/desktop/src-tauri/src/main.rs:2406`, and `apps/desktop/src-tauri/src/main.rs:2523`.
-- Runtime validation checks required paths in `apps/desktop/src/commandAdapter.ts:650`, but `requireContractPath` only checks presence/object/array shape in `apps/desktop/src/commandAdapter.ts:785`.
+- Runtime validation lives in `apps/desktop/src/desktopContract.ts` and is
+  consumed by the command adapter facade.
 
 Why it matters:
-The current contract check catches missing fields, but not enum drift, string/null mismatches, number/string swaps, or optional fields becoming nullable.
+The runtime validator now checks required fields, enum values, and primitive
+types, but the frontend contract types and Rust DTOs are still maintained
+independently. Generated TypeScript would remove that remaining manual
+ownership drift risk.
 
 Proposal:
 - Prefer generated TypeScript from Rust DTOs if that can stay lightweight.
-- If generation is too much for now, define one runtime schema in `commandAdapter` that validates types and enum values.
+- If generation is too much for now, keep the runtime contract module as the
+  single validation owner and avoid duplicating contract checks in the facade.
 - Make UI tests exercise the production adapter path, not only injected raw `CommandFetcher` results.
 
 ### 7. Release Tag Workflow Does Not Enforce All Documented Version Sources

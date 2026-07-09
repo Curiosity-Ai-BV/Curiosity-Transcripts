@@ -29,6 +29,10 @@ const artifacts = {
     path: path.join(root, "apps", "desktop", "src", "commandAdapter.ts"),
     label: "apps/desktop/src/commandAdapter.ts",
   },
+  desktopContract: {
+    path: path.join(root, "apps", "desktop", "src", "desktopContract.ts"),
+    label: "apps/desktop/src/desktopContract.ts",
+  },
   app: {
     path: path.join(root, "apps", "desktop", "src", "App.tsx"),
     label: "apps/desktop/src/App.tsx",
@@ -62,6 +66,7 @@ const checkedArtifacts = [
   artifacts.main,
   artifacts.calendar,
   artifacts.adapter,
+  artifacts.desktopContract,
   artifacts.app,
   artifacts.fixture,
   artifacts.schema,
@@ -360,6 +365,7 @@ function expectArtifactChecked(label) {
 
 function runSelfTests() {
   expectArtifactChecked("crates/app/src/lib.rs");
+  expectArtifactChecked("apps/desktop/src/desktopContract.ts");
 
   const storeSource = readText(artifacts.store);
   expectRejected(
@@ -445,13 +451,13 @@ function runSelfTests() {
     ),
   );
 
-  const adapterSource = readText(artifacts.adapter);
+  const desktopContractSource = readText(artifacts.desktopContract);
   expectRejected(
-    "oauth_token desktop DTO field",
+    "oauth_token desktop contract DTO field",
     validateSourceSecretFields(
       mutateText(
-        "oauth_token desktop DTO field",
-        adapterSource,
+        "oauth_token desktop contract DTO field",
+        desktopContractSource,
         "  ollamaModel: string;",
         "  oauth_token: string;",
       ),

@@ -134,11 +134,12 @@ must pass before CI uploads `release-artifacts/coverage`. Treat this as named
 critical seam-intent evidence, with no global percentage threshold. The checker
 expects LCOV source records for `apps/desktop/src/App.tsx` and
 `apps/desktop/src/commandAdapter.ts` with positive `FNDA` hits for named UI and
-command-adapter seams, plus LCOV source records for `crates/store/src/lib.rs`
-and `apps/desktop/src-tauri/src/main.rs` with positive `DA` lines inside anchored
-Rust spans for delete cleanup, command state, raw-audio retention, and
-export/delete DTO seams. It is not proof of generated DTOs, module splitting, or
-complete privacy/deletion/recovery coverage.
+command-adapter facade/mapping seams, `apps/desktop/src/desktopContract.ts` with
+positive `FNDA` hits for runtime contract-validator seams, plus LCOV source
+records for `crates/store/src/lib.rs` and `apps/desktop/src-tauri/src/main.rs`
+with positive `DA` lines inside anchored Rust spans for delete cleanup, command
+state, raw-audio retention, and export/delete DTO seams. It is not proof of
+generated DTOs or complete privacy/deletion/recovery coverage.
 
 ## Manual Smoke Items
 

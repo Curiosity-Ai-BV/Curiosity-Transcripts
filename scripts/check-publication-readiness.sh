@@ -66,6 +66,7 @@ check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file "apps/desktop/src-tauri/src/main.rs"
 check_file "apps/desktop/src-tauri/src/calendar.rs"
 check_file "apps/desktop/src/commandAdapter.ts"
+check_file "apps/desktop/src/desktopContract.ts"
 check_file "apps/desktop/src/commandAdapter.contract.test.ts"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
@@ -145,7 +146,7 @@ require_normalized_text \
   docs/production-readiness-roadmap.md \
   'no global percentage threshold' \
   'Phase 5B non-percentage coverage boundary'
-require_normalized_text docs/production-readiness-roadmap.md 'not generated DTOs or module splitting' 'Phase 5B generated DTO/module split boundary'
+require_normalized_text docs/production-readiness-roadmap.md 'It is not generated DTOs' 'Phase 5B generated DTO boundary'
 require_text docs/production-readiness-roadmap.md 'Current smoke evidence manifest/validator status' 'smoke evidence manifest and validator status'
 require_text docs/production-readiness-roadmap.md 'release-candidate-smoke-evidence\.template\.json' 'smoke evidence template roadmap reference'
 require_text docs/production-readiness-roadmap.md 'check-release-smoke-evidence\.js' 'smoke evidence validator roadmap reference'
@@ -229,6 +230,7 @@ require_normalized_text \
   'release-candidate named seam-intent coverage boundary'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/commandAdapter\.ts' 'frontend command adapter coverage source-path expectation'
+require_text docs/release-candidate-checklist.md 'apps/desktop/src/desktopContract\.ts' 'frontend desktop contract coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'crates/store/src/lib\.rs' 'Rust store coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src-tauri/src/main\.rs' 'desktop Tauri main coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'no global percentage threshold' 'release-candidate non-percentage coverage boundary'
@@ -532,8 +534,10 @@ require_text apps/desktop/package.json '"test:coverage": "vitest run --coverage"
 require_text apps/desktop/package.json '"@vitest/coverage-v8"' 'desktop Vitest V8 coverage dependency'
 require_text apps/desktop/vite.config.ts 'reportsDirectory: "../../release-artifacts/coverage/frontend"' 'frontend coverage output directory'
 require_text apps/desktop/vite.config.ts 'reporter: \["lcovonly"\]' 'frontend LCOV-only coverage reporter'
+require_text apps/desktop/vite.config.ts '"src/desktopContract.ts"' 'frontend coverage include desktop contract source'
 require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/App\.tsx' 'coverage checker frontend App path'
 require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/commandAdapter\.ts' 'coverage checker frontend command adapter path'
+require_text scripts/check-coverage-artifacts.js 'apps/desktop/src/desktopContract\.ts' 'coverage checker frontend desktop contract path'
 require_text scripts/check-coverage-artifacts.js 'crates/store/src/lib\.rs' 'coverage checker Rust store path'
 require_text scripts/check-coverage-artifacts.js 'apps/desktop/src-tauri/src/main\.rs' 'coverage checker desktop Tauri main path'
 if ! node --check scripts/generate-supply-chain-artifacts.js >/dev/null; then
@@ -1002,6 +1006,8 @@ require_text scripts/check-tauri-command-surface.js 'snapshot command removed fr
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'artifacts\.calendar' 'plain secret storage checker calendar DTO artifact scope'
 require_text scripts/check-plain-secret-storage.js 'apps/desktop/src-tauri/src/calendar\.rs' 'plain secret storage checker calendar DTO artifact label'
+require_text scripts/check-plain-secret-storage.js 'artifacts\.desktopContract' 'plain secret storage checker desktop contract DTO artifact scope'
+require_text scripts/check-plain-secret-storage.js 'apps/desktop/src/desktopContract\.ts' 'plain secret storage checker desktop contract DTO artifact label'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-governance-signoff\.js; then' 'governance sign-off template publication readiness gate'
@@ -1019,6 +1025,9 @@ require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src-ta
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src-tauri/src/calendar\.rs' 'desktop command/view contract receipt calendar producer source input'
 require_text scripts/check-desktop-command-view-contract.js 'rust-calendar-context-producer' 'desktop command/view contract receipt calendar producer role'
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.ts' 'desktop command/view contract receipt TS consumer source input'
+require_text scripts/check-desktop-command-view-contract.js 'typescript-command-facade-and-ui-mapping' 'desktop command/view contract receipt command facade role'
+require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/desktopContract\.ts' 'desktop command/view contract receipt TS contract source input'
+require_text scripts/check-desktop-command-view-contract.js 'typescript-runtime-contract-validator' 'desktop command/view contract receipt TS contract validator role'
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.contract\.test\.ts' 'desktop command/view contract receipt TS contract-test source input'
 require_text scripts/check-desktop-command-view-contract.js 'desktop-command-view-contract-receipt' 'desktop command/view contract receipt kind'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'

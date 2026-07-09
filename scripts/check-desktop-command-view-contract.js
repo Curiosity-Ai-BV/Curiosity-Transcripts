@@ -22,7 +22,11 @@ const sourceInputDescriptors = [
   },
   {
     path: "apps/desktop/src/commandAdapter.ts",
-    role: "typescript-consumer-runtime-validator",
+    role: "typescript-command-facade-and-ui-mapping",
+  },
+  {
+    path: "apps/desktop/src/desktopContract.ts",
+    role: "typescript-runtime-contract-validator",
   },
   {
     path: "apps/desktop/src/commandAdapter.contract.test.ts",
@@ -515,8 +519,16 @@ function runSelfTests(fixture, schema) {
   );
   expectSourceInputCovered(
     "apps/desktop/src/commandAdapter.ts",
-    "TypeScript consumer",
+    "TypeScript command facade",
     "1".repeat(64),
+    validReceipt,
+    fixture,
+    schema,
+  );
+  expectSourceInputCovered(
+    "apps/desktop/src/desktopContract.ts",
+    "TypeScript runtime contract validator",
+    "4".repeat(64),
     validReceipt,
     fixture,
     schema,

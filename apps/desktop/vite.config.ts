@@ -16,7 +16,7 @@ export default defineConfig({
       provider: "v8",
       reportsDirectory: "../../release-artifacts/coverage/frontend",
       reporter: ["lcovonly"],
-      include: ["src/App.tsx", "src/commandAdapter.ts"],
+      include: ["src/App.tsx", "src/commandAdapter.ts", "src/desktopContract.ts"],
     },
   },
 });

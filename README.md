@@ -108,9 +108,9 @@ Implemented MVP flows:
   Rust exact-equality and TS command adapter contract tests. CI also uploads
   `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
   deterministic release evidence for fixture/schema/source-input hashes,
-  including the Rust fixture owner, calendar context producer, TS runtime
-  validator, and TS contract test inputs. This remains fixture-derived contract
-  evidence, not generated DTO ownership.
+  including the Rust fixture owner, calendar context producer, TS command
+  facade/UI mapping, TS runtime contract validator, and TS contract test inputs.
+  This remains fixture-derived contract evidence, not generated DTO ownership.
 - Settings-pane first-run readiness guidance for local Whisper and Ollama setup:
   missing/readable Whisper paths are typed, readable paths remain compatibility
   unverified, explicit `Test path` evidence is persisted when run, and
