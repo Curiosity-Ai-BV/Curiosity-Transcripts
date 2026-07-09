@@ -38,6 +38,7 @@ import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
+import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
@@ -1230,54 +1231,14 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               copyPullCommandDisabled={commandBusy}
               onCopyPullCommand={copyOllamaPullCommand}
             />
-            <div className="model-setup-options" aria-label="Manual model setup options">
-              <div className="setup-option-group">
-                <strong>{modelSetupOptions.whisper.title}</strong>
-                <p>{modelSetupOptions.whisper.detail}</p>
-                <span className="setup-option-meta">
-                  Accepted: {modelSetupOptions.whisper.acceptedExtensions.map((extension) => `.${extension}`).join(", ")}
-                </span>
-                <span className="setup-option-meta">
-                  {modelSetupOptions.whisper.downloadsManaged
-                    ? "Managed downloads enabled"
-                    : "Managed downloads unavailable"}
-                </span>
-              </div>
-              <div className="setup-option-group">
-                <strong>{modelSetupOptions.ollama.title}</strong>
-                <p>{modelSetupOptions.ollama.detail}</p>
-                <span className="setup-option-meta">
-                  {modelSetupOptions.ollama.automaticPulls ? "Automatic pulls enabled" : "Manual pulls only"}
-                </span>
-                <div className="ollama-candidate-list">
-                  {modelSetupOptions.ollama.candidates.map((candidate) => (
-                    <div key={candidate.id} className="ollama-candidate-row">
-                      <span>
-                        <strong>{candidate.displayName}</strong>
-                        <small>{candidate.modelTag}</small>
-                      </span>
-                      <span className="pull-command-copy">
-                        <span className="setup-option-meta">{candidate.pullCommand}</span>
-                        <CopyPullCommandButton
-                          pullCommand={candidate.pullCommand}
-                          disabled={commandBusy}
-                          onCopy={copyOllamaPullCommand}
-                        />
-                      </span>
-                      <button
-                        type="button"
-                        className="button"
-                        disabled={settingsInputDisabled || settingsForm.ollamaModel === candidate.modelTag}
-                        title="Use this model tag in the local settings form."
-                        onClick={() => chooseOllamaCandidate(candidate.modelTag)}
-                      >
-                        Use
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <DesktopModelSetupOptions
+              options={modelSetupOptions}
+              selectedOllamaModel={settingsForm.ollamaModel}
+              settingsInputDisabled={settingsInputDisabled}
+              copyPullCommandDisabled={commandBusy}
+              onCopyPullCommand={copyOllamaPullCommand}
+              onChooseOllamaCandidate={chooseOllamaCandidate}
+            />
             <div className="calendar-context" aria-label="Calendar context">
               <div className={`readiness-item ${calendarTone}`}>
                 <div className="readiness-heading">
