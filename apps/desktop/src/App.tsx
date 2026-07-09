@@ -61,6 +61,7 @@ import {
   whisperSetupTone,
 } from "./desktopWorkspaceState";
 import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState";
+import { useDesktopTheme } from "./desktopTheme";
 
 import "./styles.css";
 
@@ -72,8 +73,6 @@ interface AppProps {
   filePicker?: Partial<AppFilePicker>;
   clipboardWriter?: AppClipboardWriter;
 }
-
-type ThemeMode = "dark" | "light";
 
 export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
   const appFilePicker = { ...defaultAppFilePicker, ...filePicker };
@@ -93,7 +92,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("json");
-  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const { theme, isLightTheme, themeButtonLabel, toggleTheme } = useDesktopTheme();
 
   useEffect(() => {
     if (snapshot) {
@@ -907,13 +906,6 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
           : ollamaSummaryBlockGuidance
             ? ollamaSummaryBlockGuidance
           : "Generate a local Ollama summary for the selected meeting.";
-  const isLightTheme = theme === "light";
-  const themeButtonLabel = isLightTheme ? "Switch to dark mode" : "Switch to light mode";
-
-  function toggleTheme() {
-    setTheme((current) => (current === "dark" ? "light" : "dark"));
-  }
-
   const recordingControls = (
     <RecordingControls
       recording={recording}
