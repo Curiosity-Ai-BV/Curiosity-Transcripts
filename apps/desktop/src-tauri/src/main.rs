@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod calendar;
@@ -7,6 +7,7 @@ mod file_hashing;
 mod import_audio_validation;
 mod local_ollama;
 mod recording_artifact_paths;
+mod recording_manifest_mapping;
 mod recording_streams;
 mod whisper_setup;
 
@@ -28,13 +29,13 @@ use crate::local_ollama::{
     UreqOllamaHttpTransport,
 };
 use crate::recording_artifact_paths::{
-    artifact_id, artifact_id_for_stream, artifact_relative_path_for_stream, imported_artifact_id,
-    imported_artifact_relative_path, imported_temp_artifact_relative_path,
-    microphone_artifact_relative_path, microphone_storage_path, system_audio_artifact_id,
-    system_audio_artifact_relative_path,
+    artifact_id, imported_artifact_id, imported_artifact_relative_path,
+    imported_temp_artifact_relative_path, microphone_artifact_relative_path,
+    microphone_storage_path, system_audio_artifact_id, system_audio_artifact_relative_path,
 };
+use crate::recording_manifest_mapping::completed_audio_artifacts_from_manifest;
 use crate::recording_streams::{
-    recording_source_for_streams, required_recording_source_for_streams, stream_label,
+    recording_source_for_streams, required_recording_source_for_streams,
 };
 use crate::whisper_setup::{
     file_modified_at_ms, is_supported_whisper_model_file_path, model_name_for_path,
@@ -2780,12 +2781,6 @@ fn cancel_active_microphone_recording(
     )
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct CompletedAudioManifestMapping {
-    completed_artifacts: Vec<CompletedAudioArtifact>,
-    completed_streams: Vec<StreamKind>,
-}
-
 fn recording_stop_permission_state(message: &str) -> AppPermissionState {
     if message.to_ascii_lowercase().contains("system audio") {
         AppPermissionState::SystemAudioUnavailable
@@ -2843,67 +2838,6 @@ fn complete_active_microphone_recording(
         active.raw_audio_retention_policy,
         recovery_action,
     ))
-}
-
-fn completed_audio_artifacts_from_manifest(
-    app_root: &Path,
-    meeting_id: &str,
-    recording_id: &str,
-    streams: &[StreamKind],
-    manifest: &ArtifactManifest,
-) -> Result<CompletedAudioManifestMapping, String> {
-    let mut completed_artifacts = Vec::new();
-    let mut completed_streams = Vec::new();
-    for artifact in &manifest.artifacts {
-        if !streams.contains(&artifact.stream) {
-            return Err(format!(
-                "{} artifact was not part of the active recording",
-                stream_label(artifact.stream)
-            ));
-        }
-        let relative_path =
-            relative_private_artifact_path(app_root, &artifact.path, artifact.stream)?;
-        let expected_path =
-            artifact_relative_path_for_stream(meeting_id, recording_id, artifact.stream);
-        if relative_path != expected_path {
-            return Err(format!(
-                "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
-                stream_label(artifact.stream)
-            ));
-        }
-        completed_streams.push(artifact.stream);
-        completed_artifacts.push(CompletedAudioArtifact {
-            artifact_id: artifact_id_for_stream(recording_id, artifact.stream),
-            sha256: artifact.sha256.clone(),
-        });
-    }
-    Ok(CompletedAudioManifestMapping {
-        completed_artifacts,
-        completed_streams,
-    })
-}
-
-fn relative_private_artifact_path(
-    app_root: &Path,
-    path: &Path,
-    stream: StreamKind,
-) -> Result<String, String> {
-    let relative_path = path.strip_prefix(app_root).map_err(|_| {
-        format!(
-            "{} artifact was written outside private app storage",
-            stream_label(stream)
-        )
-    })?;
-    if relative_path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(format!(
-            "{} artifact was written outside private app storage",
-            stream_label(stream)
-        ));
-    }
-    Ok(relative_path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
