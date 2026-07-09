@@ -10,6 +10,7 @@ mod recording_artifact_paths;
 mod recording_manifest_mapping;
 mod recording_recorder;
 mod recording_streams;
+mod recording_views;
 mod whisper_setup;
 
 use crate::calendar::{
@@ -44,6 +45,10 @@ use crate::recording_recorder::{
 use crate::recording_streams::{
     recording_source_for_streams, required_recording_source_for_streams,
 };
+use crate::recording_views::{
+    meetings_have_system_audio_transcript, microphone_capture_state, recording_dto_with_retention,
+    recording_snapshot, start_failure_recording_dto, system_audio_capture_state, CaptureStatus,
+};
 use crate::whisper_setup::{
     file_modified_at_ms, is_supported_whisper_model_file_path, model_name_for_path,
     model_status_from_settings, resolved_whisper_model_path, test_whisper_model_path_value,
@@ -62,7 +67,6 @@ use curiosity_app::{
     rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
     AppPermissionState, CalendarEventAttachmentDto, CommandRecordingDto, CommandRecordingState,
     ExportFormat, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
-    StorageLocationDto,
 };
 #[cfg(any(test, debug_assertions))]
 use curiosity_audio::{ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus};
@@ -3402,160 +3406,6 @@ fn analysis_failed(
     }
 }
 
-fn recording_snapshot(
-    app_root: &Path,
-    command_state: &DesktopCommandSnapshotState,
-) -> CommandRecordingDto {
-    if let Some(active) = &command_state.active_recording {
-        return recording_dto_with_retention(
-            &active.meeting_id,
-            Some(active.recording_id.clone()),
-            CommandRecordingState::Recording,
-            AppPermissionState::Ready,
-            microphone_storage_path(&active.meeting_id),
-            active.raw_audio_retention_policy,
-            "Recording locally to private app storage",
-        );
-    }
-    if let Some(recording) = &command_state.last_recording {
-        return recording.clone();
-    }
-    recording_dto(
-        "",
-        None,
-        CommandRecordingState::Idle,
-        AppPermissionState::Ready,
-        app_root.display().to_string(),
-        "Start a desktop recording to create private microphone and system audio WAV artifacts.",
-    )
-}
-
-fn microphone_capture_state(command_state: &DesktopCommandSnapshotState) -> DesktopPermissionState {
-    if command_state.active_recording.is_some() {
-        return DesktopPermissionState::Ready;
-    }
-    if let Some(recording) = &command_state.last_recording {
-        return match recording.permission_state {
-            AppPermissionState::Ready => DesktopPermissionState::Ready,
-            AppPermissionState::MicrophoneDenied => DesktopPermissionState::MicrophoneDenied,
-            AppPermissionState::MicrophoneUnavailable => {
-                DesktopPermissionState::MicrophoneUnavailable
-            }
-            AppPermissionState::SystemAudioDenied | AppPermissionState::SystemAudioUnavailable => {
-                DesktopPermissionState::Ready
-            }
-        };
-    }
-    DesktopPermissionState::Ready
-}
-
-fn meetings_have_system_audio_transcript(meetings: &[MeetingView]) -> bool {
-    meetings.iter().any(|meeting| {
-        meeting
-            .segments
-            .iter()
-            .any(|segment| segment.source_channel == "System")
-    })
-}
-
-fn system_audio_capture_state(
-    command_state: &DesktopCommandSnapshotState,
-    has_system_audio_transcript: bool,
-) -> DesktopPermissionState {
-    if command_state
-        .active_recording
-        .as_ref()
-        .map(|recording| recording.captures_system_audio)
-        .unwrap_or(false)
-    {
-        return DesktopPermissionState::Ready;
-    }
-    if let Some(recording) = &command_state.last_recording {
-        match recording.permission_state {
-            AppPermissionState::SystemAudioDenied => {
-                return DesktopPermissionState::SystemAudioDenied
-            }
-            AppPermissionState::SystemAudioUnavailable => {
-                return DesktopPermissionState::SystemAudioUnavailable;
-            }
-            AppPermissionState::Ready => return DesktopPermissionState::Ready,
-            AppPermissionState::MicrophoneDenied | AppPermissionState::MicrophoneUnavailable => {}
-        }
-    }
-    if has_system_audio_transcript {
-        return DesktopPermissionState::Ready;
-    }
-    #[cfg(test)]
-    {
-        DesktopPermissionState::SystemAudioUnavailable
-    }
-    #[cfg(not(test))]
-    match ScreenCaptureKitSystemAudioAdapter::status() {
-        SystemAudioAdapterStatus::Available => DesktopPermissionState::Ready,
-        SystemAudioAdapterStatus::PermissionDenied(_) => DesktopPermissionState::SystemAudioDenied,
-        SystemAudioAdapterStatus::Unavailable(_) => DesktopPermissionState::SystemAudioUnavailable,
-    }
-}
-
-fn start_failure_recording_dto(
-    app_root: &Path,
-    error: &MicrophoneStartFailure,
-) -> CommandRecordingDto {
-    recording_dto(
-        "",
-        None,
-        CommandRecordingState::Interrupted,
-        error.permission_state,
-        app_root.display().to_string(),
-        &format!(
-            "Desktop recording could not start: {} {}",
-            error.message, error.recovery_action
-        ),
-    )
-}
-
-fn recording_dto(
-    meeting_id: &str,
-    recording_id: Option<String>,
-    state: CommandRecordingState,
-    permission_state: AppPermissionState,
-    storage_path: String,
-    recovery_action: &str,
-) -> CommandRecordingDto {
-    recording_dto_with_retention(
-        meeting_id,
-        recording_id,
-        state,
-        permission_state,
-        storage_path,
-        RawAudioRetentionPolicy::Retain,
-        recovery_action,
-    )
-}
-
-fn recording_dto_with_retention(
-    meeting_id: &str,
-    recording_id: Option<String>,
-    state: CommandRecordingState,
-    permission_state: AppPermissionState,
-    storage_path: String,
-    raw_audio_retention: RawAudioRetentionPolicy,
-    recovery_action: &str,
-) -> CommandRecordingDto {
-    CommandRecordingDto {
-        meeting_id: meeting_id.to_string(),
-        recording_id,
-        state,
-        permission_state,
-        storage_location: StorageLocationDto {
-            app_private_path: storage_path,
-        },
-        raw_audio_retention,
-        recoverable: false,
-        recovery_action: recovery_action.to_string(),
-    }
-}
-
 fn audio_artifacts_for_streams(
     meeting_id: &str,
     recording_id: &str,
@@ -4026,22 +3876,6 @@ struct AppSettingsView {
     ollama_model: String,
     export_directory: Option<String>,
     raw_audio_retention_policy: RawAudioRetentionPolicy,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CaptureStatus {
-    microphone: DesktopPermissionState,
-    system_audio: DesktopPermissionState,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-enum DesktopPermissionState {
-    Ready,
-    MicrophoneDenied,
-    MicrophoneUnavailable,
-    SystemAudioDenied,
-    SystemAudioUnavailable,
 }
 
 #[derive(Clone, Debug, Serialize)]
