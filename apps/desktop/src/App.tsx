@@ -65,6 +65,7 @@ import { useDesktopTheme } from "./desktopTheme";
 import { deriveRecordingButtonTitles } from "./desktopRecordingButtonTitles";
 import { deriveSettingsButtonTitles } from "./desktopSettingsButtonTitles";
 import { deriveMeetingActionTitles } from "./desktopMeetingActionTitles";
+import { deriveTranscriptionButtonTitles } from "./desktopTranscriptionButtonTitles";
 
 import "./styles.css";
 
@@ -832,26 +833,15 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     commandBusy,
     busyCommandTitle,
   });
-  const transcribeButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !selectedMeeting
-        ? "Select a meeting before transcription."
-        : currentSnapshot.model.kind === "missing"
-          ? "Choose a local Whisper model file before transcription."
-          : currentSnapshot.model.kind === "unsupported"
-            ? "Choose a supported .bin or .gguf Whisper model file before transcription."
-          : currentSnapshot.model.kind === "untested"
-            ? "Run Test path for the saved Whisper model file before transcription."
-            : "Transcribe the selected meeting with the configured local Whisper model.";
-  const retryTranscriptionButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !whisperModelReady
-        ? transcribeButtonTitle
-        : "Retry transcription for the selected meeting.";
+  const { transcribeButtonTitle, retryTranscriptionButtonTitle } = deriveTranscriptionButtonTitles({
+    commandSurfaceReady,
+    commandUnavailableTitle,
+    commandBusy,
+    busyCommandTitle,
+    selectedMeeting,
+    modelKind: currentSnapshot.model.kind,
+    whisperModelReady,
+  });
   const selectedExportFormatLabel = exportFormatLabel(selectedExportFormat);
   const { renameButtonTitle, exportButtonTitle, deleteButtonTitle, summaryButtonTitle } =
     deriveMeetingActionTitles({
