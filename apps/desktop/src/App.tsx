@@ -6,7 +6,6 @@ import {
   FolderOpen,
   Microphone,
   Moon,
-  PencilSimple,
   ShieldCheck,
   Sun,
   Trash,
@@ -47,6 +46,7 @@ import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
 import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
+import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -59,7 +59,6 @@ import {
   formatCalendarEventMetadata,
   formatEvidenceTimestamp,
   formatMeetingCalendarAttachment,
-  formatTime,
   isActiveCommandJob,
   isSelectedActiveCommandJob,
   isSelectedRetryableJob,
@@ -358,6 +357,13 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     !editingSegmentId ||
     commandBusy ||
     !segmentDraft.trim();
+  const segmentDraftDisabled = pendingCommand === "correct-segment";
+  const saveCorrectionTitle = commandSurfaceReady
+    ? "Save the user correction for this transcript segment."
+    : commandUnavailableTitle;
+  const cancelCorrectionDisabled = pendingCommand === "correct-segment";
+  const editSegmentDisabled = !commandSurfaceReady || commandBusy;
+  const editSegmentTitle = commandSurfaceReady ? "Edit this transcript segment." : commandUnavailableTitle;
   const settingsInputDisabled = commandBusy;
   const settingsActionDisabled = commandBusy;
   const chooseWhisperModelDisabled = !commandSurfaceReady || commandBusy;
@@ -1105,85 +1111,22 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
                   />
                 ) : null}
 
-                <section className="transcript-section">
-                  <h3>Transcript</h3>
-                  <div className="segments">
-                    {selectedMeeting.segments.map((segment) => {
-                      const isEditingSegment = editingSegmentId === segment.id;
-                      const showOriginalText = Boolean(
-                        segment.originalText && segment.originalText !== segment.text,
-                      );
-
-                      return (
-                        <article key={segment.id} className="segment">
-                          <time>{formatTime(segment.startMs)}</time>
-                          <div className="segment-body">
-                            {isEditingSegment ? (
-                              <div className="segment-editor">
-                                <label className="segment-editor-field">
-                                  <span>Transcript segment text</span>
-                                  <textarea
-                                    value={segmentDraft}
-                                    onChange={(event) => setSegmentDraft(event.target.value)}
-                                    disabled={pendingCommand === "correct-segment"}
-                                  />
-                                </label>
-                                <div className="segment-editor-actions">
-                                  <button
-                                    type="button"
-                                    className="button primary"
-                                    disabled={correctionDisabled}
-                                    title={
-                                      commandSurfaceReady
-                                        ? "Save the user correction for this transcript segment."
-                                        : commandUnavailableTitle
-                                    }
-                                    onClick={saveTranscriptCorrection}
-                                  >
-                                    <CheckCircle size={16} weight="regular" />
-                                    {pendingCommand === "correct-segment" ? "Saving correction" : "Save correction"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="button quiet"
-                                    disabled={pendingCommand === "correct-segment"}
-                                    onClick={cancelTranscriptCorrection}
-                                  >
-                                    Cancel correction
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                <p>{segment.text}</p>
-                                {showOriginalText ? (
-                                  <small className="segment-original">Original: {segment.originalText}</small>
-                                ) : null}
-                              </>
-                            )}
-                          </div>
-                          <span className="segment-channel">{segment.sourceChannel}</span>
-                          {isEditingSegment ? null : (
-                            <button
-                              type="button"
-                              className="button quiet segment-edit-button"
-                              disabled={!commandSurfaceReady || commandBusy}
-                              title={
-                                commandSurfaceReady
-                                  ? "Edit this transcript segment."
-                                  : commandUnavailableTitle
-                              }
-                              onClick={() => editTranscriptSegment(segment.id, segment.text)}
-                            >
-                              <PencilSimple size={16} weight="regular" />
-                              Edit segment
-                            </button>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
+                <MeetingTranscriptSection
+                  segments={selectedMeeting.segments}
+                  editingSegmentId={editingSegmentId}
+                  segmentDraft={segmentDraft}
+                  segmentDraftDisabled={segmentDraftDisabled}
+                  correctionDisabled={correctionDisabled}
+                  saveCorrectionTitle={saveCorrectionTitle}
+                  cancelCorrectionDisabled={cancelCorrectionDisabled}
+                  editSegmentDisabled={editSegmentDisabled}
+                  editSegmentTitle={editSegmentTitle}
+                  pendingCommand={pendingCommand}
+                  onSegmentDraftChange={setSegmentDraft}
+                  onEditSegment={editTranscriptSegment}
+                  onCancelCorrection={cancelTranscriptCorrection}
+                  onSaveCorrection={saveTranscriptCorrection}
+                />
 
                 <MeetingDetailActions
                   selectedExportFormat={selectedExportFormat}
