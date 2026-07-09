@@ -6,6 +6,7 @@ mod command_outcomes;
 mod file_hashing;
 mod import_audio_validation;
 mod local_ollama;
+mod recording_artifact_paths;
 mod whisper_setup;
 
 use crate::calendar::{
@@ -24,6 +25,12 @@ use crate::local_ollama::{
     canonical_local_ollama_model_tag, local_ollama_endpoint, test_ollama_connection_value,
     validate_local_ollama_model, OllamaConnectionTestView, OllamaHttpError, OllamaHttpTransport,
     UreqOllamaHttpTransport,
+};
+use crate::recording_artifact_paths::{
+    artifact_id, artifact_id_for_stream, artifact_relative_path_for_stream, imported_artifact_id,
+    imported_artifact_relative_path, imported_temp_artifact_relative_path,
+    microphone_artifact_relative_path, microphone_storage_path, system_audio_artifact_id,
+    system_audio_artifact_relative_path,
 };
 use crate::whisper_setup::{
     file_modified_at_ms, is_supported_whisper_model_file_path, model_name_for_path,
@@ -3758,25 +3765,6 @@ fn recording_dto_with_retention(
     }
 }
 
-fn artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}")
-}
-
-fn system_audio_artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}-system")
-}
-
-fn imported_artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}-imported")
-}
-
-fn artifact_id_for_stream(recording_id: &str, stream: StreamKind) -> String {
-    match stream {
-        StreamKind::Microphone => artifact_id(recording_id),
-        StreamKind::SystemAudio => system_audio_artifact_id(recording_id),
-    }
-}
-
 fn stream_label(stream: StreamKind) -> &'static str {
     match stream {
         StreamKind::Microphone => "microphone",
@@ -3826,49 +3814,6 @@ fn audio_artifacts_for_streams(
             ),
         })
         .collect()
-}
-
-fn microphone_storage_path(meeting_id: &str) -> String {
-    format!("meetings/{meeting_id}/audio")
-}
-
-fn microphone_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/raw-mic.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn system_audio_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/raw-system.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn imported_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/imported.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn imported_temp_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/imported.wav.tmp",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn artifact_relative_path_for_stream(
-    meeting_id: &str,
-    recording_id: &str,
-    stream: StreamKind,
-) -> String {
-    match stream {
-        StreamKind::Microphone => microphone_artifact_relative_path(meeting_id, recording_id),
-        StreamKind::SystemAudio => system_audio_artifact_relative_path(meeting_id, recording_id),
-    }
 }
 
 fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidanceView {
