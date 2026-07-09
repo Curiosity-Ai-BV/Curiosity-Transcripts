@@ -72,6 +72,10 @@ jobs:
         run: ./scripts/build-macos-dmg.sh
 
       - name: Stage latest DMG artifact
+        env:
+          PAGES_REF_NAME: ${{ github.ref_name }}
+          PAGES_GIT_SHA: ${{ github.sha }}
+          PAGES_GIT_REF: ${{ github.ref }}
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
 
@@ -83,15 +87,20 @@ jobs:
 
           mkdir -p pages-download
           dmg_path="apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_${version}_aarch64.dmg"
+          latest_asset="pages-download/Curiosity-Transcripts-latest.dmg"
+          provenance_path="pages-download/Curiosity-Transcripts-latest.provenance.json"
           if [ ! -f "$dmg_path" ]; then
             echo "::error::Expected DMG was not produced: $dmg_path"
             exit 1
           fi
-          cp "$dmg_path" pages-download/Curiosity-Transcripts-latest.dmg
+          cp "$dmg_path" "$latest_asset"
 
           hdiutil verify pages-download/Curiosity-Transcripts-latest.dmg
+          hdiutil_verify_status="passed"
           xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg
+          stapler_validation_status="passed"
           spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg
+          dmg_gatekeeper_assessment_status="passed"
           mount_dir="$(mktemp -d)"
           cleanup_mount() {
             if [ -n "${mount_dir:-}" ] && [ -d "$mount_dir" ]; then
@@ -105,18 +114,79 @@ jobs:
             echo "::error::Pages latest DMG is missing Curiosity Transcripts.app"
             exit 1
           fi
+          readonly_attach_app_presence_status="passed"
           codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          app_codesign_verification_status="passed"
           spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
+          app_gatekeeper_assessment_status="passed"
           hdiutil detach "$mount_dir"
           rm -rf "$mount_dir"
           mount_dir=""
           trap - EXIT
 
+          checksum_line="$(shasum -a 256 "$latest_asset")"
+          checksum="${checksum_line%% *}"
+          printf '%s  %s\n' "$checksum" "$(basename "$latest_asset")" | tee "$latest_asset.sha256"
+
+          GITHUB_REF_NAME_VALUE="$PAGES_REF_NAME" \
+          GITHUB_SHA_VALUE="$PAGES_GIT_SHA" \
+          GITHUB_REF_VALUE="$PAGES_GIT_REF" \
+          RUNNER_ARCH="$runner_arch" \
+          DMG_ASSET_PATH="$latest_asset" \
+          DMG_SHA256="$checksum" \
+          HDIUTIL_VERIFY_STATUS="$hdiutil_verify_status" \
+          STAPLER_VALIDATION_STATUS="$stapler_validation_status" \
+          DMG_GATEKEEPER_ASSESSMENT_STATUS="$dmg_gatekeeper_assessment_status" \
+          READONLY_ATTACH_APP_PRESENCE_STATUS="$readonly_attach_app_presence_status" \
+          APP_CODESIGN_VERIFICATION_STATUS="$app_codesign_verification_status" \
+          APP_GATEKEEPER_ASSESSMENT_STATUS="$app_gatekeeper_assessment_status" \
+          PAGES_VERSION="$version" \
+          PROVENANCE_PATH="$provenance_path" \
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const provenance = {
+            "kind": "curiosity-transcripts-pages-latest-provenance",
+            "schema_version": 1,
+            "app": {
+              "name": "Curiosity Transcripts",
+              "version": process.env.PAGES_VERSION,
+            },
+            "pages_latest": {
+              "github_ref_name": process.env.GITHUB_REF_NAME_VALUE,
+              "github_sha": process.env.GITHUB_SHA_VALUE,
+              "github_ref": process.env.GITHUB_REF_VALUE,
+            },
+            "runner": {
+              "runner_architecture": process.env.RUNNER_ARCH,
+            },
+            "asset": {
+              "dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH),
+              "dmg_asset_path": process.env.DMG_ASSET_PATH,
+              "dmg_sha256": process.env.DMG_SHA256,
+            },
+            "verification": {
+              "hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS,
+              "stapler_validation": process.env.STAPLER_VALIDATION_STATUS,
+              "dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS,
+              "readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS,
+              "app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS,
+              "app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS,
+            },
+          };
+
+          fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
+          NODE
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: curiosity-transcripts-dmg
-          path: pages-download/Curiosity-Transcripts-latest.dmg
+          path: |
+            pages-download/Curiosity-Transcripts-latest.dmg
+            pages-download/Curiosity-Transcripts-latest.dmg.sha256
+            pages-download/Curiosity-Transcripts-latest.provenance.json
           if-no-files-found: error
 
   build-pages:
@@ -133,7 +203,14 @@ jobs:
           path: site/downloads
 
       - name: Verify Pages download path
-        run: test -s site/downloads/Curiosity-Transcripts-latest.dmg
+        run: |
+          test -s site/downloads/Curiosity-Transcripts-latest.dmg
+          test -s site/downloads/Curiosity-Transcripts-latest.dmg.sha256
+          test -s site/downloads/Curiosity-Transcripts-latest.provenance.json
+          (
+            cd site/downloads
+            shasum -a 256 -c Curiosity-Transcripts-latest.dmg.sha256
+          )
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

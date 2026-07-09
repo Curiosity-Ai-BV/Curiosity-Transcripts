@@ -18,7 +18,11 @@ const requiredText = [
   "filled smoke evidence validation",
   "https://curiosityai.nl",
   "downloads/Curiosity-Transcripts-latest.dmg",
+  "downloads/Curiosity-Transcripts-latest.dmg.sha256",
+  "downloads/Curiosity-Transcripts-latest.provenance.json",
   "Curiosity-Transcripts-latest.dmg",
+  "Curiosity-Transcripts-latest.dmg.sha256",
+  "Curiosity-Transcripts-latest.provenance.json",
 ];
 
 const forbiddenText = [
@@ -66,6 +70,8 @@ for (const text of [
   "latest public DMG is manually published after the signed/notarized workflow",
   "filled smoke evidence validation",
   'href="downloads/Curiosity-Transcripts-latest.dmg"',
+  'href="downloads/Curiosity-Transcripts-latest.dmg.sha256"',
+  'href="downloads/Curiosity-Transcripts-latest.provenance.json"',
 ]) {
   if (!downloadSection.includes(text)) {
     console.error(`::error file=site/index.html::Download section is missing required content: ${text}`);

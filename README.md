@@ -348,6 +348,13 @@ When confirmed, GitHub Actions runs the signing job in the protected
 `macos-signing` environment, builds the Developer ID signed and notarized macOS
 DMG on a macOS 26 runner, copies it into the Pages artifact, and updates the
 stable download link at `downloads/Curiosity-Transcripts-latest.dmg`.
+The Pages artifact also publishes
+`downloads/Curiosity-Transcripts-latest.dmg.sha256` and
+`downloads/Curiosity-Transcripts-latest.provenance.json` beside the moving
+latest DMG so maintainers and users can inspect the checksum, source ref/SHA,
+runner architecture, asset path, and automated DMG/app verification statuses.
+Those latest-DMG evidence files do not replace filled manual smoke evidence,
+release governance sign-off, or immutable versioned GitHub Release assets.
 
 The public page describes the local-first MVP, links back to the source, and
 credits CuriosityAI at `https://curiosityai.nl`.
@@ -368,13 +375,19 @@ does not match the app metadata fails before upload.
 
 The GitHub Pages workflow keeps the moving latest download at
 `downloads/Curiosity-Transcripts-latest.dmg` when manually dispatched after the
-signed/notarized workflow path and filled smoke evidence validation. Versioned
-distribution happens through GitHub Release assets. The release workflow
+signed/notarized workflow path and filled smoke evidence validation. The moving
+Pages download is accompanied by
+`downloads/Curiosity-Transcripts-latest.dmg.sha256` and
+`downloads/Curiosity-Transcripts-latest.provenance.json`; these are latest-DMG
+publication evidence, not a substitute for manual smoke or versioned release
+evidence. Versioned distribution happens through GitHub Release assets. The
+release workflow
 uploads:
 
 ```text
 Curiosity-Transcripts-<version>-macos-aarch64.dmg
 Curiosity-Transcripts-<version>-macos-aarch64.dmg.sha256
+Curiosity-Transcripts-<version>-macos-aarch64.provenance.json
 ```
 
 Release DMGs are Developer ID signed and notarized before upload. Local

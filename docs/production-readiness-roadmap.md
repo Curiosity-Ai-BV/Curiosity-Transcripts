@@ -91,7 +91,13 @@ Slice 0 public source-of-truth decisions:
   as a Developer ID signed and notarized artifact, then the copied latest DMG
   goes through the same hdiutil, stapling, Gatekeeper, read-only attach, and
   mounted app signature checks as the versioned release asset before
-  publication.
+  publication. The Pages artifact publishes
+  `Curiosity-Transcripts-latest.dmg.sha256` and the Pages latest provenance manifest
+  `Curiosity-Transcripts-latest.provenance.json` beside the moving DMG.
+  That manifest records the app version, GitHub ref/SHA, runner architecture,
+  latest DMG asset path, matching SHA-256, and automated verification statuses.
+  It is latest-download evidence only; it does not replace manual smoke,
+  governance sign-off, or immutable versioned GitHub Release evidence.
 - First public release architecture: arm64-only macOS DMG. The versioned
   GitHub Release asset is `macos-aarch64`; x64 and universal builds are out of
   scope until a later slice changes workflows, QA, and public copy together.

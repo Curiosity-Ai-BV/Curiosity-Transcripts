@@ -17,6 +17,14 @@ manifest names the uploaded DMG, repeats the same SHA-256 checksum, and records
 passed automated verification statuses for hdiutil verify, stapler validation,
 DMG Gatekeeper assessment, read-only attach/app presence, app codesign
 verification, and app Gatekeeper assessment.
+When publishing the Pages latest DMG, confirm the deployed download directory
+contains `Curiosity-Transcripts-latest.dmg`,
+`Curiosity-Transcripts-latest.dmg.sha256`, and
+`Curiosity-Transcripts-latest.provenance.json`, and that the checksum validates
+the moving latest DMG. Treat those Pages latest evidence files as publication
+evidence for the stable download link only; they do not replace filled manual
+smoke evidence, release governance sign-off, or the immutable versioned GitHub
+Release assets.
 
 Use `docs/release-candidate-smoke-evidence.template.json` as the starting point
 for manual smoke evidence. Validate the checked-in template with no path:

@@ -375,6 +375,21 @@
         line-height: 1.55;
       }
 
+      .download-actions {
+        display: grid;
+        gap: 10px;
+        justify-items: start;
+      }
+
+      .evidence-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        color: var(--accent-strong);
+        font-size: 0.9rem;
+        font-weight: 700;
+      }
+
       footer {
         padding: 34px 0 52px;
         color: var(--muted);
@@ -597,9 +612,19 @@
               signature, and Gatekeeper assessment before publication.
             </p>
           </div>
-          <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
-            Curiosity-Transcripts-latest.dmg
-          </a>
+          <div class="download-actions">
+            <a class="button" href="downloads/Curiosity-Transcripts-latest.dmg" download>
+              Curiosity-Transcripts-latest.dmg
+            </a>
+            <div class="evidence-links" aria-label="Latest DMG evidence">
+              <a href="downloads/Curiosity-Transcripts-latest.dmg.sha256" download>
+                Curiosity-Transcripts-latest.dmg.sha256
+              </a>
+              <a href="downloads/Curiosity-Transcripts-latest.provenance.json" download>
+                Curiosity-Transcripts-latest.provenance.json
+              </a>
+            </div>
+          </div>
         </div>
       </section>
     </main>

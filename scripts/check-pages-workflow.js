@@ -20,19 +20,59 @@ const requiredText = [
   "macos-aarch64",
   'dmg_path="apps/desktop/src-tauri/target/release/bundle/dmg/Curiosity Transcripts_${version}_aarch64.dmg"',
   '[ ! -f "$dmg_path" ]',
-  'cp "$dmg_path" pages-download/Curiosity-Transcripts-latest.dmg',
+  'latest_asset="pages-download/Curiosity-Transcripts-latest.dmg"',
+  'provenance_path="pages-download/Curiosity-Transcripts-latest.provenance.json"',
+  'cp "$dmg_path" "$latest_asset"',
   "hdiutil verify pages-download/Curiosity-Transcripts-latest.dmg",
+  'hdiutil_verify_status="passed"',
   "xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg",
+  'stapler_validation_status="passed"',
   "spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg",
+  'dmg_gatekeeper_assessment_status="passed"',
   'hdiutil attach pages-download/Curiosity-Transcripts-latest.dmg -readonly -nobrowse -mountpoint "$mount_dir"',
   '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
+  'readonly_attach_app_presence_status="passed"',
   'codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"',
+  'app_codesign_verification_status="passed"',
   'spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"',
+  'app_gatekeeper_assessment_status="passed"',
   'hdiutil detach "$mount_dir"',
   'rm -rf "$mount_dir"',
+  'shasum -a 256 "$latest_asset"',
+  'printf \'%s  %s\\n\' "$checksum" "$(basename "$latest_asset")" | tee "$latest_asset.sha256"',
+  '"kind": "curiosity-transcripts-pages-latest-provenance"',
+  '"schema_version": 1',
+  '"version": process.env.PAGES_VERSION',
+  '"github_ref_name": process.env.GITHUB_REF_NAME_VALUE',
+  '"github_sha": process.env.GITHUB_SHA_VALUE',
+  '"github_ref": process.env.GITHUB_REF_VALUE',
+  "PAGES_REF_NAME:",
+  "PAGES_GIT_SHA:",
+  "PAGES_GIT_REF:",
+  "PAGES_REF_NAME: ${{ github.ref_name }}",
+  "PAGES_GIT_SHA: ${{ github.sha }}",
+  "PAGES_GIT_REF: ${{ github.ref }}",
+  'GITHUB_REF_NAME_VALUE="$PAGES_REF_NAME"',
+  'GITHUB_SHA_VALUE="$PAGES_GIT_SHA"',
+  'GITHUB_REF_VALUE="$PAGES_GIT_REF"',
+  '"runner_architecture": process.env.RUNNER_ARCH',
+  '"dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH)',
+  '"dmg_asset_path": process.env.DMG_ASSET_PATH',
+  '"dmg_sha256": process.env.DMG_SHA256',
+  '"hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS',
+  '"stapler_validation": process.env.STAPLER_VALIDATION_STATUS',
+  '"dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS',
+  '"readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS',
+  '"app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS',
+  '"app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS',
+  "Curiosity-Transcripts-latest.dmg.sha256",
+  "Curiosity-Transcripts-latest.provenance.json",
   "actions/upload-artifact@v4",
   "actions/download-artifact@v4",
   "downloads/Curiosity-Transcripts-latest.dmg",
+  "downloads/Curiosity-Transcripts-latest.dmg.sha256",
+  "downloads/Curiosity-Transcripts-latest.provenance.json",
+  "shasum -a 256 -c Curiosity-Transcripts-latest.dmg.sha256",
   "actions/configure-pages@v5",
   "actions/upload-pages-artifact@v3",
   "actions/deploy-pages@v4",
@@ -156,8 +196,60 @@ function rangeText(lines, range) {
   return range ? lines.slice(range.line, range.end).join("\n") : "";
 }
 
+function findStepBlockContaining(lines, range, text, description) {
+  if (!range) {
+    return null;
+  }
+
+  for (let index = range.start; index < range.end; index += 1) {
+    if (!/^ {6}- /.test(lines[index])) {
+      continue;
+    }
+
+    let end = range.end;
+    for (let next = index + 1; next < range.end; next += 1) {
+      if (lines[next].trim() !== "" && indentation(lines[next]) <= 6) {
+        end = next;
+        break;
+      }
+    }
+
+    const stepText = lines.slice(index, end).join("\n");
+    if (stepText.includes(text)) {
+      return { line: index, start: index + 1, end, text: stepText };
+    }
+  }
+
+  console.error(`::error file=.github/workflows/pages.yml::Missing ${description}`);
+  ok = false;
+  return null;
+}
+
+function requireStepWithText(step, text, description) {
+  if (!step) {
+    return;
+  }
+
+  const withRange = findKeyRange(workflowLines, "with", 8, step.start, step.end);
+  const withText = rangeText(workflowLines, withRange);
+  if (!withRange || !withText.includes(text)) {
+    console.error(`::error file=.github/workflows/pages.yml::Missing ${description}`);
+    ok = false;
+  }
+}
+
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function firstLineContaining(text, needle) {
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].includes(needle)) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function stepBlocksBeforeCheckout(lines, range) {
@@ -265,6 +357,9 @@ const jobsRange = requireKeyRange(workflowLines, "jobs", 0, 0, workflowLines.len
 const buildJobRange = jobsRange
   ? requireKeyRange(workflowLines, "build-macos-dmg", 2, jobsRange.start, jobsRange.end, "build-macos-dmg job")
   : null;
+const buildPagesJobRange = jobsRange
+  ? requireKeyRange(workflowLines, "build-pages", 2, jobsRange.start, jobsRange.end, "build-pages job")
+  : null;
 const environmentRange = buildJobRange
   ? requireKeyRange(workflowLines, "environment", 4, buildJobRange.start, buildJobRange.end, "macOS signing environment")
   : null;
@@ -306,6 +401,83 @@ if (signingCredentialsStepLine === -1 || buildDmgStepLine === -1 || signingCrede
 if (hasAdHocDmgBuildRunCommand(workflowText)) {
   console.error("::error file=.github/workflows/pages.yml::Public Pages workflow must not use ad-hoc DMG signing bypasses");
   ok = false;
+}
+
+const uploadArtifactStep = findStepBlockContaining(
+  workflowLines,
+  buildJobRange,
+  "uses: actions/upload-artifact@v4",
+  "DMG upload artifact step",
+);
+for (const [text, description] of [
+  ["name: curiosity-transcripts-dmg", "DMG upload artifact name"],
+  ["path: |", "DMG upload multiline path block"],
+  ["pages-download/Curiosity-Transcripts-latest.dmg", "latest DMG upload path"],
+  ["pages-download/Curiosity-Transcripts-latest.dmg.sha256", "latest checksum upload path"],
+  ["pages-download/Curiosity-Transcripts-latest.provenance.json", "latest provenance upload path"],
+  ["if-no-files-found: error", "DMG upload missing-file failure policy"],
+]) {
+  requireStepWithText(uploadArtifactStep, text, description);
+}
+
+const downloadArtifactStep = findStepBlockContaining(
+  workflowLines,
+  buildPagesJobRange,
+  "uses: actions/download-artifact@v4",
+  "DMG download artifact step",
+);
+for (const [text, description] of [
+  ["name: curiosity-transcripts-dmg", "DMG download artifact name"],
+  ["path: site/downloads", "DMG download target path"],
+]) {
+  requireStepWithText(downloadArtifactStep, text, description);
+}
+
+const pagesWorkflowOrdering = [
+  [
+    "hdiutil verify pages-download/Curiosity-Transcripts-latest.dmg",
+    'hdiutil_verify_status="passed"',
+    "hdiutil verify status must be recorded only after hdiutil verify succeeds",
+  ],
+  [
+    "xcrun stapler validate pages-download/Curiosity-Transcripts-latest.dmg",
+    'stapler_validation_status="passed"',
+    "stapler validation status must be recorded only after stapler validation succeeds",
+  ],
+  [
+    "spctl -a -vvv -t open --context context:primary-signature pages-download/Curiosity-Transcripts-latest.dmg",
+    'dmg_gatekeeper_assessment_status="passed"',
+    "DMG Gatekeeper assessment status must be recorded only after spctl open succeeds",
+  ],
+  [
+    '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
+    'readonly_attach_app_presence_status="passed"',
+    "read-only attach/app presence status must be recorded only after the mounted app exists",
+  ],
+  [
+    'codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"',
+    'app_codesign_verification_status="passed"',
+    "app codesign status must be recorded only after codesign verification succeeds",
+  ],
+  [
+    'spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"',
+    'app_gatekeeper_assessment_status="passed"',
+    "app Gatekeeper assessment status must be recorded only after spctl exec succeeds",
+  ],
+  [
+    'shasum -a 256 "$latest_asset"',
+    "fs.writeFileSync(process.env.PROVENANCE_PATH",
+    "Pages latest provenance manifest must be written only after the DMG checksum is generated",
+  ],
+];
+
+for (const [beforeText, afterText, message] of pagesWorkflowOrdering) {
+  const beforeLine = firstLineContaining(workflowText, beforeText);
+  const afterLine = firstLineContaining(workflowText, afterText);
+  if (beforeLine === -1 || afterLine === -1 || beforeLine >= afterLine) {
+    console.error(`::error file=.github/workflows/pages.yml::${message}`);
+    ok = false;
+  }
 }
 
 if (/ubuntu-latest[\s\S]*build-macos-dmg\.sh/.test(workflowText)) {
