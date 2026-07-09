@@ -1143,6 +1143,9 @@ where
     T: OllamaHttpTransport,
 {
     let result = test_ollama_connection_value(&base_url, &model, transport);
+    if local_ollama_endpoint(&base_url, "/api/tags").is_err() {
+        return Ok(result);
+    }
     let evidence = OllamaConnectionTestEvidence {
         base_url: base_url.trim().to_string(),
         requested_model: canonical_local_ollama_model_tag(&model),
@@ -5270,9 +5273,20 @@ fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientErr
 }
 
 fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisClientError> {
-    let mut url = Url::parse(base_url.trim()).map_err(|error| {
+    let base_url = base_url.trim();
+    let mut url = Url::parse(base_url).map_err(|error| {
         AnalysisClientError::Transport(format!("Ollama base URL is invalid: {error}"))
     })?;
+    let local_url_error =
+        "Ollama base URL must be a local loopback http(s) URL without credentials, query, or fragment.";
+    if has_explicit_url_userinfo(base_url)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
+    }
     let is_loopback = match url.host_str() {
         Some("localhost") => true,
         Some(host) => host
@@ -5282,23 +5296,27 @@ fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisC
         None => false,
     };
     if !is_loopback {
-        return Err(AnalysisClientError::Transport(
-            "Ollama base URL must use localhost or a loopback IP address for local analysis."
-                .to_string(),
-        ));
+        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
     }
     match url.scheme() {
         "http" | "https" => {}
-        _ => {
-            return Err(AnalysisClientError::Transport(
-                "Ollama base URL must use http or https.".to_string(),
-            ))
-        }
+        _ => return Err(AnalysisClientError::Transport(local_url_error.to_string())),
     }
     url.set_path(path);
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
+}
+
+fn has_explicit_url_userinfo(url: &str) -> bool {
+    let Some(authority_start) = url.find("://").map(|index| index + 3) else {
+        return false;
+    };
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|index| authority_start + index)
+        .unwrap_or(url.len());
+    url[authority_start..authority_end].contains('@')
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -6567,6 +6585,45 @@ mod tests {
     }
 
     #[test]
+    fn save_analysis_settings_rejects_secret_bearing_local_ollama_urls_without_mutating_settings() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        save_analysis_settings_for_app_root(
+            &root,
+            "http://localhost:11435".to_string(),
+            "gemma4:31b".to_string(),
+        )
+        .expect("save baseline");
+
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://user@localhost:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let error = save_analysis_settings_for_app_root(
+                &root,
+                base_url.to_string(),
+                "qwen3.6:27b".to_string(),
+            )
+            .expect_err("secret-bearing local Ollama URL should not be saved");
+            assert!(
+                error.contains("local loopback")
+                    && error.contains("without credentials, query, or fragment"),
+                "unexpected error for {base_url}: {error}"
+            );
+        }
+
+        let settings = get_settings_for_app_root(&root).expect("settings after rejected saves");
+        assert_eq!(settings.ollama_base_url, "http://localhost:11435");
+        assert_eq!(settings.ollama_model, "gemma4:31b");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn explicit_setup_test_fails_loudly_when_evidence_cannot_be_persisted() {
         let root = unique_test_root();
         fs::write(&root, b"not a directory").expect("blocking file");
@@ -6676,6 +6733,32 @@ mod tests {
 
         assert!(error.to_string().contains("loopback"));
         assert_eq!(transport.generate_call_count(), 0);
+    }
+
+    #[test]
+    fn local_ollama_client_rejects_secret_bearing_base_url_before_transport_call() {
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let transport = RecordingOllamaTransport::generate_response(r#"{"response":"{}"}"#);
+            let client = LocalOllamaTextClient::new(base_url, transport.clone());
+
+            let error = client
+                .complete("qwen3.6:27b", "summarize locally")
+                .expect_err("secret-bearing local Ollama URL should be rejected");
+
+            let error = error.to_string();
+            assert!(
+                error.contains("local loopback")
+                    && error.contains("without credentials, query, or fragment"),
+                "unexpected error for {base_url}: {error}"
+            );
+            assert_eq!(transport.generate_call_count(), 0);
+        }
     }
 
     #[test]
@@ -6819,6 +6902,63 @@ mod tests {
         assert_eq!(result.selected_local_model_tag, None);
         assert_eq!(result.installed_local_models, None);
         assert_eq!(result.pull_command, None);
+    }
+
+    #[test]
+    fn test_ollama_connection_rejects_secret_bearing_base_url_before_transport_call() {
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        for base_url in [
+            "http://user:pass@127.0.0.1:11434",
+            "http://@127.0.0.1:11434",
+            "http://:@127.0.0.1:11434",
+            "http://127.0.0.1:11434?token=secret",
+            "http://127.0.0.1:11434/#token",
+        ] {
+            let result = test_ollama_connection_value(base_url, "qwen3.6:27b", &transport);
+
+            assert_eq!(result.state, "Unavailable");
+            assert!(
+                result.message.contains("local loopback")
+                    && result
+                        .message
+                        .contains("without credentials, query, or fragment"),
+                "unexpected message for {base_url}: {}",
+                result.message
+            );
+            assert_eq!(result.installed_local_models, None);
+            assert_eq!(result.pull_command, None);
+        }
+
+        assert_eq!(transport.tags_call_count(), 0);
+    }
+
+    #[test]
+    fn test_ollama_connection_does_not_persist_secret_bearing_base_url_evidence() {
+        let root = unique_test_root();
+        fs::create_dir_all(&root).expect("test root");
+        let transport =
+            RecordingOllamaTransport::tags_response(r#"{"models":[{"name":"qwen3.6:27b"}]}"#);
+
+        let result = test_ollama_connection_for_app_root(
+            &root,
+            "http://user:pass@127.0.0.1:11434?token=secret".to_string(),
+            "qwen3.6:27b".to_string(),
+            &transport,
+            1_700_000_001_000,
+        )
+        .expect("invalid test should return feedback without persisting evidence");
+        let settings = app_settings_for_app_root(&root).expect("settings");
+
+        assert_eq!(result.state, "Unavailable");
+        assert!(result
+            .message
+            .contains("without credentials, query, or fragment"));
+        assert_eq!(transport.tags_call_count(), 0);
+        assert_eq!(settings.ollama_connection_test_evidence, None);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -11566,6 +11706,7 @@ mod tests {
         generate_response: Option<Result<serde_json::Value, OllamaHttpError>>,
         tags_response: Option<Result<serde_json::Value, OllamaHttpError>>,
         generate_requests: Vec<RecordedOllamaRequest>,
+        tags_requests: Vec<String>,
     }
 
     #[derive(Clone)]
@@ -11645,6 +11786,14 @@ mod tests {
                 .generate_requests
                 .len()
         }
+
+        fn tags_call_count(&self) -> usize {
+            self.state
+                .lock()
+                .expect("transport state")
+                .tags_requests
+                .len()
+        }
     }
 
     impl OllamaHttpTransport for RecordingOllamaTransport {
@@ -11665,17 +11814,14 @@ mod tests {
             })
         }
 
-        fn get_json(&self, _url: &str) -> Result<serde_json::Value, OllamaHttpError> {
-            self.state
-                .lock()
-                .expect("transport state")
-                .tags_response
-                .clone()
-                .unwrap_or_else(|| {
-                    Err(OllamaHttpError::Unavailable(
-                        "missing tags response".to_string(),
-                    ))
-                })
+        fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError> {
+            let mut state = self.state.lock().expect("transport state");
+            state.tags_requests.push(url.to_string());
+            state.tags_response.clone().unwrap_or_else(|| {
+                Err(OllamaHttpError::Unavailable(
+                    "missing tags response".to_string(),
+                ))
+            })
         }
     }
 
