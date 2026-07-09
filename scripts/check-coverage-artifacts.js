@@ -76,6 +76,11 @@ const desktopComponentSeamRequiredPaths = [
     alternatives: ["src/desktopSettingsForm.tsx"],
     requiredFunctions: ["DesktopSettingsForm"],
   },
+  {
+    expected: "apps/desktop/src/desktopTopbar.tsx",
+    alternatives: ["src/desktopTopbar.tsx"],
+    requiredFunctions: ["DesktopTopbar"],
+  },
 ];
 
 const artifacts = [
@@ -948,6 +953,19 @@ function runSelfTests() {
       ),
     ),
     "Missing coverage source path apps/desktop/src/desktopCommandOutcomes.tsx",
+  );
+  expectRejected(
+    "missing topbar component source",
+    frontendComponentArtifact,
+    lcov(
+      positiveRecordsForRequiredPaths(
+        desktopComponentSeamRequiredPaths.filter(
+          (requiredPath) =>
+            requiredPath.expected !== "apps/desktop/src/desktopTopbar.tsx",
+        ),
+      ),
+    ),
+    "Missing coverage source path apps/desktop/src/desktopTopbar.tsx",
   );
   expectRejected(
     "missing extracted component function evidence",

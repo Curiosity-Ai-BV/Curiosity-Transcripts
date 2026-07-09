@@ -20,6 +20,7 @@ export default defineConfig({
         "src/App.tsx",
         "src/commandAdapter.ts",
         "src/desktopContract.ts",
+        "src/desktopTopbar.tsx",
         "src/desktopRecordingControls.tsx",
         "src/desktopMeetingDetailHeader.tsx",
         "src/desktopMeetingPrivacyRow.tsx",

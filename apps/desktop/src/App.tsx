@@ -1,8 +1,3 @@
-import {
-  Moon,
-  Sun,
-  Waveform,
-} from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 
@@ -39,6 +34,7 @@ import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
 import { DesktopSettingsForm } from "./desktopSettingsForm";
 import type { SettingsFeedback } from "./desktopSettingsFeedback";
+import { DesktopTopbar } from "./desktopTopbar";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -1012,33 +1008,12 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   return (
     <main className="app-shell" data-theme={theme}>
       <section className="workspace" aria-label="Transcript workspace">
-        <header className="topbar">
-          <div className="brand-lockup">
-            <span className="brand-mark" aria-hidden="true">
-              <Waveform size={22} weight="fill" />
-            </span>
-            <div>
-              <p className="eyebrow">Curiosity Transcripts</p>
-              <h1>Transcript workspace</h1>
-            </div>
-          </div>
-          <div className="topbar-controls" aria-label="Workspace controls">
-            <span className="version-badge" aria-label={`Version ${appVersion}`}>
-              v{appVersion}
-            </span>
-            <button
-              type="button"
-              className="theme-toggle"
-              aria-label={themeButtonLabel}
-              aria-pressed={isLightTheme}
-              title={themeButtonLabel}
-              onClick={toggleTheme}
-            >
-              {isLightTheme ? <Moon size={16} weight="regular" /> : <Sun size={16} weight="regular" />}
-              <span>{isLightTheme ? "Dark" : "Light"}</span>
-            </button>
-          </div>
-        </header>
+        <DesktopTopbar
+          appVersion={appVersion}
+          isLightTheme={isLightTheme}
+          themeButtonLabel={themeButtonLabel}
+          onToggleTheme={toggleTheme}
+        />
 
         <DesktopCommandOutcomes
           commandError={commandError}
