@@ -58,6 +58,10 @@ jobs:
 
       - name: Stage versioned release assets
         id: stage_assets
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_GIT_SHA: ${{ github.sha }}
+          RELEASE_GIT_REF: ${{ github.ref }}
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
 
@@ -75,11 +79,15 @@ jobs:
           fi
 
           release_asset="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.dmg"
+          provenance_path="release-assets/Curiosity-Transcripts-${version}-macos-aarch64.provenance.json"
           cp "$dmg_path" "$release_asset"
 
           hdiutil verify "$release_asset"
+          hdiutil_verify_status="passed"
           xcrun stapler validate "$release_asset"
+          stapler_validation_status="passed"
           spctl -a -vvv -t open --context context:primary-signature "$release_asset"
+          dmg_gatekeeper_assessment_status="passed"
           mount_dir="$(mktemp -d)"
           hdiutil attach "$release_asset" -readonly -nobrowse -mountpoint "$mount_dir"
           if [ ! -d "$mount_dir/Curiosity Transcripts.app" ]; then
@@ -88,16 +96,73 @@ jobs:
             rm -rf "$mount_dir"
             exit 1
           fi
+          readonly_attach_app_presence_status="passed"
           codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"
+          app_codesign_verification_status="passed"
           spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"
+          app_gatekeeper_assessment_status="passed"
           hdiutil detach "$mount_dir"
           rm -rf "$mount_dir"
 
-          shasum -a 256 "$release_asset" | tee "$release_asset.sha256"
+          checksum_line="$(shasum -a 256 "$release_asset")"
+          printf '%s\n' "$checksum_line" | tee "$release_asset.sha256"
+          checksum="${checksum_line%% *}"
+
+          GITHUB_REF_NAME_VALUE="$RELEASE_REF_NAME" \
+          GITHUB_SHA_VALUE="$RELEASE_GIT_SHA" \
+          GITHUB_REF_VALUE="$RELEASE_GIT_REF" \
+          RUNNER_ARCH="$runner_arch" \
+          DMG_ASSET_PATH="$release_asset" \
+          DMG_SHA256="$checksum" \
+          HDIUTIL_VERIFY_STATUS="$hdiutil_verify_status" \
+          STAPLER_VALIDATION_STATUS="$stapler_validation_status" \
+          DMG_GATEKEEPER_ASSESSMENT_STATUS="$dmg_gatekeeper_assessment_status" \
+          READONLY_ATTACH_APP_PRESENCE_STATUS="$readonly_attach_app_presence_status" \
+          APP_CODESIGN_VERIFICATION_STATUS="$app_codesign_verification_status" \
+          APP_GATEKEEPER_ASSESSMENT_STATUS="$app_gatekeeper_assessment_status" \
+          RELEASE_VERSION="$version" \
+          PROVENANCE_PATH="$provenance_path" \
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const provenance = {
+            "kind": "curiosity-transcripts-release-provenance",
+            "schema_version": 1,
+            "app": {
+              "name": "Curiosity Transcripts",
+              "version": process.env.RELEASE_VERSION,
+            },
+            "release": {
+              "github_ref_name": process.env.GITHUB_REF_NAME_VALUE,
+              "github_sha": process.env.GITHUB_SHA_VALUE,
+              "github_ref": process.env.GITHUB_REF_VALUE,
+            },
+            "runner": {
+              "runner_architecture": process.env.RUNNER_ARCH,
+            },
+            "asset": {
+              "dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH),
+              "dmg_asset_path": process.env.DMG_ASSET_PATH,
+              "dmg_sha256": process.env.DMG_SHA256,
+            },
+            "verification": {
+              "hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS,
+              "stapler_validation": process.env.STAPLER_VALIDATION_STATUS,
+              "dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS,
+              "readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS,
+              "app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS,
+              "app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS,
+            },
+          };
+
+          fs.writeFileSync(process.env.PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
+          NODE
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "asset_path=$release_asset" >> "$GITHUB_OUTPUT"
           echo "checksum_path=$release_asset.sha256" >> "$GITHUB_OUTPUT"
+          echo "provenance_path=$provenance_path" >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub Release
         env:
@@ -106,6 +171,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.stage_assets.outputs.version }}
           ASSET_PATH: ${{ steps.stage_assets.outputs.asset_path }}
           CHECKSUM_PATH: ${{ steps.stage_assets.outputs.checksum_path }}
+          PROVENANCE_PATH: ${{ steps.stage_assets.outputs.provenance_path }}
         run: |
           release_notes="$(mktemp)"
           {
@@ -115,6 +181,7 @@ jobs:
             echo "- arm64-only macOS DMG for the first public release target."
             echo "- Developer ID signed and notarized macOS DMG."
             echo "- SHA-256 checksum asset uploaded beside the DMG: $(basename "$CHECKSUM_PATH")."
+            echo "- Release provenance manifest uploaded beside the DMG: $(basename "$PROVENANCE_PATH")."
             echo
             echo "Automated verification:"
             echo "- The workflow verifies the disk image, stapled notarization ticket, app bundle signature, and Gatekeeper assessment before upload."
@@ -153,4 +220,4 @@ jobs:
           fi
 
           rm -f "$release_view_error"
-          gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" --clobber
+          gh release upload "$RELEASE_TAG" "$ASSET_PATH" "$CHECKSUM_PATH" "$PROVENANCE_PATH" --clobber

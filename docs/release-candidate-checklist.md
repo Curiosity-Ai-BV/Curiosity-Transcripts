@@ -11,6 +11,12 @@ Tag workflows create or update draft GitHub Releases. Keep the release as a
 draft until filled manual smoke evidence validates with
 `node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json`;
 after that passes, a maintainer must publish the draft manually.
+The draft release assets must include the arm64 DMG, its `.sha256` checksum,
+and the matching provenance manifest. Before publishing, confirm the provenance
+manifest names the uploaded DMG, repeats the same SHA-256 checksum, and records
+passed automated verification statuses for hdiutil verify, stapler validation,
+DMG Gatekeeper assessment, read-only attach/app presence, app codesign
+verification, and app Gatekeeper assessment.
 
 Use `docs/release-candidate-smoke-evidence.template.json` as the starting point
 for manual smoke evidence. Validate the checked-in template with no path:

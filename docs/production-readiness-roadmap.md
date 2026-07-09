@@ -69,6 +69,10 @@ evidence automatically.
 Tag workflows leave GitHub Releases as drafts until filled manual smoke evidence
 validates with `node scripts/check-release-smoke-evidence.js
 path/to/filled-evidence.json` and a maintainer manually publishes the draft.
+The GitHub Release workflow also uploads a release provenance manifest beside
+the arm64 DMG and checksum so maintainers can inspect the tag/ref/SHA, runner
+architecture, DMG asset path, DMG SHA-256, and automated verification statuses
+before publishing the draft.
 Real clean-user install, macOS permission, Whisper/Ollama setup, recording,
 transcription, summary, export, delete, relaunch, uninstall, signing, model, and
 hardware smoke remain manual and not yet completed.

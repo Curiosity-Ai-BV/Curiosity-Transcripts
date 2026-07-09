@@ -36,17 +36,50 @@ const requiredWorkflowText = [
   'runner_arch="$(uname -m)"',
   'if [ "$runner_arch" != "arm64" ]; then',
   "Curiosity-Transcripts-${version}-macos-aarch64.dmg",
+  "Curiosity-Transcripts-${version}-macos-aarch64.provenance.json",
   'hdiutil verify "$release_asset"',
+  'hdiutil_verify_status="passed"',
   'xcrun stapler validate "$release_asset"',
+  'stapler_validation_status="passed"',
   'spctl -a -vvv -t open --context context:primary-signature "$release_asset"',
+  'dmg_gatekeeper_assessment_status="passed"',
   'hdiutil attach "$release_asset" -readonly -nobrowse',
   '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
+  'readonly_attach_app_presence_status="passed"',
   'codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"',
+  'app_codesign_verification_status="passed"',
   'spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"',
+  'app_gatekeeper_assessment_status="passed"',
   "shasum -a 256",
+  '"kind": "curiosity-transcripts-release-provenance"',
+  '"schema_version": 1',
+  '"version": process.env.RELEASE_VERSION',
+  '"github_ref_name": process.env.GITHUB_REF_NAME_VALUE',
+  '"github_sha": process.env.GITHUB_SHA_VALUE',
+  '"github_ref": process.env.GITHUB_REF_VALUE',
+  "RELEASE_REF_NAME:",
+  "RELEASE_GIT_SHA:",
+  "RELEASE_GIT_REF:",
+  "RELEASE_REF_NAME: ${{ github.ref_name }}",
+  "RELEASE_GIT_SHA: ${{ github.sha }}",
+  "RELEASE_GIT_REF: ${{ github.ref }}",
+  'GITHUB_REF_NAME_VALUE="$RELEASE_REF_NAME"',
+  'GITHUB_SHA_VALUE="$RELEASE_GIT_SHA"',
+  'GITHUB_REF_VALUE="$RELEASE_GIT_REF"',
+  '"runner_architecture": process.env.RUNNER_ARCH',
+  '"dmg_asset_name": path.basename(process.env.DMG_ASSET_PATH)',
+  '"dmg_asset_path": process.env.DMG_ASSET_PATH',
+  '"dmg_sha256": process.env.DMG_SHA256',
+  '"hdiutil_verify": process.env.HDIUTIL_VERIFY_STATUS',
+  '"stapler_validation": process.env.STAPLER_VALIDATION_STATUS',
+  '"dmg_gatekeeper_assessment": process.env.DMG_GATEKEEPER_ASSESSMENT_STATUS',
+  '"readonly_attach_app_presence": process.env.READONLY_ATTACH_APP_PRESENCE_STATUS',
+  '"app_codesign_verification": process.env.APP_CODESIGN_VERIFICATION_STATUS',
+  '"app_gatekeeper_assessment": process.env.APP_GATEKEEPER_ASSESSMENT_STATUS',
   "Release scope:",
   "arm64-only macOS DMG",
   '$(basename "$CHECKSUM_PATH")',
+  '$(basename "$PROVENANCE_PATH")',
   "Manual smoke status:",
   "Skipped smoke checks are not passes",
   "docs/release-candidate-smoke-evidence.template.json",
@@ -67,7 +100,11 @@ const requiredWorkflowText = [
   "Unable to inspect GitHub Release $RELEASE_TAG draft status; refusing to create, edit, or upload assets",
   'gh release edit "$RELEASE_TAG" --draft \\',
   'gh release create "$RELEASE_TAG" --draft \\',
+  "PROVENANCE_PATH:",
+  "${{ steps.stage_assets.outputs.provenance_path }}",
+  'echo "provenance_path=$provenance_path" >> "$GITHUB_OUTPUT"',
   "gh release upload",
+  '"$PROVENANCE_PATH"',
   "--clobber",
 ];
 
@@ -429,6 +466,10 @@ function firstShellCommandLine(text, matches) {
   return -1;
 }
 
+function firstLineContaining(text, expected) {
+  return text.split(/\r?\n/).findIndex((line) => line.includes(expected));
+}
+
 const workflow = readRequired(workflowPath, ".github/workflows/release.yml");
 const readme = readRequired(readmePath, "README.md");
 const buildScript = readRequired(buildScriptPath, "scripts/build-macos-dmg.sh");
@@ -443,6 +484,52 @@ for (const error of validateCriticalReleaseStepMetadata(workflow)) {
 for (const text of requiredWorkflowText) {
   if (!workflow.includes(text)) {
     fail(".github/workflows/release.yml", `Missing required release workflow content: ${text}`);
+  }
+}
+
+const releaseWorkflowOrdering = [
+  [
+    'hdiutil verify "$release_asset"',
+    'hdiutil_verify_status="passed"',
+    "hdiutil verify status must be recorded only after hdiutil verify succeeds",
+  ],
+  [
+    'xcrun stapler validate "$release_asset"',
+    'stapler_validation_status="passed"',
+    "stapler validation status must be recorded only after stapler validation succeeds",
+  ],
+  [
+    'spctl -a -vvv -t open --context context:primary-signature "$release_asset"',
+    'dmg_gatekeeper_assessment_status="passed"',
+    "DMG Gatekeeper assessment status must be recorded only after spctl open succeeds",
+  ],
+  [
+    '[ ! -d "$mount_dir/Curiosity Transcripts.app" ]',
+    'readonly_attach_app_presence_status="passed"',
+    "read-only attach/app presence status must be recorded only after the mounted app exists",
+  ],
+  [
+    'codesign --verify --deep --strict --verbose=2 "$mount_dir/Curiosity Transcripts.app"',
+    'app_codesign_verification_status="passed"',
+    "app codesign status must be recorded only after codesign verification succeeds",
+  ],
+  [
+    'spctl -a -vvv -t exec "$mount_dir/Curiosity Transcripts.app"',
+    'app_gatekeeper_assessment_status="passed"',
+    "app Gatekeeper assessment status must be recorded only after spctl exec succeeds",
+  ],
+  [
+    "shasum -a 256",
+    "fs.writeFileSync(process.env.PROVENANCE_PATH",
+    "release provenance manifest must be written only after the DMG checksum is generated",
+  ],
+];
+
+for (const [beforeText, afterText, message] of releaseWorkflowOrdering) {
+  const beforeLine = firstLineContaining(workflow, beforeText);
+  const afterLine = firstLineContaining(workflow, afterText);
+  if (beforeLine === -1 || afterLine === -1 || beforeLine >= afterLine) {
+    fail(".github/workflows/release.yml", message);
   }
 }
 
