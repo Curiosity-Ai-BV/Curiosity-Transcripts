@@ -46,6 +46,7 @@ import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
 import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
+import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -1094,30 +1095,14 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
                 />
 
                 {analysisDisclosure ? (
-                  <section className="summary-section" aria-label="Structured summary">
-                    <div>
-                      <h3>Structured summary</h3>
-                      <StatusLine
-                        icon={<ShieldCheck size={18} weight="regular" />}
-                        label={analysisDisclosure.label}
-                        value={analysisDisclosure.detail}
-                        tone={analysisDisclosure.tone}
-                      />
-                      {selectedMeeting.analysis?.summary ? (
-                        <p className="summary-text">{selectedMeeting.analysis.summary}</p>
-                      ) : null}
-                    </div>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={summaryDisabled}
-                      title={summaryButtonTitle}
-                      onClick={generateSelectedSummary}
-                    >
-                      <FileText size={16} weight="regular" />
-                      {pendingCommand === "summary" ? "Generating summary" : "Generate summary"}
-                    </button>
-                  </section>
+                  <MeetingSummarySection
+                    disclosure={analysisDisclosure}
+                    summaryText={selectedMeeting.analysis?.summary ?? null}
+                    summaryDisabled={summaryDisabled}
+                    summaryButtonTitle={summaryButtonTitle}
+                    pendingCommand={pendingCommand}
+                    onGenerateSummary={generateSelectedSummary}
+                  />
                 ) : null}
 
                 <section className="transcript-section">
