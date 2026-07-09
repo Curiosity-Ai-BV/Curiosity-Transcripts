@@ -1,5 +1,4 @@
 import {
-  CalendarPlus,
   FolderOpen,
   Moon,
   Sun,
@@ -29,7 +28,7 @@ import {
   searchMeetings,
   Tone,
 } from "./commandAdapter";
-import { CopyPullCommandButton, StatusPill } from "./desktopWorkspaceComponents";
+import { CopyPullCommandButton } from "./desktopWorkspaceComponents";
 import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
@@ -37,6 +36,7 @@ import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
+import { DesktopCalendarContext } from "./desktopCalendarContext";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
@@ -49,7 +49,6 @@ import {
   captureTone,
   commandAllowedDuringBusy,
   commandErrorMessage,
-  formatCalendarEventMetadata,
   formatMeetingCalendarAttachment,
   isActiveCommandJob,
   isSelectedActiveCommandJob,
@@ -361,6 +360,11 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   const chooseWhisperModelDisabled = !commandSurfaceReady || commandBusy;
   const requestCalendarDisabled =
     !commandSurfaceReady || commandBusy || calendarContext.permissionState !== "NotRequested";
+  const requestCalendarTitle = commandSurfaceReady
+    ? "Request macOS Apple Calendar access for future manual event context."
+    : commandUnavailableTitle;
+  const hasSelectedMeeting = Boolean(selectedMeeting);
+  const canAttachCalendarEvents = commandSurfaceReady && hasSelectedMeeting && !commandBusy;
 
   const exportState = selectedMeeting
     ? mapExportState(selectedMeeting.exportState)
@@ -1239,66 +1243,18 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               onCopyPullCommand={copyOllamaPullCommand}
               onChooseOllamaCandidate={chooseOllamaCandidate}
             />
-            <div className="calendar-context" aria-label="Calendar context">
-              <div className={`readiness-item ${calendarTone}`}>
-                <div className="readiness-heading">
-                  <StatusPill tone={calendarTone} label={calendarContextLabel(calendarContext)} />
-                </div>
-                <p>{calendarContext.message}</p>
-                <p>{calendarContext.setupGuidance}</p>
-                {calendarContext.upcomingEvents.length > 0 ? (
-                  <div className="calendar-event-list">
-                    {calendarContext.upcomingEvents.map((event) => (
-                      <div key={event.id} className="calendar-event-row">
-                        <strong>{event.title}</strong>
-                        <span>{formatCalendarEventMetadata(event)}</span>
-                        <small>{event.safetyNote}</small>
-                        {event.attachable ? (
-                          <button
-                            type="button"
-                            className="button"
-                            disabled={!commandSurfaceReady || !selectedMeeting || commandBusy}
-                            title={
-                              !selectedMeeting
-                                ? "Select a meeting before attaching calendar context."
-                                : event.privacy === "Unknown"
-                                  ? "Confirm this unknown-privacy event is safe to store as meeting context."
-                                  : "Attach this event as meeting context."
-                            }
-                            onClick={() => attachCalendarEvent(event)}
-                          >
-                            <CalendarPlus size={16} weight="regular" />
-                            {pendingCommand === "attach-calendar"
-                              ? "Attaching"
-                              : event.privacy === "Unknown"
-                                ? "Confirm privacy and attach"
-                                : "Attach to meeting"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <small>No upcoming calendar events loaded.</small>
-                )}
-                <small>Auto-start disabled.</small>
-                {calendarContext.permissionState === "NotRequested" ? (
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={requestCalendarDisabled}
-                    title={
-                      commandSurfaceReady
-                        ? "Request macOS Apple Calendar access for future manual event context."
-                        : commandUnavailableTitle
-                    }
-                    onClick={requestCalendarAccess}
-                  >
-                    {pendingCommand === "request-calendar" ? "Requesting calendar" : "Request calendar access"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
+            <DesktopCalendarContext
+              context={calendarContext}
+              label={calendarContextLabel(calendarContext)}
+              tone={calendarTone}
+              pendingCommand={pendingCommand}
+              requestCalendarDisabled={requestCalendarDisabled}
+              requestCalendarTitle={requestCalendarTitle}
+              canAttachEvents={canAttachCalendarEvents}
+              hasSelectedMeeting={hasSelectedMeeting}
+              onRequestCalendarAccess={requestCalendarAccess}
+              onAttachCalendarEvent={attachCalendarEvent}
+            />
             <div className="settings-form" aria-label="Local settings">
               <div className="path-picker-control">
                 <label className="settings-field" htmlFor="whisper-model-path">
