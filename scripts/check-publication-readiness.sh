@@ -64,6 +64,7 @@ check_file "scripts/check-release-provenance-artifact.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
 check_file "apps/desktop/src-tauri/src/main.rs"
+check_file "apps/desktop/src-tauri/src/calendar.rs"
 check_file "apps/desktop/src/commandAdapter.ts"
 check_file "apps/desktop/src/commandAdapter.contract.test.ts"
 check_file ".github/dependabot.yml"
@@ -999,6 +1000,8 @@ require_text scripts/check-tauri-command-surface.js 'Snapshot-returning facade c
 require_text scripts/check-tauri-command-surface.js 'frontend adapter invokes unregistered release command' 'frontend command registration self-test'
 require_text scripts/check-tauri-command-surface.js 'snapshot command removed from validation allowlist' 'snapshot validation allowlist self-test'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
+require_text scripts/check-plain-secret-storage.js 'artifacts\.calendar' 'plain secret storage checker calendar DTO artifact scope'
+require_text scripts/check-plain-secret-storage.js 'apps/desktop/src-tauri/src/calendar\.rs' 'plain secret storage checker calendar DTO artifact label'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-governance-signoff\.js; then' 'governance sign-off template publication readiness gate'
@@ -1013,6 +1016,8 @@ require_text scripts/check-desktop-command-view-contract.js 'write-artifact writ
 require_text scripts/check-desktop-command-view-contract.js 'check-artifact validates an existing receipt against the current fixture, schema, and source inputs' 'desktop command/view contract receipt validation mode'
 require_text scripts/check-desktop-command-view-contract.js 'sourceInputs' 'desktop command/view contract receipt source-input section'
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src-tauri/src/main\.rs' 'desktop command/view contract receipt Rust producer source input'
+require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src-tauri/src/calendar\.rs' 'desktop command/view contract receipt calendar producer source input'
+require_text scripts/check-desktop-command-view-contract.js 'rust-calendar-context-producer' 'desktop command/view contract receipt calendar producer role'
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.ts' 'desktop command/view contract receipt TS consumer source input'
 require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.contract\.test\.ts' 'desktop command/view contract receipt TS contract-test source input'
 require_text scripts/check-desktop-command-view-contract.js 'desktop-command-view-contract-receipt' 'desktop command/view contract receipt kind'

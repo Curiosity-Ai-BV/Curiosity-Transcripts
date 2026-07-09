@@ -21,6 +21,10 @@ const artifacts = {
     path: path.join(root, "apps", "desktop", "src-tauri", "src", "main.rs"),
     label: "apps/desktop/src-tauri/src/main.rs",
   },
+  calendar: {
+    path: path.join(root, "apps", "desktop", "src-tauri", "src", "calendar.rs"),
+    label: "apps/desktop/src-tauri/src/calendar.rs",
+  },
   adapter: {
     path: path.join(root, "apps", "desktop", "src", "commandAdapter.ts"),
     label: "apps/desktop/src/commandAdapter.ts",
@@ -56,6 +60,7 @@ const checkedArtifacts = [
   artifacts.storeTests,
   artifacts.appCrate,
   artifacts.main,
+  artifacts.calendar,
   artifacts.adapter,
   artifacts.app,
   artifacts.fixture,

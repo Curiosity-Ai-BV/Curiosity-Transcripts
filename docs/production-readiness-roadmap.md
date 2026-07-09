@@ -434,7 +434,8 @@ leakage in publication readiness. CI writes deterministic release evidence to
 `release-artifacts/contracts/desktop-command-view-contract.receipt.json` with
 fixture/schema/source-input hashes, expected case names, forbidden strings, and
 checker status. The source-input evidence covers the Rust producer/fixture owner,
-the TypeScript runtime validator, and the TypeScript contract test input.
+the Rust calendar context producer, the TypeScript runtime validator, and the
+TypeScript contract test input.
 Rust tests guard exact equality against the generated command/view payload, and
 TS command adapter contract tests consume the same fixture.
 Snapshot-returning commands, setup test commands, and

@@ -17,6 +17,10 @@ const sourceInputDescriptors = [
     role: "rust-producer-fixture-owner",
   },
   {
+    path: "apps/desktop/src-tauri/src/calendar.rs",
+    role: "rust-calendar-context-producer",
+  },
+  {
     path: "apps/desktop/src/commandAdapter.ts",
     role: "typescript-consumer-runtime-validator",
   },
@@ -399,6 +403,27 @@ function expectReceiptRejected(name, receipt, fixture, schema) {
   }
 }
 
+function findSourceInput(receipt, sourcePath) {
+  return receipt.sourceInputs.find((input) => input.path === sourcePath);
+}
+
+function expectSourceInputCovered(sourcePath, label, replacementHash, validReceipt, fixture, schema) {
+  const staleReceipt = clone(validReceipt);
+  const sourceInput = findSourceInput(staleReceipt, sourcePath);
+  if (!sourceInput) {
+    fail(scriptLabel, `Self-test cannot mutate missing ${label} source-input hash`);
+  } else {
+    sourceInput.sha256 = replacementHash;
+    expectReceiptRejected(`stale ${label} source-input hash`, staleReceipt, fixture, schema);
+  }
+
+  const missingReceipt = clone(validReceipt);
+  missingReceipt.sourceInputs = missingReceipt.sourceInputs.filter(
+    (input) => input.path !== sourcePath,
+  );
+  expectReceiptRejected(`missing ${label} source input`, missingReceipt, fixture, schema);
+}
+
 function runSelfTests(fixture, schema) {
   const missingCase = clone(fixture);
   delete missingCase.cases["desktop_snapshot.with_setup_evidence"];
@@ -472,17 +497,38 @@ function runSelfTests(fixture, schema) {
   wrongForbiddenStringsReceipt.schema.forbiddenStrings = [];
   expectReceiptRejected("wrong forbidden strings", wrongForbiddenStringsReceipt, fixture, schema);
 
-  const staleRustProducerReceipt = clone(validReceipt);
-  staleRustProducerReceipt.sourceInputs[0].sha256 = "0".repeat(64);
-  expectReceiptRejected("stale Rust producer source-input hash", staleRustProducerReceipt, fixture, schema);
-
-  const staleTsConsumerReceipt = clone(validReceipt);
-  staleTsConsumerReceipt.sourceInputs[1].sha256 = "1".repeat(64);
-  expectReceiptRejected("stale TypeScript consumer source-input hash", staleTsConsumerReceipt, fixture, schema);
-
-  const staleTsContractTestReceipt = clone(validReceipt);
-  staleTsContractTestReceipt.sourceInputs[2].sha256 = "2".repeat(64);
-  expectReceiptRejected("stale TypeScript contract-test source-input hash", staleTsContractTestReceipt, fixture, schema);
+  expectSourceInputCovered(
+    "apps/desktop/src-tauri/src/main.rs",
+    "Rust producer",
+    "0".repeat(64),
+    validReceipt,
+    fixture,
+    schema,
+  );
+  expectSourceInputCovered(
+    "apps/desktop/src-tauri/src/calendar.rs",
+    "calendar producer",
+    "3".repeat(64),
+    validReceipt,
+    fixture,
+    schema,
+  );
+  expectSourceInputCovered(
+    "apps/desktop/src/commandAdapter.ts",
+    "TypeScript consumer",
+    "1".repeat(64),
+    validReceipt,
+    fixture,
+    schema,
+  );
+  expectSourceInputCovered(
+    "apps/desktop/src/commandAdapter.contract.test.ts",
+    "TypeScript contract-test",
+    "2".repeat(64),
+    validReceipt,
+    fixture,
+    schema,
+  );
 
   const missingSourceInputsReceipt = clone(validReceipt);
   delete missingSourceInputsReceipt.sourceInputs;

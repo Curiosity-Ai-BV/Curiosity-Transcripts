@@ -201,7 +201,9 @@ complete privacy/deletion/recovery coverage.
 - Contract fixture: confirm
   `apps/desktop/contracts/desktop-command-view-contract.fixture.json` and
   `apps/desktop/contracts/desktop-command-view-contract.schema.json` are present
-  in the build source. Run `node scripts/check-desktop-command-view-contract.js`
+  in the build source, along with the Rust source inputs
+  `apps/desktop/src-tauri/src/main.rs` and
+  `apps/desktop/src-tauri/src/calendar.rs`. Run `node scripts/check-desktop-command-view-contract.js`
   plus the Rust/TS contract checks before manual smoke starts. Validate the
   receipt with `node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json`, and attach
   `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
