@@ -45,6 +45,7 @@ import {
 import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
+import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -373,6 +374,9 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     : null;
   const localProcessingState = selectedMeeting
     ? mapLocalProcessingState(selectedMeeting.privacy.localOnly)
+    : null;
+  const selectedMeetingCalendarContext = selectedMeeting?.calendarAttachment
+    ? formatMeetingCalendarAttachment(selectedMeeting.calendarAttachment)
     : null;
   const exportCommandState = mapExportState(currentSnapshot.exportCommand);
   const deleteCommandState = mapDeleteState(currentSnapshot.deleteCommand);
@@ -1077,25 +1081,17 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
                   onTranscribe={transcribeSelectedMeeting}
                 />
 
-                <div className="privacy-row" aria-label="Meeting privacy data state">
-                  <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={selectedMeeting.privacy.storageLabel} value={selectedMeeting.privacy.storagePath} tone="ready" />
-                  {rawAudioRetention ? (
-                    <StatusLine icon={<Waveform size={18} weight="regular" />} label={rawAudioRetention.label} value={rawAudioRetention.detail} tone={rawAudioRetention.tone} />
-                  ) : null}
-                  {localProcessingState ? (
-                    <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={localProcessingState.label} value={localProcessingState.detail} tone={localProcessingState.tone} />
-                  ) : null}
-                  {selectedMeeting.calendarAttachment ? (
-                    <StatusLine
-                      icon={<CalendarBlank size={18} weight="regular" />}
-                      label="Calendar context"
-                      value={formatMeetingCalendarAttachment(selectedMeeting.calendarAttachment)}
-                      tone="ready"
-                    />
-                  ) : null}
-                  <StatusLine icon={<FileText size={18} weight="regular" />} label={exportState.label} value={exportState.detail} tone={exportState.tone} />
-                  <StatusLine icon={<Trash size={18} weight="regular" />} label={deleteState.label} value={deleteState.detail} tone={deleteState.tone} />
-                </div>
+                <MeetingPrivacyRow
+                  storage={{
+                    label: selectedMeeting.privacy.storageLabel,
+                    path: selectedMeeting.privacy.storagePath,
+                  }}
+                  rawAudioRetention={rawAudioRetention}
+                  localProcessing={localProcessingState}
+                  calendarContext={selectedMeetingCalendarContext}
+                  exportState={exportState}
+                  deleteState={deleteState}
+                />
 
                 {analysisDisclosure ? (
                   <section className="summary-section" aria-label="Structured summary">
