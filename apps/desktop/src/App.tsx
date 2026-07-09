@@ -1,5 +1,4 @@
 import {
-  FolderOpen,
   Moon,
   Sun,
   Trash,
@@ -24,7 +23,6 @@ import {
   mapRawAudioRetention,
   mapRecordingState,
   mapTranscriptionState,
-  PersistedRawAudioRetentionPolicy,
   searchMeetings,
   Tone,
 } from "./commandAdapter";
@@ -39,7 +37,8 @@ import { DesktopCalendarContext } from "./desktopCalendarContext";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
-import { DesktopSettingsFeedback, type SettingsFeedback } from "./desktopSettingsFeedback";
+import { DesktopSettingsForm } from "./desktopSettingsForm";
+import type { SettingsFeedback } from "./desktopSettingsFeedback";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -817,7 +816,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     }
   }
 
-  function updateRawAudioRetentionPolicy(value: PersistedRawAudioRetentionPolicy) {
+  function updateRawAudioRetentionPolicy(value: SettingsFormState["rawAudioRetentionPolicy"]) {
     setSettingsForm((current) => ({ ...current, rawAudioRetentionPolicy: value }));
     setSettingsFeedback(null);
   }
@@ -911,6 +910,15 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
     : commandBusy
       ? busyCommandTitle
       : "Choose a local Whisper model file.";
+  const testWhisperButtonTitle = commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle;
+  const saveWhisperButtonTitle = commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle;
+  const testOllamaButtonTitle = commandSurfaceReady
+    ? "Test the configured local Ollama server and model."
+    : commandUnavailableTitle;
+  const saveAnalysisButtonTitle = commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle;
+  const saveRetentionButtonTitle = commandSurfaceReady
+    ? "Save default raw-audio retention."
+    : commandUnavailableTitle;
   const transcribeButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
     : commandBusy
@@ -1238,122 +1246,34 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               onRequestCalendarAccess={requestCalendarAccess}
               onAttachCalendarEvent={attachCalendarEvent}
             />
-            <div className="settings-form" aria-label="Local settings">
-              <div className="path-picker-control">
-                <label className="settings-field" htmlFor="whisper-model-path">
-                  <span>Whisper model path</span>
-                  <input
-                    id="whisper-model-path"
-                    value={settingsForm.whisperModelPath}
-                    onChange={(event) =>
-                      setSettingsForm((current) => ({ ...current, whisperModelPath: event.target.value }))
-                    }
-                    placeholder="/absolute/path/to/ggml-base.en.bin"
-                    disabled={settingsInputDisabled}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={chooseWhisperModelDisabled}
-                  title={chooseWhisperModelButtonTitle}
-                  onClick={chooseWhisperModelFile}
-                >
-                  <FolderOpen size={16} weight="regular" />
-                  {pendingCommand === "choose-whisper-model" ? "Choosing model" : "Choose model"}
-                </button>
-              </div>
-              <div className="settings-buttons">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle}
-                  onClick={testWhisperModelPath}
-                >
-                  {pendingCommand === "test-whisper" ? "Testing path" : "Test path"}
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle}
-                  onClick={saveWhisperModelPath}
-                >
-                  {pendingCommand === "save-whisper" ? "Saving Whisper" : "Save Whisper"}
-                </button>
-              </div>
-              <label className="settings-field" htmlFor="ollama-base-url">
-                <span>Ollama base URL</span>
-                <input
-                  id="ollama-base-url"
-                  value={settingsForm.ollamaBaseUrl}
-                  onChange={(event) => updateOllamaBaseUrl(event.target.value)}
-                  placeholder="http://127.0.0.1:11434"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
-              <label className="settings-field" htmlFor="ollama-model">
-                <span>Ollama model</span>
-                <input
-                  id="ollama-model"
-                  value={settingsForm.ollamaModel}
-                  onChange={(event) => updateOllamaModel(event.target.value)}
-                  placeholder="qwen3.6:27b"
-                  disabled={settingsInputDisabled}
-                />
-              </label>
-              <div className="settings-buttons">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Test the configured local Ollama server and model." : commandUnavailableTitle}
-                  onClick={testOllamaConnection}
-                >
-                  {pendingCommand === "test-ollama" ? "Testing Ollama" : "Test Ollama"}
-                </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle}
-                  onClick={saveAnalysisSettings}
-                >
-                  {pendingCommand === "save-analysis" ? "Saving analysis" : "Save analysis"}
-                </button>
-              </div>
-              <label className="settings-field" htmlFor="raw-audio-retention">
-                <span>Raw audio retention</span>
-                <select
-                  id="raw-audio-retention"
-                  value={settingsForm.rawAudioRetentionPolicy}
-                  onChange={(event) =>
-                    updateRawAudioRetentionPolicy(event.target.value as PersistedRawAudioRetentionPolicy)
-                  }
-                  disabled={settingsInputDisabled}
-                >
-                  <option value="Retain">Retain</option>
-                  <option value="DeleteAfterTranscription">Delete after transcription</option>
-                </select>
-              </label>
-              <div className="settings-buttons">
-                <button
-                  type="button"
-                  className="button"
-                  disabled={settingsActionDisabled}
-                  title={commandSurfaceReady ? "Save default raw-audio retention." : commandUnavailableTitle}
-                  onClick={saveRawAudioRetentionPolicy}
-                >
-                  {pendingCommand === "save-retention" ? "Saving retention" : "Save retention"}
-                </button>
-              </div>
-              <DesktopSettingsFeedback
-                feedback={settingsFeedback}
-                copyPullCommandDisabled={commandBusy}
-                onCopyPullCommand={copyOllamaPullCommand}
-              />
-            </div>
+            <DesktopSettingsForm
+              settingsForm={settingsForm}
+              settingsFeedback={settingsFeedback}
+              pendingCommand={pendingCommand}
+              settingsInputDisabled={settingsInputDisabled}
+              settingsActionDisabled={settingsActionDisabled}
+              chooseWhisperModelDisabled={chooseWhisperModelDisabled}
+              chooseWhisperModelButtonTitle={chooseWhisperModelButtonTitle}
+              testWhisperButtonTitle={testWhisperButtonTitle}
+              saveWhisperButtonTitle={saveWhisperButtonTitle}
+              testOllamaButtonTitle={testOllamaButtonTitle}
+              saveAnalysisButtonTitle={saveAnalysisButtonTitle}
+              saveRetentionButtonTitle={saveRetentionButtonTitle}
+              copyPullCommandDisabled={commandBusy}
+              onWhisperModelPathChange={(value) =>
+                setSettingsForm((current) => ({ ...current, whisperModelPath: value }))
+              }
+              onChooseWhisperModel={chooseWhisperModelFile}
+              onTestWhisperModelPath={testWhisperModelPath}
+              onSaveWhisperModelPath={saveWhisperModelPath}
+              onOllamaBaseUrlChange={updateOllamaBaseUrl}
+              onOllamaModelChange={updateOllamaModel}
+              onTestOllamaConnection={testOllamaConnection}
+              onSaveAnalysisSettings={saveAnalysisSettings}
+              onRawAudioRetentionPolicyChange={updateRawAudioRetentionPolicy}
+              onSaveRawAudioRetentionPolicy={saveRawAudioRetentionPolicy}
+              onCopyPullCommand={copyOllamaPullCommand}
+            />
           </aside>
         </div>
       </section>
