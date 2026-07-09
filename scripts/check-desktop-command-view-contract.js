@@ -10,6 +10,7 @@ const fixtureLabel = "apps/desktop/contracts/desktop-command-view-contract.fixtu
 const schemaLabel = "apps/desktop/contracts/desktop-command-view-contract.schema.json";
 const receiptLabel = "release-artifacts/contracts/desktop-command-view-contract.receipt.json";
 const scriptLabel = "scripts/check-desktop-command-view-contract.js";
+const writeArtifactCommand = "node scripts/check-desktop-command-view-contract.js --write-artifact";
 
 let ok = true;
 
@@ -31,16 +32,30 @@ function parseArgs(argv) {
   const options = {
     help: false,
     writeArtifact: false,
+    checkArtifact: null,
   };
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === "--write-artifact") {
       options.writeArtifact = true;
+    } else if (arg === "--check-artifact") {
+      const artifactPath = argv[index + 1];
+      if (!artifactPath || artifactPath.startsWith("--")) {
+        fail(scriptLabel, "--check-artifact requires a receipt path");
+      } else {
+        options.checkArtifact = artifactPath;
+        index += 1;
+      }
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
       fail(scriptLabel, `Unexpected argument: ${arg}`);
     }
+  }
+
+  if (options.writeArtifact && options.checkArtifact) {
+    fail(scriptLabel, "--write-artifact and --check-artifact cannot be combined");
   }
 
   return options;
@@ -57,7 +72,7 @@ function buildReceipt(fixture, schema) {
     status: "passed",
     checker: {
       path: scriptLabel,
-      command: "node scripts/check-desktop-command-view-contract.js --write-artifact",
+      command: writeArtifactCommand,
     },
     fixture: {
       path: fixtureLabel,
@@ -126,6 +141,37 @@ function matchesType(value, expectedType) {
 
 function compareLists(actual, expected) {
   return actual.length === expected.length && actual.every((item, index) => item === expected[index]);
+}
+
+function jsonEquals(actual, expected) {
+  if (Object.is(actual, expected)) {
+    return true;
+  }
+  if (valueType(actual) !== valueType(expected)) {
+    return false;
+  }
+  if (Array.isArray(actual)) {
+    return actual.length === expected.length && actual.every((item, index) => jsonEquals(item, expected[index]));
+  }
+  if (actual !== null && typeof actual === "object") {
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+    return compareLists(actualKeys, expectedKeys)
+      && actualKeys.every((key) => jsonEquals(actual[key], expected[key]));
+  }
+  return false;
+}
+
+function validateReceiptField(errors, receipt, pathParts, expected) {
+  const located = getPath(receipt, pathParts);
+  const label = pathLabel(pathParts);
+  if (!located.found) {
+    errors.push(`Receipt missing required field ${label}`);
+    return;
+  }
+  if (!jsonEquals(located.value, expected)) {
+    errors.push(`Receipt field ${label} must match current contract metadata`);
+  }
 }
 
 function validateSchema(schema) {
@@ -262,6 +308,41 @@ function validateFixture(fixture, schema) {
   return errors;
 }
 
+function validateReceipt(receipt, fixture, schema) {
+  const errors = [];
+
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return ["Receipt must be a JSON object"];
+  }
+
+  const expectedReceipt = buildReceipt(fixture, schema);
+  const requiredFields = [
+    ["version"],
+    ["kind"],
+    ["status"],
+    ["checker", "path"],
+    ["checker", "command"],
+    ["fixture", "path"],
+    ["fixture", "sha256"],
+    ["fixture", "version"],
+    ["fixture", "owner"],
+    ["schema", "path"],
+    ["schema", "sha256"],
+    ["schema", "version"],
+    ["schema", "kind"],
+    ["schema", "scope"],
+    ["schema", "expectedCases"],
+    ["schema", "forbiddenStrings"],
+  ];
+
+  for (const fieldPath of requiredFields) {
+    const expected = getPath(expectedReceipt, fieldPath).value;
+    validateReceiptField(errors, receipt, fieldPath, expected);
+  }
+
+  return errors;
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -278,6 +359,16 @@ function expectSchemaRejected(name, schema) {
   }
 }
 
+function expectReceiptRejected(name, receipt, fixture, schema) {
+  if (typeof validateReceipt !== "function") {
+    fail(scriptLabel, `Receipt guardrail is not implemented: ${name}`);
+    return;
+  }
+  if (validateReceipt(receipt, fixture, schema).length === 0) {
+    fail(scriptLabel, `Guardrail did not reject receipt mutation: ${name}`);
+  }
+}
+
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -285,8 +376,10 @@ if (options.help) {
     [
       "Usage: node scripts/check-desktop-command-view-contract.js",
       "       node scripts/check-desktop-command-view-contract.js --write-artifact",
+      `       node scripts/check-desktop-command-view-contract.js --check-artifact ${receiptLabel}`,
       "",
       `--write-artifact writes ${receiptLabel} after validation passes.`,
+      "--check-artifact validates an existing receipt against the current fixture and schema.",
     ].join("\n"),
   );
   process.exit(ok ? 0 : 1);
@@ -348,6 +441,30 @@ if (fixture && schema) {
   );
   expectSchemaRejected("missing schema case block", missingSchemaCase);
 
+  const validReceipt = buildReceipt(fixture, schema);
+
+  const staleFixtureHashReceipt = clone(validReceipt);
+  staleFixtureHashReceipt.fixture.sha256 = "0".repeat(64);
+  expectReceiptRejected("stale fixture hash", staleFixtureHashReceipt, fixture, schema);
+
+  const wrongStatusReceipt = clone(validReceipt);
+  wrongStatusReceipt.status = "failed";
+  expectReceiptRejected("wrong receipt status", wrongStatusReceipt, fixture, schema);
+
+  const missingExpectedCaseReceipt = clone(validReceipt);
+  missingExpectedCaseReceipt.schema.expectedCases = missingExpectedCaseReceipt.schema.expectedCases.filter(
+    (name) => name !== "desktop_snapshot.with_setup_evidence",
+  );
+  expectReceiptRejected("missing expected case", missingExpectedCaseReceipt, fixture, schema);
+
+  const wrongCheckerCommandReceipt = clone(validReceipt);
+  wrongCheckerCommandReceipt.checker.command = "node scripts/check-desktop-command-view-contract.js";
+  expectReceiptRejected("wrong checker command", wrongCheckerCommandReceipt, fixture, schema);
+
+  const wrongForbiddenStringsReceipt = clone(validReceipt);
+  wrongForbiddenStringsReceipt.schema.forbiddenStrings = [];
+  expectReceiptRejected("wrong forbidden strings", wrongForbiddenStringsReceipt, fixture, schema);
+
   for (const error of validateFixture(fixture, schema)) {
     const label = error.startsWith(`${schemaLabel}:`) ? schemaLabel : fixtureLabel;
     fail(label, error.replace(`${schemaLabel}: `, ""));
@@ -360,6 +477,23 @@ if (!ok) {
 
 if (options.writeArtifact) {
   writeReceipt(fixture, schema);
+}
+
+if (options.checkArtifact) {
+  const artifactPath = path.isAbsolute(options.checkArtifact)
+    ? options.checkArtifact
+    : path.resolve(process.cwd(), options.checkArtifact);
+  const receipt = readJson(artifactPath, options.checkArtifact);
+
+  if (receipt && fixture && schema) {
+    for (const error of validateReceipt(receipt, fixture, schema)) {
+      fail(options.checkArtifact, error);
+    }
+  }
+}
+
+if (!ok) {
+  process.exit(1);
 }
 
 console.log("Desktop command/view contract shape gate passed.");

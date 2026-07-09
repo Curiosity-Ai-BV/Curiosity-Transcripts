@@ -173,6 +173,9 @@ jobs:
       - name: Generate desktop command/view contract artifact
         run: node scripts/check-desktop-command-view-contract.js --write-artifact
 
+      - name: Validate desktop command/view contract artifact
+        run: node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json
+
       - name: Upload desktop command/view contract artifact
         uses: actions/upload-artifact@v4
         with:

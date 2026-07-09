@@ -189,7 +189,8 @@ or complete privacy/deletion/recovery coverage.
   `apps/desktop/contracts/desktop-command-view-contract.fixture.json` and
   `apps/desktop/contracts/desktop-command-view-contract.schema.json` are present
   in the build source. Run `node scripts/check-desktop-command-view-contract.js`
-  plus the Rust/TS contract checks before manual smoke starts, and attach
+  plus the Rust/TS contract checks before manual smoke starts. Validate the
+  receipt with `node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json`, and attach
   `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
   deterministic release evidence for the checked fixture and schema hashes.
   Treat this as a fixture-derived shape lock, not generated DTO ownership. Run
