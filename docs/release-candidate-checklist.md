@@ -61,7 +61,11 @@ provider secret, generic secret, credential, password, or serde rename alias
 fields before manual smoke starts.
 The same publication readiness gate validates the smoke evidence template and
 runs `node scripts/check-release-smoke-evidence.js --self-test` so release
-evidence drift fails before manual smoke starts.
+evidence drift fails before manual smoke starts. It also validates
+`docs/release-governance-signoff.template.json` with
+`node scripts/check-release-governance-signoff.js` and runs
+`node scripts/check-release-governance-signoff.js --self-test` so governance
+sign-off evidence drift fails before manual publish.
 Before manually publishing, filled smoke evidence must include the
 `automated-release-artifacts` item with references to the CI-produced
 `release-artifacts/supply-chain`, `release-artifacts/coverage`, and
@@ -106,12 +110,15 @@ license allowlists are not part of this gate.
 
 Repo-local automation cannot verify GitHub branch protection, tag rulesets, or
 live code-scanning and secret-scanning alert state. Before manually publishing a
-draft release, record a governance sign-off that confirms protected `v*` tags
-and the intended release branch rules are active, CodeQL alerts have been
-triaged, Gitleaks and GitHub secret-scanning alerts have been triaged, and the
-person publishing the release is authorized to do so. Treat missing governance
-sign-off as a release blocker even when CI, signing, notarization, and filled
-manual smoke evidence pass.
+draft release, start from `docs/release-governance-signoff.template.json`,
+fill a separate evidence file, and validate it with
+`node scripts/check-release-governance-signoff.js path/to/filled-signoff.json`.
+A filled valid governance sign-off is required before manual publish. It must
+confirm protected `v*` tags and the intended release branch rules are active,
+CodeQL alerts have been triaged, Gitleaks and GitHub secret-scanning alerts
+have been triaged, and the person publishing the release is authorized to do
+so. Treat missing governance sign-off as a release blocker even when CI,
+signing, notarization, and filled manual smoke evidence pass.
 
 Coverage artifact visibility must run in CI before manual smoke starts. CI
 installs the Rust coverage helper with

@@ -194,6 +194,7 @@ jobs:
             echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'
             echo
             echo "Release governance sign-off:"
+            echo "- Start from docs/release-governance-signoff.template.json, then validate filled governance evidence with node scripts/check-release-governance-signoff.js path/to/filled-signoff.json before manual publish."
             echo "- Before publishing, confirm protected v* tags and release branch rules are active, CodeQL alerts are triaged, Gitleaks and GitHub secret-scanning alerts are triaged, and the publisher is authorized. These are external checks; this workflow does not verify live GitHub settings or alert state."
             echo
             echo "Privacy and storage disclosure:"

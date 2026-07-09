@@ -1,0 +1,83 @@
+{
+  "kind": "release-governance-signoff",
+  "schemaVersion": 1,
+  "template": true,
+  "templateStatus": "pending",
+  "externalBoundary": "Repo-local automation cannot verify GitHub branch protection, tag rulesets, or live code-scanning/secret-scanning alert state.",
+  "release": {
+    "version": "PENDING: SemVer release version without leading v, for example 1.2.3",
+    "gitRef": "PENDING: refs/tags/v${version}",
+    "gitSha": "PENDING: full 40-character release commit SHA"
+  },
+  "signer": {
+    "signerName": "PENDING: maintainer name",
+    "signerRole": "PENDING: maintainer role",
+    "signedAt": "PENDING: ISO-8601 timestamp with timezone"
+  },
+  "publisherAuthorization": {
+    "publisherName": "PENDING: release publisher name",
+    "authorizationEvidence": "PENDING: maintainer/publisher authorization evidence"
+  },
+  "checks": [
+    {
+      "id": "protected-v-tags",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm protected v* tag rules are active",
+        "references": [
+          "PENDING: attach GitHub tag protection or ruleset evidence"
+        ]
+      }
+    },
+    {
+      "id": "release-branch-rules",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm intended release branch rules are active",
+        "references": [
+          "PENDING: attach GitHub branch protection or ruleset evidence"
+        ]
+      }
+    },
+    {
+      "id": "codeql-alerts-triaged",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm CodeQL code-scanning alerts are triaged",
+        "references": [
+          "PENDING: attach CodeQL alert triage evidence"
+        ]
+      }
+    },
+    {
+      "id": "gitleaks-alerts-triaged",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm Gitleaks alerts are triaged",
+        "references": [
+          "PENDING: attach Gitleaks workflow or alert triage evidence"
+        ]
+      }
+    },
+    {
+      "id": "github-secret-scanning-alerts-triaged",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm GitHub secret-scanning alerts are triaged",
+        "references": [
+          "PENDING: attach GitHub secret-scanning alert triage evidence"
+        ]
+      }
+    },
+    {
+      "id": "publisher-authorized",
+      "status": "pending",
+      "evidence": {
+        "summary": "PENDING: confirm the publisher is authorized to manually publish this release",
+        "references": [
+          "PENDING: attach publisher authorization evidence"
+        ]
+      }
+    }
+  ]
+}

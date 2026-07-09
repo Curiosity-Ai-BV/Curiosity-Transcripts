@@ -257,9 +257,10 @@ permissions stay minimal for this slice: `contents: read` for checkout and
 `security-events: write` for code scanning upload. This slice is visibility-only
 because it does not add branch-protection or alert triage policy; those
 enforcement decisions remain release governance work. The release-candidate
-checklist now documents a repo-local governance sign-off contract, but actual
-GitHub ruleset settings and live CodeQL alert state remain external
-release-candidate checks.
+checklist now documents a repo-local governance sign-off template and validator
+(`docs/release-governance-signoff.template.json` and
+`scripts/check-release-governance-signoff.js`), but actual GitHub ruleset
+settings and live CodeQL alert state remain external release-candidate checks.
 
 Current GitHub Actions workflow syntax status: CI downloads the upstream
 `actionlint_1.7.12_linux_amd64.tar.gz` release artifact, verifies SHA-256
@@ -295,7 +296,9 @@ container instead of the Gitleaks Action because organization repositories
 require a `GITLEAKS_LICENSE` secret for that action. GitHub secret scanning,
 branch protection, and alert triage policy remain release governance work unless
 configured separately; live GitHub secret-scanning alert state is part of the
-external release governance sign-off.
+external release governance sign-off. The current governance-signoff state is
+template plus strict local validator, not live GitHub settings or alert-state
+verification.
 
 Current Phase 2C visibility/retention status: the desktop detail view exposes
 per-meeting privacy data state: private audio storage path, captured raw-audio

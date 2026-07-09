@@ -50,6 +50,7 @@ check_file "site/index.html"
 check_file "docs/at-rest-data-strategy.md"
 check_file "docs/release-candidate-checklist.md"
 check_file "docs/release-candidate-smoke-evidence.template.json"
+check_file "docs/release-governance-signoff.template.json"
 check_file "scripts/check-ci-critical-gates.js"
 check_file "scripts/generate-supply-chain-artifacts.js"
 check_file "scripts/check-supply-chain-artifacts.js"
@@ -58,6 +59,7 @@ check_file "scripts/check-tauri-security.js"
 check_file "scripts/check-tauri-command-surface.js"
 check_file "scripts/check-plain-secret-storage.js"
 check_file "scripts/check-release-smoke-evidence.js"
+check_file "scripts/check-release-governance-signoff.js"
 check_file "scripts/check-release-provenance-artifact.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
@@ -140,7 +142,8 @@ require_text docs/production-readiness-roadmap.md 'path/to/filled-evidence\.json
 require_text docs/production-readiness-roadmap.md 'not proof that smoke passed' 'smoke evidence validator does not overclaim manual smoke'
 require_text docs/production-readiness-roadmap.md 'hardware smoke remain manual and not yet completed' 'real hardware smoke remains manual'
 require_text docs/production-readiness-roadmap.md 'Current CodeQL code scanning status' 'current CodeQL code scanning status'
-require_text docs/production-readiness-roadmap.md 'repo-local governance sign-off contract' 'roadmap governance sign-off contract status'
+require_text docs/production-readiness-roadmap.md 'release-governance-signoff\.template\.json' 'roadmap governance sign-off template status'
+require_text docs/production-readiness-roadmap.md 'check-release-governance-signoff\.js' 'roadmap governance sign-off validator status'
 require_text docs/production-readiness-roadmap.md 'live CodeQL alert state remain external' 'roadmap external CodeQL alert state boundary'
 require_text docs/production-readiness-roadmap.md 'Current GitHub Actions workflow syntax status' 'current GitHub Actions workflow syntax status'
 require_text docs/production-readiness-roadmap.md 'actionlint -color=false' 'actionlint roadmap command'
@@ -234,6 +237,9 @@ require_text docs/release-candidate-checklist.md 'ghcr\.io/gitleaks/gitleaks:v8\
 require_text docs/release-candidate-checklist.md 'GITLEAKS_LICENSE' 'Gitleaks Action org-license release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'protection, and alert triage policy' 'secret scanning governance release-candidate boundary'
 require_text docs/release-candidate-checklist.md 'Release Governance Sign-Off' 'release governance sign-off checklist section'
+require_text docs/release-candidate-checklist.md 'release-governance-signoff\.template\.json' 'release governance sign-off template checklist reference'
+require_text docs/release-candidate-checklist.md 'node scripts/check-release-governance-signoff\.js path/to/filled-signoff\.json' 'release governance filled sign-off validator command'
+require_normalized_text docs/release-candidate-checklist.md 'A filled valid governance sign-off is required before manual publish.' 'release governance valid sign-off required before publish'
 require_normalized_text docs/release-candidate-checklist.md 'Repo-local automation cannot verify GitHub branch protection, tag rulesets, or live code-scanning and secret-scanning alert state.' 'release governance external-check boundary'
 require_normalized_text docs/release-candidate-checklist.md 'protected `v*` tags and the intended release branch rules are active, CodeQL alerts have been triaged, Gitleaks and GitHub secret-scanning alerts have been triaged' 'release governance triage checklist'
 require_normalized_text docs/release-candidate-checklist.md 'the person publishing the release is authorized to do so' 'release governance publisher authority checklist'
@@ -527,6 +533,9 @@ if ! node scripts/check-coverage-artifacts.js --self-test >/dev/null; then
   failures=1
 fi
 if ! node --check scripts/check-release-smoke-evidence.js >/dev/null; then
+  failures=1
+fi
+if ! node --check scripts/check-release-governance-signoff.js >/dev/null; then
   failures=1
 fi
 if ! node --check scripts/check-release-provenance-artifact.js >/dev/null; then
@@ -964,6 +973,8 @@ require_text scripts/check-tauri-command-surface.js 'snapshot command removed fr
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-plain-secret-storage\.js; then' 'plain secret storage publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-smoke-evidence\.js; then' 'smoke evidence template publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-smoke-evidence\.js --self-test' 'smoke evidence validator self-test publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-release-governance-signoff\.js; then' 'governance sign-off template publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-release-governance-signoff\.js --self-test' 'governance sign-off validator self-test publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-release-provenance-artifact\.js --self-test' 'release provenance artifact validator self-test publication readiness gate'
 require_text scripts/check-publication-readiness.sh 'node scripts/check-supply-chain-artifacts\.js --self-test' 'supply-chain artifact checker self-test publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
@@ -1040,6 +1051,8 @@ require_text .github/workflows/release.yml 'leaves this GitHub Release as a draf
 require_text .github/workflows/release.yml 'gh release edit "\$RELEASE_TAG" --draft=false' 'release notes explicit manual publish command'
 require_text .github/workflows/release.yml 'Publishing requires an explicit manual release action' 'release notes explicit manual publish boundary'
 require_text .github/workflows/release.yml 'Release governance sign-off' 'release notes governance sign-off heading'
+require_text .github/workflows/release.yml 'docs/release-governance-signoff\.template\.json' 'release notes governance sign-off template pointer'
+require_text .github/workflows/release.yml 'node scripts/check-release-governance-signoff\.js path/to/filled-signoff\.json' 'release notes filled governance sign-off validator command'
 require_text .github/workflows/release.yml 'protected v\* tags and release branch rules are active' 'release notes branch/tag governance reminder'
 require_text .github/workflows/release.yml 'CodeQL alerts are triaged, Gitleaks and GitHub secret-scanning alerts are triaged' 'release notes security alert triage reminder'
 require_text .github/workflows/release.yml 'the publisher is authorized' 'release notes publisher authority reminder'
@@ -1145,6 +1158,14 @@ if ! node scripts/check-release-smoke-evidence.js; then
 fi
 
 if ! node scripts/check-release-smoke-evidence.js --self-test; then
+  failures=1
+fi
+
+if ! node scripts/check-release-governance-signoff.js; then
+  failures=1
+fi
+
+if ! node scripts/check-release-governance-signoff.js --self-test; then
   failures=1
 fi
 
