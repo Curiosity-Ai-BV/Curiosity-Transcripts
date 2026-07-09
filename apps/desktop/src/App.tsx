@@ -677,17 +677,21 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
       const testedPathTrimmed = testedPath.trim();
       const savedWhisperPath = currentSnapshot.settings.whisperModelPath.trim();
       const effectiveWhisperPath = currentSnapshot.model.configuredPath.trim();
-      if (
+      const testedPathIsActive =
         result.state === "Valid" &&
         testedPathTrimmed !== "" &&
-        (testedPathTrimmed === savedWhisperPath || testedPathTrimmed === effectiveWhisperPath)
-      ) {
+        (testedPathTrimmed === savedWhisperPath || testedPathTrimmed === effectiveWhisperPath);
+      if (testedPathIsActive) {
         const nextSnapshot = await commandFacade.desktopSnapshot();
         applyDesktopSnapshot(nextSnapshot);
       }
+      const testedPathNeedsSave = result.state === "Valid" && testedPathTrimmed !== "" && !testedPathIsActive;
+      const validPathMessage = result.message || "Whisper model path is readable.";
       setSettingsFeedback({
         tone: result.state === "Valid" ? "ready" : "blocked",
-        message: result.message || result.setupGuidance,
+        message: testedPathNeedsSave
+          ? `${validPathMessage} Save Whisper to make this path active.`
+          : result.message || result.setupGuidance,
         metadata:
           result.state === "Valid"
             ? {

@@ -2263,7 +2263,9 @@ describe("desktop workspace shell", () => {
     await user.type(screen.getByLabelText("Whisper model path"), "/models/ggml-base.en.bin");
     await user.click(screen.getByRole("button", { name: "Test path" }));
     const feedback = await screen.findByRole("status");
-    expect(within(feedback).getByText("Whisper model path is readable.")).toBeInTheDocument();
+    expect(
+      within(feedback).getByText("Whisper model path is readable. Save Whisper to make this path active."),
+    ).toBeInTheDocument();
     expect(within(feedback).getByText("Size: 16 bytes")).toBeInTheDocument();
     expect(
       within(feedback).getByText("SHA-256: 8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54"),
@@ -2282,6 +2284,122 @@ describe("desktop workspace shell", () => {
     ]);
     expect(screen.getByText("Whisper model path saved.")).toBeInTheDocument();
     expect(screen.getByLabelText("Whisper model path")).toHaveValue("/models/ggml-base.en.bin");
+  });
+
+  it("keeps a valid unsaved Whisper path inactive until it is saved", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const currentPath = "/models/current.gguf";
+    const unsavedPath = "/models/unsaved.gguf";
+    const initial = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: currentPath,
+      },
+      setupGuidance: whisperSetupGuidanceForPath(currentPath, null),
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const refreshedReady = connectedSnapshot({
+      model: {
+        kind: "ready",
+        configuredPath: unsavedPath,
+      },
+      setupGuidance: whisperSetupGuidanceForPath(unsavedPath, validWhisperPathTestEvidence(unsavedPath)),
+      settings: {
+        ...initial.settings,
+        whisperModelPath: unsavedPath,
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return refreshedReady;
+      },
+      testWhisperModelPath: async (args) => {
+        calls.push({ method: "testWhisperModelPath", args });
+        return {
+          state: "Valid",
+          message: "Backend verified this Whisper model path.",
+          setupGuidance: "",
+          fileSizeBytes: 16,
+          sha256: "8b68af71d2eaaec61d5b4f50e330493cc0074323676962d9761cbc7c6810ba54",
+        };
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    const transcribe = screen.getByRole("button", { name: "Transcribe" });
+    expect(transcribe).toBeDisabled();
+    await user.type(screen.getByLabelText("Whisper model path"), unsavedPath);
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+
+    const feedback = await screen.findByRole("status");
+    expect(
+      within(feedback).getByText("Backend verified this Whisper model path. Save Whisper to make this path active."),
+    ).toBeInTheDocument();
+    expect(within(feedback).getByText("Size: 16 bytes")).toBeInTheDocument();
+    expect(transcribe).toBeDisabled();
+    expect(calls).toEqual([
+      {
+        method: "testWhisperModelPath",
+        args: { path: unsavedPath },
+      },
+    ]);
+  });
+
+  it("does not add save guidance to invalid Whisper path test feedback", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ method: string; args?: unknown }> = [];
+    const initial = connectedSnapshot({
+      model: {
+        kind: "untested",
+        configuredPath: "/models/current.gguf",
+      },
+      setupGuidance: whisperSetupGuidanceForPath("/models/current.gguf", null),
+      settings: {
+        whisperModelPath: "",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3.6:27b",
+        exportDirectory: null,
+        rawAudioRetentionPolicy: "Retain",
+      },
+    });
+    const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => {
+        calls.push({ method: "desktopSnapshot" });
+        return connectedSnapshot();
+      },
+      testWhisperModelPath: async (args) => {
+        calls.push({ method: "testWhisperModelPath", args });
+        return {
+          state: "Invalid",
+          message: "Whisper model path is blocked.",
+          setupGuidance: "Choose an existing whisper.cpp-compatible .bin or .gguf model file.",
+        };
+      },
+    });
+
+    render(<App snapshot={initial} commandFacade={commandFacade} />);
+
+    await user.type(screen.getByLabelText("Whisper model path"), "/models/blocked.txt");
+    await user.click(screen.getByRole("button", { name: "Test path" }));
+
+    const feedback = await screen.findByRole("status");
+    expect(within(feedback).getByText("Whisper model path is blocked.")).toBeInTheDocument();
+    expect(within(feedback).queryByText(/Save Whisper to make this path active/)).not.toBeInTheDocument();
+    expect(calls).toEqual([
+      {
+        method: "testWhisperModelPath",
+        args: { path: "/models/blocked.txt" },
+      },
+    ]);
   });
 
   it("enables transcription after testing the already-saved Whisper path", async () => {
@@ -2529,7 +2647,7 @@ describe("desktop workspace shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Choose model" }));
     await user.click(screen.getByRole("button", { name: "Test path" }));
-    await screen.findByText("Whisper model path is readable.");
+    await screen.findByText("Whisper model path is readable. Save Whisper to make this path active.");
     await user.click(screen.getByRole("button", { name: "Save Whisper" }));
 
     expect(calls).toEqual([
