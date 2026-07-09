@@ -3592,8 +3592,11 @@ fn recoverable_artifact_entries(manifest: &ArtifactManifest) -> Vec<ArtifactMani
 
 fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
     let meetings = root.join("meetings");
-    if !meetings.exists() {
-        return Ok(Vec::new());
+    match fs::symlink_metadata(&meetings) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
     }
     let mut paths = Vec::new();
     for entry in fs::read_dir(meetings)? {

@@ -831,6 +831,92 @@ fn startup_repair_ignores_symlinked_meeting_directory_manifest_outside_app_stora
     assert_eq!(repair_status, RepairStatus::NotNeeded);
 }
 
+#[cfg(unix)]
+#[test]
+fn top_level_meetings_symlink_does_not_recover_or_delete_outside_manifest() {
+    let root = test_root("symlink-top-level-meetings");
+    let outside_root = test_root("symlink-top-level-meetings-outside");
+    let db_path = root.join("app.db");
+    let store = Store::open(&db_path, root.clone()).expect("open store");
+    store.migrate().expect("migrate");
+    seed_meeting_session(&store, "meeting-1", "session-1");
+    store
+        .insert_audio_artifact(&AudioArtifact::new_private(
+            "artifact-1",
+            "session-1",
+            ArtifactKind::RawMic,
+            "meetings/meeting-1/audio/raw-mic.wav",
+            "sha256:partial",
+        ))
+        .expect("insert artifact");
+    store
+        .insert_processing_job(&curiosity_domain::ProcessingJob::new(
+            "job-1",
+            "meeting-1",
+            JobKind::Transcribe,
+            JobStatus::Running,
+        ))
+        .expect("insert job");
+
+    let outside_artifact = outside_root.join("meeting-1/audio/raw-mic.wav");
+    fs::create_dir_all(outside_artifact.parent().expect("outside artifact parent"))
+        .expect("outside artifact dir");
+    fs::write(&outside_artifact, b"partial wav").expect("outside artifact file");
+    let outside_manifest = outside_root.join("meeting-1/manifest.json");
+    ArtifactManifest::new(
+        "meeting-1",
+        "session-1",
+        "artifact-1",
+        "meetings/meeting-1/audio/raw-mic.wav",
+        "sha256:partial",
+    )
+    .mark_interrupted_recoverable()
+    .write(&outside_manifest)
+    .expect("write outside manifest");
+    std::os::unix::fs::symlink(&outside_root, root.join("meetings"))
+        .expect("symlink top-level meetings outside app storage");
+
+    let repair_report = store.repair_startup().expect("repair startup");
+
+    assert!(repair_report.recovered_artifacts.is_empty());
+    assert!(repair_report.recovered_jobs.is_empty());
+    assert!(repair_report.conflicts.is_empty());
+    assert_eq!(
+        store
+            .artifact_recovery_status("artifact-1")
+            .expect("artifact recovery status"),
+        RepairStatus::NotNeeded
+    );
+    assert_eq!(
+        store.job_status("job-1").expect("job status"),
+        JobStatus::Running
+    );
+
+    let conn = Connection::open(&db_path).expect("open raw connection");
+    conn.execute("DELETE FROM audio_artifacts WHERE id = 'artifact-1'", [])
+        .expect("delete artifact row");
+    conn.execute("DELETE FROM recording_sessions WHERE id = 'session-1'", [])
+        .expect("delete session row");
+    drop(conn);
+    store
+        .update_meeting_status("meeting-1", MeetingStatus::Deleted, None)
+        .expect("mark meeting deleted");
+
+    let reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete");
+    let second_reports = store
+        .finalize_pending_delete_intents()
+        .expect("finalize pending delete again");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].meeting_id, "meeting-1");
+    assert!(reports[0].deleted_private_artifacts.is_empty());
+    assert!(outside_manifest.exists());
+    assert!(outside_artifact.exists());
+    assert!(second_reports.is_empty());
+}
+
 #[test]
 fn startup_repair_reports_manifest_db_conflicts_without_recovering_rows_or_jobs() {
     let cases = [
