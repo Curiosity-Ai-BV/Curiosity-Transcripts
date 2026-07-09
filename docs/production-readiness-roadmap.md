@@ -456,8 +456,8 @@ to `release-artifacts/coverage/rust`, runs frontend Vitest V8 coverage to
 `release-artifacts/coverage`. The checker verifies named critical seam-intent
 evidence in LCOV: source records for `apps/desktop/src/App.tsx`,
 `apps/desktop/src/commandAdapter.ts`, `apps/desktop/src/desktopContract.ts`,
-and the extracted desktop component seam modules from recording controls through
-settings form must include positive `FNDA` hits for named UI,
+and the extracted desktop component seam modules, including command outcomes
+and settings form, must include positive `FNDA` hits for named UI,
 command-adapter facade/mapping, and runtime contract-validator seams, while
 source records for
 `crates/store/src/lib.rs` and `apps/desktop/src-tauri/src/main.rs` must include

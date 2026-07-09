@@ -1,7 +1,6 @@
 import {
   Moon,
   Sun,
-  Trash,
   Waveform,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -33,6 +32,7 @@ import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
+import { DesktopCommandOutcomes } from "./desktopCommandOutcomes";
 import { DesktopCalendarContext } from "./desktopCalendarContext";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
@@ -367,6 +367,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   const deleteCommandState = mapDeleteState(currentSnapshot.deleteCommand);
   const failedDeleteMeetingId =
     currentSnapshot.deleteCommand.state === "failed" ? currentSnapshot.deleteCommand.meetingId?.trim() : undefined;
+  const retryDeleteDisabled = !commandSurfaceReady || commandBusy;
   const analysisDisclosure = selectedMeeting ? mapAnalysisDisclosure(selectedMeeting.analysis) : null;
   const selectedAnalysisCommand =
     selectedMeeting && currentSnapshot.analysisCommand?.meetingId === selectedMeeting.id
@@ -875,6 +876,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   }
 
   const busyCommandTitle = "A desktop command is already running.";
+  const retryDeleteTitle = commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting.";
   const startButtonTitle = !commandSurfaceReady
     ? commandUnavailableTitle
       : commandBusy
@@ -1038,41 +1040,18 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
           </div>
         </header>
 
-        {commandError ? (
-          <p role="alert" className="command-error">
-            {commandError}
-          </p>
-        ) : null}
-        {currentSnapshot.exportCommand.state !== "idle" ? (
-          <p role="status" className={`command-outcome ${exportCommandState.tone}`}>
-            <strong>{exportCommandState.label}</strong>
-            <span>{exportCommandState.detail}</span>
-          </p>
-        ) : null}
-        {currentSnapshot.deleteCommand.state !== "idle" ? (
-          <div role="status" className={`command-outcome ${deleteCommandState.tone}`}>
-            <strong>{deleteCommandState.label}</strong>
-            <span>{deleteCommandState.detail}</span>
-            {failedDeleteMeetingId ? (
-              <button
-                type="button"
-                className="button danger"
-                disabled={!commandSurfaceReady || commandBusy}
-                title={commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting."}
-                onClick={retryFailedDelete}
-              >
-                <Trash size={16} weight="regular" />
-                Retry delete
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {summaryFailure ? (
-          <div role="status" className="command-outcome blocked">
-            <strong>{summaryFailure.message}</strong>
-            {summaryFailure.setupGuidance ? <span>{summaryFailure.setupGuidance}</span> : null}
-          </div>
-        ) : null}
+        <DesktopCommandOutcomes
+          commandError={commandError}
+          showExportOutcome={currentSnapshot.exportCommand.state !== "idle"}
+          exportCommandState={exportCommandState}
+          showDeleteOutcome={currentSnapshot.deleteCommand.state !== "idle"}
+          deleteCommandState={deleteCommandState}
+          failedDeleteMeetingId={failedDeleteMeetingId}
+          retryDeleteDisabled={retryDeleteDisabled}
+          retryDeleteTitle={retryDeleteTitle}
+          summaryFailure={summaryFailure ?? null}
+          onRetryDelete={retryFailedDelete}
+        />
 
         <div className="content-grid">
           <MeetingPane

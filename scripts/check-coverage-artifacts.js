@@ -42,6 +42,11 @@ const desktopComponentSeamRequiredPaths = [
     requiredFunctions: ["MeetingTranscriptSection"],
   },
   {
+    expected: "apps/desktop/src/desktopCommandOutcomes.tsx",
+    alternatives: ["src/desktopCommandOutcomes.tsx"],
+    requiredFunctions: ["DesktopCommandOutcomes"],
+  },
+  {
     expected: "apps/desktop/src/desktopSettingsEngineStack.tsx",
     alternatives: ["src/desktopSettingsEngineStack.tsx"],
     requiredFunctions: ["DesktopSettingsEngineStack"],
@@ -930,6 +935,19 @@ function runSelfTests() {
       ),
     ),
     "Missing coverage source path apps/desktop/src/desktopRecordingControls.tsx",
+  );
+  expectRejected(
+    "missing command outcomes component source",
+    frontendComponentArtifact,
+    lcov(
+      positiveRecordsForRequiredPaths(
+        desktopComponentSeamRequiredPaths.filter(
+          (requiredPath) =>
+            requiredPath.expected !== "apps/desktop/src/desktopCommandOutcomes.tsx",
+        ),
+      ),
+    ),
+    "Missing coverage source path apps/desktop/src/desktopCommandOutcomes.tsx",
   );
   expectRejected(
     "missing extracted component function evidence",

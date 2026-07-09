@@ -26,6 +26,7 @@ export default defineConfig({
         "src/desktopMeetingSummarySection.tsx",
         "src/desktopMeetingDetailActions.tsx",
         "src/desktopMeetingTranscriptSection.tsx",
+        "src/desktopCommandOutcomes.tsx",
         "src/desktopSettingsEngineStack.tsx",
         "src/desktopModelReadiness.tsx",
         "src/desktopModelSetupOptions.tsx",
