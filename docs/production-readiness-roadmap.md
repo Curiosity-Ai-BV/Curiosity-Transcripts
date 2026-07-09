@@ -448,14 +448,17 @@ exact tool provenance command
 to `release-artifacts/coverage/rust`, runs frontend Vitest V8 coverage to
 `release-artifacts/coverage/frontend`, checks the reports with
 `node scripts/check-coverage-artifacts.js`, and uploads
-`release-artifacts/coverage`. The checker verifies LCOV source-path visibility
-and at least one positive `DA` line in each matching source record
-for `apps/desktop/src/App.tsx`, `apps/desktop/src/commandAdapter.ts`,
-`crates/store/src/lib.rs`, and `apps/desktop/src-tauri/src/main.rs`. This is a
-report-visibility gate with no global percentage threshold; publication
-readiness rejects loosening or removing the exact CI install pin. It is not
-generated DTOs or module splitting, and not a claim of comprehensive coverage
-for all privacy, deletion, recovery, provider, or release-metadata paths.
+`release-artifacts/coverage`. The checker verifies named critical seam-intent
+evidence in LCOV: source records for `apps/desktop/src/App.tsx` and
+`apps/desktop/src/commandAdapter.ts` must include positive `FNDA` hits for the
+named UI and command-adapter seams, and source records for `crates/store/src/lib.rs`
+and `apps/desktop/src-tauri/src/main.rs` must include positive `DA` lines inside
+anchored Rust spans for delete cleanup, command state, raw-audio retention, and
+export/delete DTO seams. This is a seam-evidence gate with no global percentage
+threshold; publication readiness rejects loosening or removing the exact CI
+install pin. It is not generated DTOs or module splitting, and not a claim of
+comprehensive coverage for all privacy, deletion, recovery, provider, or
+release-metadata paths.
 
 Later work: generated DTOs, module splitting, and broader seam-by-seam coverage
 intent checks after those seams are split behind smaller facades.

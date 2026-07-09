@@ -133,7 +133,14 @@ require_text docs/production-readiness-roadmap.md 'fixture-derived shape lock' '
 require_text docs/production-readiness-roadmap.md '`search_meetings` results are also validated' 'Phase 5A search result command contract boundary'
 require_text docs/production-readiness-roadmap.md 'Current Phase 5B coverage artifact status' 'Phase 5B coverage artifact status'
 require_text docs/production-readiness-roadmap.md 'release-artifacts/coverage' 'Phase 5B coverage artifact output path'
-require_text docs/production-readiness-roadmap.md 'no global percentage threshold' 'Phase 5B non-percentage coverage boundary'
+require_normalized_text \
+  docs/production-readiness-roadmap.md \
+  'named critical seam-intent evidence' \
+  'Phase 5B named seam-intent coverage boundary'
+require_normalized_text \
+  docs/production-readiness-roadmap.md \
+  'no global percentage threshold' \
+  'Phase 5B non-percentage coverage boundary'
 require_normalized_text docs/production-readiness-roadmap.md 'not generated DTOs or module splitting' 'Phase 5B generated DTO/module split boundary'
 require_text docs/production-readiness-roadmap.md 'Current smoke evidence manifest/validator status' 'smoke evidence manifest and validator status'
 require_text docs/production-readiness-roadmap.md 'release-candidate-smoke-evidence\.template\.json' 'smoke evidence template roadmap reference'
@@ -209,6 +216,10 @@ require_text .github/workflows/release.yml 'node scripts/check-release-provenanc
 require_text .github/workflows/pages.yml 'node scripts/check-release-provenance-artifact\.js "\$provenance_path"' 'Pages latest provenance artifact workflow validation'
 require_text docs/release-candidate-checklist.md 'node scripts/check-coverage-artifacts\.js' 'coverage artifact checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact release-candidate output path'
+require_normalized_text \
+  docs/release-candidate-checklist.md \
+  'named critical seam-intent evidence' \
+  'release-candidate named seam-intent coverage boundary'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/App\.tsx' 'frontend App coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'apps/desktop/src/commandAdapter\.ts' 'frontend command adapter coverage source-path expectation'
 require_text docs/release-candidate-checklist.md 'crates/store/src/lib\.rs' 'Rust store coverage source-path expectation'
