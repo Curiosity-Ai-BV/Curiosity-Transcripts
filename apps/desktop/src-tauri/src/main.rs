@@ -7,6 +7,7 @@ mod file_hashing;
 mod import_audio_validation;
 mod local_ollama;
 mod recording_artifact_paths;
+mod recording_streams;
 mod whisper_setup;
 
 use crate::calendar::{
@@ -31,6 +32,9 @@ use crate::recording_artifact_paths::{
     imported_artifact_relative_path, imported_temp_artifact_relative_path,
     microphone_artifact_relative_path, microphone_storage_path, system_audio_artifact_id,
     system_audio_artifact_relative_path,
+};
+use crate::recording_streams::{
+    recording_source_for_streams, required_recording_source_for_streams, stream_label,
 };
 use crate::whisper_setup::{
     file_modified_at_ms, is_supported_whisper_model_file_path, model_name_for_path,
@@ -3762,31 +3766,6 @@ fn recording_dto_with_retention(
         raw_audio_retention,
         recoverable: false,
         recovery_action: recovery_action.to_string(),
-    }
-}
-
-fn stream_label(stream: StreamKind) -> &'static str {
-    match stream {
-        StreamKind::Microphone => "microphone",
-        StreamKind::SystemAudio => "system audio",
-    }
-}
-
-fn recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
-    let has_microphone = streams.contains(&StreamKind::Microphone);
-    let has_system_audio = streams.contains(&StreamKind::SystemAudio);
-    match (has_microphone, has_system_audio) {
-        (true, true) => RecordingSource::Mixed,
-        (false, true) => RecordingSource::System,
-        _ => RecordingSource::Microphone,
-    }
-}
-
-fn required_recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
-    if streams.contains(&StreamKind::Microphone) {
-        RecordingSource::Microphone
-    } else {
-        recording_source_for_streams(streams)
     }
 }
 
