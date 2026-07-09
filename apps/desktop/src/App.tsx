@@ -39,10 +39,10 @@ import {
 } from "./commandAdapter";
 import {
   CopyPullCommandButton,
-  IconFrame,
   StatusLine,
   StatusPill,
 } from "./desktopWorkspaceComponents";
+import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
@@ -955,87 +955,29 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   }
 
   const recordingControls = (
-    <section className="recording-strip" aria-label="Recording controls and status">
-      <div className="strip-primary">
-        <IconFrame tone={recording.tone}>
-          <Waveform size={22} weight="regular" />
-        </IconFrame>
-        <div>
-          <div className="strip-heading-row">
-            <h2>Recording</h2>
-            <StatusPill tone={recording.tone} label={recording.label} />
-          </div>
-          <p>{recording.detail}</p>
-        </div>
-      </div>
-      <div className="recording-actions">
-        <label className="recording-title-field" htmlFor="recording-title">
-          <span>Recording title</span>
-          <input
-            id="recording-title"
-            value={recordingTitle}
-            onChange={(event) => setRecordingTitle(event.target.value)}
-            placeholder="Optional meeting title"
-            disabled={recordingTitleDisabled}
-          />
-        </label>
-        <div className="import-wav-control">
-          <label className="recording-title-field" htmlFor="import-wav-path">
-            <span>WAV source path</span>
-            <input
-              id="import-wav-path"
-              value={importWavPath}
-              onChange={(event) => setImportWavPath(event.target.value)}
-              placeholder="/path/to/audio.wav"
-              disabled={importWavPathDisabled}
-            />
-          </label>
-          <button
-            type="button"
-            className="button"
-            disabled={chooseWavDisabled}
-            title={chooseWavButtonTitle}
-            onClick={chooseImportWavFile}
-          >
-            <FolderOpen size={16} weight="regular" />
-            {pendingCommand === "choose-wav" ? "Choosing WAV" : "Choose WAV"}
-          </button>
-        </div>
-        <div className="recording-buttons">
-          <button
-            type="button"
-            className="button primary"
-            disabled={startDisabled}
-            title={startButtonTitle}
-            onClick={startRecording}
-          >
-            <Microphone size={16} weight="regular" />
-            {pendingCommand === "start" ? "Starting recording" : "Start recording"}
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={importDisabled}
-            title={importButtonTitle}
-            onClick={importWavFile}
-          >
-            <FileText size={16} weight="regular" />
-            {pendingCommand === "import" ? "Importing WAV" : "Import WAV"}
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={stopDisabled}
-            title={stopButtonTitle}
-            onClick={stopRecording}
-          >
-            <Waveform size={16} weight="regular" />
-            {pendingCommand === "stop" ? "Stopping recording" : "Stop recording"}
-          </button>
-        </div>
-        <span className="recording-path">{currentSnapshot.recording.storage_location.app_private_path}</span>
-      </div>
-    </section>
+    <RecordingControls
+      recording={recording}
+      recordingTitle={recordingTitle}
+      importWavPath={importWavPath}
+      recordingTitleDisabled={recordingTitleDisabled}
+      importWavPathDisabled={importWavPathDisabled}
+      chooseWavDisabled={chooseWavDisabled}
+      startDisabled={startDisabled}
+      importDisabled={importDisabled}
+      stopDisabled={stopDisabled}
+      chooseWavButtonTitle={chooseWavButtonTitle}
+      startButtonTitle={startButtonTitle}
+      importButtonTitle={importButtonTitle}
+      stopButtonTitle={stopButtonTitle}
+      storagePath={currentSnapshot.recording.storage_location.app_private_path}
+      pendingCommand={pendingCommand}
+      onRecordingTitleChange={setRecordingTitle}
+      onImportWavPathChange={setImportWavPath}
+      onChooseWav={chooseImportWavFile}
+      onStartRecording={startRecording}
+      onImportWav={importWavFile}
+      onStopRecording={stopRecording}
+    />
   );
 
   return (
