@@ -7,6 +7,7 @@ const adapterPath = path.join(root, "apps", "desktop", "src", "commandAdapter.ts
 const mainLabel = "apps/desktop/src-tauri/src/main.rs";
 const adapterLabel = "apps/desktop/src/commandAdapter.ts";
 const scriptLabel = "scripts/check-tauri-command-surface.js";
+const RELEASE_ONLY_COMMAND_ALLOWLIST = [];
 
 let ok = true;
 
@@ -105,7 +106,48 @@ function validateCommandSurface(source) {
   return errors;
 }
 
-function validateFrontendCommandSurface(source, releaseCommands = []) {
+function validateReleaseCommandOwnership(
+  releaseCommands,
+  facadeCommands,
+  releaseOnlyAllowlist = RELEASE_ONLY_COMMAND_ALLOWLIST,
+) {
+  const errors = [];
+  const releaseCommandSet = new Set(releaseCommands);
+  const facadeCommandSet = new Set(facadeCommands);
+  const allowedReleaseOnlyCommands = new Set();
+
+  for (const entry of releaseOnlyAllowlist) {
+    const command = entry.command;
+    const reason = typeof entry.reason === "string" ? entry.reason.trim() : "";
+
+    if (!reason) {
+      errors.push(`RELEASE_ONLY_COMMAND_ALLOWLIST entry ${command} must include a non-empty reason`);
+    } else {
+      allowedReleaseOnlyCommands.add(command);
+    }
+
+    if (!releaseCommandSet.has(command)) {
+      errors.push(`RELEASE_ONLY_COMMAND_ALLOWLIST entry ${command} is not registered by the release Tauri handler`);
+    }
+  }
+
+  for (const command of [...releaseCommandSet].sort()) {
+    if (facadeCommandSet.has(command) || allowedReleaseOnlyCommands.has(command)) {
+      continue;
+    }
+    errors.push(
+      `Release Tauri handler registers ${command}, but createDesktopCommandFacade does not own it and RELEASE_ONLY_COMMAND_ALLOWLIST has no reason`,
+    );
+  }
+
+  return errors;
+}
+
+function validateFrontendCommandSurface(
+  source,
+  releaseCommands = [],
+  releaseOnlyAllowlist = RELEASE_ONLY_COMMAND_ALLOWLIST,
+) {
   const errors = [];
   const snapshotAllowlist = extractDesktopSnapshotCommands(source);
   const frontendCommands = extractFrontendCommandLiterals(source);
@@ -127,6 +169,16 @@ function validateFrontendCommandSurface(source, releaseCommands = []) {
     if (!releaseCommandSet.has(command)) {
       errors.push(`Production command adapter invokes ${command}, but the release Tauri handler does not register it`);
     }
+  }
+
+  if (frontendCommands.errors.length === 0) {
+    errors.push(
+      ...validateReleaseCommandOwnership(
+        releaseCommands,
+        allFacadeCommands,
+        releaseOnlyAllowlist,
+      ),
+    );
   }
 
   for (const command of [...new Set(frontendCommands.snapshotCommands)].sort()) {
@@ -238,6 +290,51 @@ if (!fs.existsSync(adapterPath)) {
     ) {
       fail(scriptLabel, "Guardrail did not reject: snapshot command removed from validation allowlist");
     }
+  }
+
+  const extraReleaseCommand = "release_diagnostic_probe";
+  const extraReleaseCommandErrors = validateFrontendCommandSurface(source, [
+    ...registeredReleaseCommands,
+    extraReleaseCommand,
+  ]);
+  if (
+    !extraReleaseCommandErrors.includes(
+      `Release Tauri handler registers ${extraReleaseCommand}, but createDesktopCommandFacade does not own it and RELEASE_ONLY_COMMAND_ALLOWLIST has no reason`,
+    )
+  ) {
+    fail(scriptLabel, "Guardrail did not reject: release handler registers unowned frontend command");
+  }
+
+  const staleReleaseOnlyAllowlistErrors = validateFrontendCommandSurface(source, registeredReleaseCommands, [
+    {
+      command: "missing_release_command",
+      reason: "Example release-only command used to prove stale allowlist entries fail.",
+    },
+  ]);
+  if (
+    !staleReleaseOnlyAllowlistErrors.includes(
+      "RELEASE_ONLY_COMMAND_ALLOWLIST entry missing_release_command is not registered by the release Tauri handler",
+    )
+  ) {
+    fail(scriptLabel, "Guardrail did not reject: release-only allowlist entry missing from release handler");
+  }
+
+  const emptyReasonReleaseOnlyAllowlistErrors = validateFrontendCommandSurface(
+    source,
+    [...registeredReleaseCommands, extraReleaseCommand],
+    [
+      {
+        command: extraReleaseCommand,
+        reason: "",
+      },
+    ],
+  );
+  if (
+    !emptyReasonReleaseOnlyAllowlistErrors.includes(
+      `RELEASE_ONLY_COMMAND_ALLOWLIST entry ${extraReleaseCommand} must include a non-empty reason`,
+    )
+  ) {
+    fail(scriptLabel, "Guardrail did not reject: release-only allowlist entry with empty reason");
   }
 
   for (const error of validateFrontendCommandSurface(source, registeredReleaseCommands)) {

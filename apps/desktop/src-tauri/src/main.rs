@@ -19,9 +19,11 @@ use curiosity_app::{
 };
 use curiosity_audio::{
     ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
-    MacosMicrophoneWavRecording, ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus,
-    ScreenCaptureKitSystemAudioAdapter, StreamKind, SystemAudioAdapterStatus,
+    MacosMicrophoneWavRecording, ScreenCaptureKitSystemAudioAdapter, StreamKind,
+    SystemAudioAdapterStatus,
 };
+#[cfg(any(test, debug_assertions))]
+use curiosity_audio::{ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus};
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
@@ -102,7 +104,6 @@ fn main() {
         export_meeting_json,
         delete_meeting,
         generate_summary,
-        get_settings,
         save_whisper_model_path,
         save_analysis_settings,
         save_raw_audio_retention_policy,
@@ -110,12 +111,9 @@ fn main() {
         attach_calendar_event_context,
         test_whisper_model_path,
         test_ollama_connection,
-        audio_smoke_status,
-        system_audio_smoke_recording,
         import_audio_file,
         start_microphone_recording,
         stop_microphone_recording,
-        cancel_microphone_recording,
         transcribe_meeting,
         cancel_transcription,
         cancel_summary
@@ -406,6 +404,7 @@ fn finish_summary_job_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<AppSettingsView, String> {
     let app_root = app
@@ -554,11 +553,13 @@ fn test_ollama_connection(
     )
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn audio_smoke_status() -> AudioSmokeStatus {
     build_audio_smoke_status()
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn system_audio_smoke_recording(
     app: tauri::AppHandle,
@@ -649,6 +650,7 @@ fn stop_microphone_recording(
     desktop_snapshot_for_app_root_with_state(&app_root, &snapshot_state)
 }
 
+#[cfg(any(test, debug_assertions))]
 #[tauri::command]
 fn cancel_microphone_recording(
     app: tauri::AppHandle,
@@ -1059,6 +1061,7 @@ fn app_settings_for_app_root(app_root: &Path) -> Result<AppSettings, String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(any(test, debug_assertions))]
 fn get_settings_for_app_root(app_root: &Path) -> Result<AppSettingsView, String> {
     app_settings_for_app_root(app_root).map(app_settings_view)
 }
@@ -5326,6 +5329,7 @@ fn current_timestamp_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(test, debug_assertions))]
 fn build_audio_smoke_status() -> AudioSmokeStatus {
     let microphone =
         smoke_result_status(ManualSmokeCheck::macos_placeholder().run_without_hardware());
@@ -5350,6 +5354,7 @@ fn build_audio_smoke_status() -> AudioSmokeStatus {
     }
 }
 
+#[cfg(any(test, debug_assertions))]
 fn system_audio_smoke_recording_for_app_root(
     app_root: &Path,
     duration: std::time::Duration,
@@ -5361,6 +5366,7 @@ fn system_audio_smoke_recording_for_app_root(
     )
 }
 
+#[cfg(any(test, debug_assertions))]
 fn smoke_result_status(result: ManualSmokeResult) -> CaptureProbeStatus {
     let state = match result.status {
         ManualSmokeStatus::NotRun => "NotRun",
@@ -5887,6 +5893,7 @@ struct AnalysisDisclosureState {
     prompt_template_version: String,
 }
 
+#[cfg(any(test, debug_assertions))]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioSmokeStatus {
@@ -5894,6 +5901,7 @@ struct AudioSmokeStatus {
     system_audio: CaptureProbeStatus,
 }
 
+#[cfg(any(test, debug_assertions))]
 #[derive(Clone, Debug, Serialize)]
 struct CaptureProbeStatus {
     state: String,
