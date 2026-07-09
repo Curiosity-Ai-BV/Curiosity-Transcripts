@@ -44,6 +44,7 @@ import {
 } from "./desktopWorkspaceComponents";
 import { RecordingControls } from "./desktopRecordingControls";
 import { MeetingPane } from "./desktopMeetingPane";
+import { MeetingDetailHeader } from "./desktopMeetingDetailHeader";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
   calendarContextLabel,
@@ -1062,46 +1063,19 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               <>
                 {recordingControls}
 
-                <div className="detail-header">
-                  <div>
-                    <p className="eyebrow">{selectedMeeting.startedAt}</p>
-                    <h2>{selectedMeeting.title}</h2>
-                    <div className="rename-title-row">
-                      <label className="rename-title-field" htmlFor="selected-meeting-title">
-                        <span>Selected meeting title</span>
-                        <input
-                          id="selected-meeting-title"
-                          value={renameTitle}
-                          onChange={(event) => setRenameTitle(event.target.value)}
-                          disabled={!commandSurfaceReady || commandBusy}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="button"
-                        disabled={renameDisabled}
-                        title={renameButtonTitle}
-                        onClick={renameSelectedMeeting}
-                      >
-                        <PencilSimple size={16} weight="regular" />
-                        {pendingCommand === "rename" ? "Renaming" : "Rename"}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="detail-header-actions">
-                    <StatusPill tone={selectedMeeting.transcriptState === "Ready" ? "ready" : "active"} label={selectedMeeting.transcriptState} />
-                    <button
-                      type="button"
-                      className="button primary"
-                      disabled={transcribeDisabled}
-                      title={transcribeButtonTitle}
-                      onClick={transcribeSelectedMeeting}
-                    >
-                      <FileText size={16} weight="regular" />
-                      {pendingCommand === "transcribe" ? "Transcribing" : "Transcribe"}
-                    </button>
-                  </div>
-                </div>
+                <MeetingDetailHeader
+                  meeting={selectedMeeting}
+                  renameTitle={renameTitle}
+                  renameInputDisabled={!commandSurfaceReady || commandBusy}
+                  renameDisabled={renameDisabled}
+                  transcribeDisabled={transcribeDisabled}
+                  renameButtonTitle={renameButtonTitle}
+                  transcribeButtonTitle={transcribeButtonTitle}
+                  pendingCommand={pendingCommand}
+                  onRenameTitleChange={setRenameTitle}
+                  onRename={renameSelectedMeeting}
+                  onTranscribe={transcribeSelectedMeeting}
+                />
 
                 <div className="privacy-row" aria-label="Meeting privacy data state">
                   <StatusLine icon={<ShieldCheck size={18} weight="regular" />} label={selectedMeeting.privacy.storageLabel} value={selectedMeeting.privacy.storagePath} tone="ready" />
