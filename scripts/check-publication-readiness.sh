@@ -63,6 +63,9 @@ check_file "scripts/check-release-governance-signoff.js"
 check_file "scripts/check-release-provenance-artifact.js"
 check_file "apps/desktop/contracts/desktop-command-view-contract.fixture.json"
 check_file "apps/desktop/contracts/desktop-command-view-contract.schema.json"
+check_file "apps/desktop/src-tauri/src/main.rs"
+check_file "apps/desktop/src/commandAdapter.ts"
+check_file "apps/desktop/src/commandAdapter.contract.test.ts"
 check_file ".github/dependabot.yml"
 check_file ".github/workflows/codeql.yml"
 check_file ".github/workflows/pages.yml"
@@ -197,8 +200,10 @@ require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\
 require_text docs/release-candidate-checklist.md 'desktop-command-view-contract\.schema\.json' 'command/view contract shape release-candidate expectation'
 require_text docs/release-candidate-checklist.md 'node scripts/check-desktop-command-view-contract\.js' 'command/view contract shape checker release-candidate command'
 require_text docs/release-candidate-checklist.md 'node scripts/check-desktop-command-view-contract\.js --check-artifact release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'command/view contract receipt validation release-candidate command'
+require_text docs/release-candidate-checklist.md 'fixture/schema/source-input hashes' 'command/view contract source-input receipt evidence'
 require_text docs/release-candidate-checklist.md 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'command/view contract receipt release-candidate artifact'
 require_text docs/release-candidate-smoke-evidence.template.json 'release-artifacts/contracts/desktop-command-view-contract\.receipt\.json' 'command/view contract receipt smoke evidence artifact'
+require_text docs/release-candidate-smoke-evidence.template.json 'fixture/schema/source-input hash evidence' 'command/view contract receipt smoke evidence source-input hash wording'
 require_text docs/release-candidate-checklist.md 'automated-release-artifacts' 'automated release artifacts smoke evidence item'
 require_text docs/release-candidate-checklist.md 'release-artifacts/supply-chain' 'supply-chain artifact smoke evidence instruction'
 require_text docs/release-candidate-checklist.md 'release-artifacts/coverage' 'coverage artifact smoke evidence instruction'
@@ -990,9 +995,14 @@ require_text scripts/check-publication-readiness.sh 'node scripts/check-release-
 require_text scripts/check-publication-readiness.sh 'node scripts/check-supply-chain-artifacts\.js --self-test' 'supply-chain artifact checker self-test publication readiness gate'
 require_text scripts/check-plain-secret-storage.js 'crates", "app", "src", "lib\.rs' 'plain secret storage checker app service DTO artifact scope'
 require_text scripts/check-publication-readiness.sh 'if ! node scripts/check-desktop-command-view-contract\.js; then' 'desktop command/view contract shape publication readiness gate'
+require_text scripts/check-publication-readiness.sh 'node scripts/check-desktop-command-view-contract\.js --self-test' 'desktop command/view contract checker self-test publication readiness gate'
 require_text scripts/check-desktop-command-view-contract.js 'This is not generated DTO ownership' 'desktop command/view schema boundary'
 require_text scripts/check-desktop-command-view-contract.js 'write-artifact writes \$\{receiptLabel\}' 'desktop command/view contract receipt write mode'
-require_text scripts/check-desktop-command-view-contract.js 'check-artifact validates an existing receipt' 'desktop command/view contract receipt validation mode'
+require_text scripts/check-desktop-command-view-contract.js 'check-artifact validates an existing receipt against the current fixture, schema, and source inputs' 'desktop command/view contract receipt validation mode'
+require_text scripts/check-desktop-command-view-contract.js 'sourceInputs' 'desktop command/view contract receipt source-input section'
+require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src-tauri/src/main\.rs' 'desktop command/view contract receipt Rust producer source input'
+require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.ts' 'desktop command/view contract receipt TS consumer source input'
+require_text scripts/check-desktop-command-view-contract.js 'apps/desktop/src/commandAdapter\.contract\.test\.ts' 'desktop command/view contract receipt TS contract-test source input'
 require_text scripts/check-desktop-command-view-contract.js 'desktop-command-view-contract-receipt' 'desktop command/view contract receipt kind'
 require_text scripts/generate-supply-chain-artifacts.js 'npm", \["sbom", "--sbom-format", "cyclonedx", "--sbom-type", "application"\]' 'npm CycloneDX SBOM generation command'
 require_text scripts/generate-supply-chain-artifacts.js 'cargo metadata --locked --format-version 1' 'root Cargo locked metadata command'
@@ -1191,6 +1201,10 @@ if [[ -d release-artifacts/supply-chain ]]; then
 fi
 
 if ! node scripts/check-desktop-command-view-contract.js; then
+  failures=1
+fi
+
+if ! node scripts/check-desktop-command-view-contract.js --self-test; then
   failures=1
 fi
 

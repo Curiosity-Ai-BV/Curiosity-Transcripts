@@ -11,6 +11,20 @@ const schemaLabel = "apps/desktop/contracts/desktop-command-view-contract.schema
 const receiptLabel = "release-artifacts/contracts/desktop-command-view-contract.receipt.json";
 const scriptLabel = "scripts/check-desktop-command-view-contract.js";
 const writeArtifactCommand = "node scripts/check-desktop-command-view-contract.js --write-artifact";
+const sourceInputDescriptors = [
+  {
+    path: "apps/desktop/src-tauri/src/main.rs",
+    role: "rust-producer-fixture-owner",
+  },
+  {
+    path: "apps/desktop/src/commandAdapter.ts",
+    role: "typescript-consumer-runtime-validator",
+  },
+  {
+    path: "apps/desktop/src/commandAdapter.contract.test.ts",
+    role: "typescript-consumer-contract-tests",
+  },
+];
 
 let ok = true;
 
@@ -33,12 +47,15 @@ function parseArgs(argv) {
     help: false,
     writeArtifact: false,
     checkArtifact: null,
+    selfTest: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--write-artifact") {
       options.writeArtifact = true;
+    } else if (arg === "--self-test") {
+      options.selfTest = true;
     } else if (arg === "--check-artifact") {
       const artifactPath = argv[index + 1];
       if (!artifactPath || artifactPath.startsWith("--")) {
@@ -57,12 +74,23 @@ function parseArgs(argv) {
   if (options.writeArtifact && options.checkArtifact) {
     fail(scriptLabel, "--write-artifact and --check-artifact cannot be combined");
   }
+  if (options.selfTest && (options.writeArtifact || options.checkArtifact)) {
+    fail(scriptLabel, "--self-test cannot be combined with artifact read/write modes");
+  }
 
   return options;
 }
 
 function sha256File(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function buildSourceInputs() {
+  return sourceInputDescriptors.map((input) => ({
+    path: input.path,
+    role: input.role,
+    sha256: sha256File(path.join(root, input.path)),
+  }));
 }
 
 function buildReceipt(fixture, schema) {
@@ -89,6 +117,7 @@ function buildReceipt(fixture, schema) {
       expectedCases: schema.expectedCases,
       forbiddenStrings: schema.forbiddenStrings,
     },
+    sourceInputs: buildSourceInputs(),
   };
 }
 
@@ -333,6 +362,7 @@ function validateReceipt(receipt, fixture, schema) {
     ["schema", "scope"],
     ["schema", "expectedCases"],
     ["schema", "forbiddenStrings"],
+    ["sourceInputs"],
   ];
 
   for (const fieldPath of requiredFields) {
@@ -369,30 +399,7 @@ function expectReceiptRejected(name, receipt, fixture, schema) {
   }
 }
 
-const options = parseArgs(process.argv.slice(2));
-
-if (options.help) {
-  console.log(
-    [
-      "Usage: node scripts/check-desktop-command-view-contract.js",
-      "       node scripts/check-desktop-command-view-contract.js --write-artifact",
-      `       node scripts/check-desktop-command-view-contract.js --check-artifact ${receiptLabel}`,
-      "",
-      `--write-artifact writes ${receiptLabel} after validation passes.`,
-      "--check-artifact validates an existing receipt against the current fixture and schema.",
-    ].join("\n"),
-  );
-  process.exit(ok ? 0 : 1);
-}
-
-if (!ok) {
-  process.exit(1);
-}
-
-const fixture = readJson(fixturePath, fixtureLabel);
-const schema = readJson(schemaPath, schemaLabel);
-
-if (fixture && schema) {
+function runSelfTests(fixture, schema) {
   const missingCase = clone(fixture);
   delete missingCase.cases["desktop_snapshot.with_setup_evidence"];
   expectRejected("missing fixture case", missingCase, schema);
@@ -465,6 +472,51 @@ if (fixture && schema) {
   wrongForbiddenStringsReceipt.schema.forbiddenStrings = [];
   expectReceiptRejected("wrong forbidden strings", wrongForbiddenStringsReceipt, fixture, schema);
 
+  const staleRustProducerReceipt = clone(validReceipt);
+  staleRustProducerReceipt.sourceInputs[0].sha256 = "0".repeat(64);
+  expectReceiptRejected("stale Rust producer source-input hash", staleRustProducerReceipt, fixture, schema);
+
+  const staleTsConsumerReceipt = clone(validReceipt);
+  staleTsConsumerReceipt.sourceInputs[1].sha256 = "1".repeat(64);
+  expectReceiptRejected("stale TypeScript consumer source-input hash", staleTsConsumerReceipt, fixture, schema);
+
+  const staleTsContractTestReceipt = clone(validReceipt);
+  staleTsContractTestReceipt.sourceInputs[2].sha256 = "2".repeat(64);
+  expectReceiptRejected("stale TypeScript contract-test source-input hash", staleTsContractTestReceipt, fixture, schema);
+
+  const missingSourceInputsReceipt = clone(validReceipt);
+  delete missingSourceInputsReceipt.sourceInputs;
+  expectReceiptRejected("missing source-input receipt section", missingSourceInputsReceipt, fixture, schema);
+}
+
+const options = parseArgs(process.argv.slice(2));
+
+if (options.help) {
+  console.log(
+    [
+      "Usage: node scripts/check-desktop-command-view-contract.js",
+      "       node scripts/check-desktop-command-view-contract.js --write-artifact",
+      `       node scripts/check-desktop-command-view-contract.js --check-artifact ${receiptLabel}`,
+      "       node scripts/check-desktop-command-view-contract.js --self-test",
+      "",
+      `--write-artifact writes ${receiptLabel} after validation passes.`,
+      "--check-artifact validates an existing receipt against the current fixture, schema, and source inputs.",
+      "--self-test runs checker mutation self-tests without reading or writing receipt artifacts.",
+    ].join("\n"),
+  );
+  process.exit(ok ? 0 : 1);
+}
+
+if (!ok) {
+  process.exit(1);
+}
+
+const fixture = readJson(fixturePath, fixtureLabel);
+const schema = readJson(schemaPath, schemaLabel);
+
+if (fixture && schema) {
+  runSelfTests(fixture, schema);
+
   for (const error of validateFixture(fixture, schema)) {
     const label = error.startsWith(`${schemaLabel}:`) ? schemaLabel : fixtureLabel;
     fail(label, error.replace(`${schemaLabel}: `, ""));
@@ -473,6 +525,11 @@ if (fixture && schema) {
 
 if (!ok) {
   process.exit(1);
+}
+
+if (options.selfTest) {
+  console.log("Desktop command/view contract checker self-test passed.");
+  process.exit(0);
 }
 
 if (options.writeArtifact) {

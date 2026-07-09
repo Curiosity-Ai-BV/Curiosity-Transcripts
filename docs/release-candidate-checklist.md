@@ -202,8 +202,9 @@ complete privacy/deletion/recovery coverage.
   plus the Rust/TS contract checks before manual smoke starts. Validate the
   receipt with `node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json`, and attach
   `release-artifacts/contracts/desktop-command-view-contract.receipt.json` as
-  deterministic release evidence for the checked fixture and schema hashes.
-  Treat this as a fixture-derived shape lock, not generated DTO ownership. Run
+  deterministic release evidence for the checked fixture/schema/source-input hashes.
+  Treat this as a fixture-derived shape lock with source-input provenance
+  evidence, not generated DTO ownership. Run
   `node scripts/check-tauri-command-surface.js` so frontend facade commands stay
   registered in the release invoke handler and snapshot-returning commands stay
   covered by runtime snapshot validation.
