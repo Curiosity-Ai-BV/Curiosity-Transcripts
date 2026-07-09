@@ -37,6 +37,7 @@ import { MeetingPrivacyRow } from "./desktopMeetingPrivacyRow";
 import { MeetingSummarySection } from "./desktopMeetingSummarySection";
 import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
+import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
 import {
   ACTIVE_JOB_POLL_INTERVAL_MS,
@@ -48,7 +49,6 @@ import {
   commandAllowedDuringBusy,
   commandErrorMessage,
   formatCalendarEventMetadata,
-  formatEvidenceTimestamp,
   formatMeetingCalendarAttachment,
   isActiveCommandJob,
   isSelectedActiveCommandJob,
@@ -1220,107 +1220,16 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
               onCancelSummaryJob={cancelSummaryJob}
               onRetrySummaryJob={generateSelectedSummary}
             />
-            <div className="model-readiness" aria-label="Model readiness guidance">
-              <div className={`readiness-item ${whisperReadinessTone}`}>
-                <div className="readiness-heading">
-                  <StatusPill tone={whisperReadinessTone} label={whisperSetupLabel(setupGuidance.whisper.state)} />
-                </div>
-                <p>{setupGuidance.whisper.message}</p>
-                {setupGuidance.whisper.configuredPath ? (
-                  <span className="readiness-path">{setupGuidance.whisper.configuredPath}</span>
-                ) : null}
-                <p>{setupGuidance.whisper.setupGuidance}</p>
-                <small>{setupGuidance.whisper.compatibilityNote}</small>
-                {setupGuidance.whisper.lastPathTest ? (
-                  <div className="readiness-evidence">
-                    <strong>
-                      Last explicit Test path: {setupGuidance.whisper.lastPathTest.state} at{" "}
-                      {formatEvidenceTimestamp(setupGuidance.whisper.lastPathTest.testedAtMs)}
-                    </strong>
-                    <span>Tested path: {setupGuidance.whisper.lastPathTest.testedPath || "none"}</span>
-                    {setupGuidance.whisper.lastPathTest.fileSizeBytes !== null ? (
-                      <span>Size: {setupGuidance.whisper.lastPathTest.fileSizeBytes} bytes</span>
-                    ) : null}
-                    {setupGuidance.whisper.lastPathTest.sha256 ? (
-                      <span>SHA-256: {setupGuidance.whisper.lastPathTest.sha256}</span>
-                    ) : null}
-                    {setupGuidance.whisper.lastPathTest.failureDetail ? (
-                      <span>{setupGuidance.whisper.lastPathTest.failureDetail}</span>
-                    ) : null}
-                  </div>
-                ) : null}
-                {setupGuidance.whisper.lastSuccessfulTranscription ? (
-                  <div className="readiness-evidence">
-                    <strong>
-                      Last successful transcription at{" "}
-                      {formatEvidenceTimestamp(setupGuidance.whisper.lastSuccessfulTranscription.usedAtMs)}
-                    </strong>
-                    <span>Model path: {setupGuidance.whisper.lastSuccessfulTranscription.modelPath}</span>
-                    <span>Provider: {setupGuidance.whisper.lastSuccessfulTranscription.provider}</span>
-                    <span>Model: {setupGuidance.whisper.lastSuccessfulTranscription.modelName}</span>
-                    <span>Meeting: {setupGuidance.whisper.lastSuccessfulTranscription.meetingId}</span>
-                    <span>Model run: {setupGuidance.whisper.lastSuccessfulTranscription.modelRunId}</span>
-                    <span>Transcript version: {setupGuidance.whisper.lastSuccessfulTranscription.transcriptVersionId}</span>
-                    <span>
-                      Transcript: {setupGuidance.whisper.lastSuccessfulTranscription.segmentCount} segment
-                      {setupGuidance.whisper.lastSuccessfulTranscription.segmentCount === 1 ? "" : "s"}
-                    </span>
-                    <span>Model file size: {setupGuidance.whisper.lastSuccessfulTranscription.fileSizeBytes} bytes</span>
-                    <span>
-                      Model modified:{" "}
-                      {formatEvidenceTimestamp(setupGuidance.whisper.lastSuccessfulTranscription.modifiedAtMs)}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-              <div className={`readiness-item ${ollamaReadinessTone}`}>
-                <div className="readiness-heading">
-                  <StatusPill tone={ollamaReadinessTone} label={ollamaSetupLabel(setupGuidance.ollama)} />
-                </div>
-                <p>{setupGuidance.ollama.message}</p>
-                <span className="readiness-path">
-                  {setupGuidance.ollama.baseUrl} / {setupGuidance.ollama.model}
-                </span>
-                <p>{setupGuidance.ollama.setupGuidance}</p>
-                {setupGuidance.ollama.lastConnectionTest ? (
-                  <div className="readiness-evidence">
-                    <strong>
-                      Last explicit Test Ollama: {setupGuidance.ollama.lastConnectionTest.state} at{" "}
-                      {formatEvidenceTimestamp(setupGuidance.ollama.lastConnectionTest.testedAtMs)}
-                    </strong>
-                    <span>
-                      Request: {setupGuidance.ollama.lastConnectionTest.baseUrl} /{" "}
-                      {setupGuidance.ollama.lastConnectionTest.requestedModel}
-                    </span>
-                    {setupGuidance.ollama.lastConnectionTest.selectedLocalModelTag ? (
-                      <span>Selected model: {setupGuidance.ollama.lastConnectionTest.selectedLocalModelTag}</span>
-                    ) : null}
-                    {setupGuidance.ollama.lastConnectionTest.installedLocalModels ? (
-                      <span>
-                        Observed models:{" "}
-                        {setupGuidance.ollama.lastConnectionTest.installedLocalModels.length > 0
-                          ? setupGuidance.ollama.lastConnectionTest.installedLocalModels.join(", ")
-                          : "none reported"}
-                      </span>
-                    ) : null}
-                    {setupGuidance.ollama.lastConnectionTest.pullCommand ? (
-                      <span className="pull-command-copy">
-                        <span>Pull command: {setupGuidance.ollama.lastConnectionTest.pullCommand}</span>
-                        <CopyPullCommandButton
-                          pullCommand={setupGuidance.ollama.lastConnectionTest.pullCommand}
-                          disabled={commandBusy}
-                          onCopy={copyOllamaPullCommand}
-                        />
-                      </span>
-                    ) : null}
-                    {setupGuidance.ollama.lastConnectionTest.failureDetail ? (
-                      <span>{setupGuidance.ollama.lastConnectionTest.failureDetail}</span>
-                    ) : null}
-                    <small>Last explicit observation, not current availability.</small>
-                  </div>
-                ) : null}
-              </div>
-            </div>
+            <DesktopModelReadiness
+              whisper={setupGuidance.whisper}
+              whisperLabel={whisperSetupLabel(setupGuidance.whisper.state)}
+              whisperTone={whisperReadinessTone}
+              ollama={setupGuidance.ollama}
+              ollamaLabel={ollamaSetupLabel(setupGuidance.ollama)}
+              ollamaTone={ollamaReadinessTone}
+              copyPullCommandDisabled={commandBusy}
+              onCopyPullCommand={copyOllamaPullCommand}
+            />
             <div className="model-setup-options" aria-label="Manual model setup options">
               <div className="setup-option-group">
                 <strong>{modelSetupOptions.whisper.title}</strong>
