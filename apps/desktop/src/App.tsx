@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 
 import packageInfo from "../package.json";
@@ -29,6 +28,8 @@ import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
 import { DesktopCommandOutcomes } from "./desktopCommandOutcomes";
 import { DesktopCalendarContext } from "./desktopCalendarContext";
+import { defaultAppFilePicker, defaultClipboardWriter } from "./desktopAppIo";
+import type { AppClipboardWriter, AppFilePicker } from "./desktopAppIo";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
@@ -72,73 +73,7 @@ interface AppProps {
   clipboardWriter?: AppClipboardWriter;
 }
 
-interface AppFilePicker {
-  chooseImportWavPath(): Promise<string | null>;
-  chooseWhisperModelPath(): Promise<string | null>;
-}
-
-interface AppClipboardWriter {
-  writeText(text: string): Promise<void>;
-}
-
 type ThemeMode = "dark" | "light";
-
-const defaultAppFilePicker: AppFilePicker = {
-  chooseImportWavPath: chooseNativeImportWavPath,
-  chooseWhisperModelPath: chooseNativeWhisperModelPath,
-};
-
-const defaultClipboardWriter: AppClipboardWriter = {
-  async writeText(text: string) {
-    const writeText = globalThis.navigator?.clipboard?.writeText;
-    if (!writeText) {
-      throw new Error("Clipboard API unavailable.");
-    }
-    await writeText.call(globalThis.navigator.clipboard, text);
-  },
-};
-
-async function chooseNativeImportWavPath(): Promise<string | null> {
-  const selected: string | string[] | null = await open({
-    title: "Choose WAV audio file",
-    multiple: false,
-    directory: false,
-    fileAccessMode: "scoped",
-    filters: [
-      {
-        name: "WAV audio",
-        extensions: ["wav"],
-      },
-    ],
-  });
-
-  if (Array.isArray(selected)) {
-    return typeof selected[0] === "string" ? selected[0] : null;
-  }
-
-  return selected;
-}
-
-async function chooseNativeWhisperModelPath(): Promise<string | null> {
-  const selected: string | string[] | null = await open({
-    title: "Choose Whisper model file",
-    multiple: false,
-    directory: false,
-    fileAccessMode: "scoped",
-    filters: [
-      {
-        name: "Whisper model",
-        extensions: ["bin", "gguf"],
-      },
-    ],
-  });
-
-  if (Array.isArray(selected)) {
-    return typeof selected[0] === "string" ? selected[0] : null;
-  }
-
-  return selected;
-}
 
 export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
   const appFilePicker = { ...defaultAppFilePicker, ...filePicker };
