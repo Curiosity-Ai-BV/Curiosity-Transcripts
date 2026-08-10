@@ -3300,6 +3300,7 @@ describe("desktop workspace shell", () => {
   it("cancels visible transcription and summary jobs through the typed command facade", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
+    let finishTranscriptionCancellation!: () => void;
     const snapshot = connectedSnapshot({
       transcriptionJob: {
         id: "transcription-circuit-review-1700000001000",
@@ -3318,10 +3319,13 @@ describe("desktop workspace shell", () => {
         startedAtMs: 1_700_000_002_000,
       },
     });
+    const pendingTranscriptionCancellation = new Promise<typeof snapshot>((resolve) => {
+      finishTranscriptionCancellation = () => resolve(snapshot);
+    });
     const commandFacade = fakeCommandFacade({
       cancelTranscription: async (args) => {
         calls.push({ method: "cancelTranscription", args });
-        return snapshot;
+        return pendingTranscriptionCancellation;
       },
       cancelSummary: async (args) => {
         calls.push({ method: "cancelSummary", args });
@@ -3332,6 +3336,11 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={commandFacade} />);
 
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
+    expect(screen.getByRole("button", { name: "Canceling transcription" })).toBeDisabled();
+    await act(async () => {
+      finishTranscriptionCancellation();
+      await pendingTranscriptionCancellation;
+    });
     const cancelSummary = screen.getByRole("button", { name: "Cancel summary" });
     await waitFor(() => expect(cancelSummary).toBeEnabled());
     await user.click(cancelSummary);
@@ -3630,10 +3639,13 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={commandFacade} />);
 
     await user.click(screen.getByRole("button", { name: "Transcribe" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Transcribing" })).toBeDisabled(),
+    );
     expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
 
-    expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]);
+    await waitFor(() => expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]));
     await act(async () => {
       finishTranscription();
       await pendingTranscription;
