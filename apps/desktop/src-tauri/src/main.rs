@@ -1,10 +1,17 @@
-use std::io::{Read, Seek, SeekFrom};
-use std::net::IpAddr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
 
 mod calendar;
+mod command_outcomes;
+mod file_hashing;
+mod import_audio_validation;
+mod local_ollama;
+mod recording_artifact_paths;
+mod recording_manifest_mapping;
+mod recording_recorder;
+mod recording_streams;
+mod recording_views;
+mod whisper_setup;
 
 use crate::calendar::{
     calendar_context_snapshot, request_apple_calendar_full_access,
@@ -12,6 +19,43 @@ use crate::calendar::{
 };
 #[cfg(test)]
 use crate::calendar::{calendar_event_draft, finalize_calendar_context_events};
+use crate::command_outcomes::{
+    delete_command_state_from_pending_finalization, export_root_for_settings, DeleteCommandState,
+    ExportCommandState,
+};
+use crate::file_hashing::sha256_for_readable_file;
+use crate::import_audio_validation::{validate_import_source_path, validate_wav_header};
+use crate::local_ollama::{
+    canonical_local_ollama_model_tag, local_ollama_endpoint, test_ollama_connection_value,
+    validate_local_ollama_model, OllamaConnectionTestView, OllamaHttpError, OllamaHttpTransport,
+    UreqOllamaHttpTransport,
+};
+use crate::recording_artifact_paths::{
+    artifact_id, imported_artifact_id, imported_artifact_relative_path,
+    imported_temp_artifact_relative_path, microphone_artifact_relative_path,
+    microphone_storage_path, system_audio_artifact_id, system_audio_artifact_relative_path,
+};
+use crate::recording_manifest_mapping::completed_audio_artifacts_from_manifest;
+#[cfg(test)]
+use crate::recording_recorder::can_fallback_to_microphone_recording;
+use crate::recording_recorder::{
+    ActiveMicrophoneRecording, MicrophoneRecorderFactory, MicrophoneStartFailure,
+    RealMicrophoneRecorderFactory, StartedMicrophoneRecording,
+};
+use crate::recording_streams::{
+    recording_source_for_streams, required_recording_source_for_streams,
+};
+use crate::recording_views::{
+    meetings_have_system_audio_transcript, microphone_capture_state, recording_dto_with_retention,
+    recording_snapshot, start_failure_recording_dto, system_audio_capture_state, CaptureStatus,
+};
+use crate::whisper_setup::{
+    file_modified_at_ms, is_supported_whisper_model_file_path, model_name_for_path,
+    model_status_from_settings, resolved_whisper_model_path, test_whisper_model_path_value,
+    whisper_path_test_evidence_proves_current_readiness, whisper_setup_guidance_from_settings,
+    ModelStatus, WhisperModelPathTestView, WhisperSetupGuidanceView,
+    SUPPORTED_WHISPER_MODEL_EXTENSIONS,
+};
 use curiosity_analysis::{
     recommended_analysis_model_presets, summary_json_schema, AnalysisClientError,
     AnalysisProviderKind, OllamaAnalyzer, ProviderTextClient,
@@ -22,16 +66,11 @@ use curiosity_app::{
     generate_summary_command_with_cancellation, list_meetings_dto, meeting_detail_dto,
     rename_meeting_command, search_meetings_dto, AnalysisCommandDto, AnalysisCommandState,
     AppPermissionState, CalendarEventAttachmentDto, CommandRecordingDto, CommandRecordingState,
-    DeletedMeetingDto, ExportFormat, ExportedMeetingDto, MeetingAnalysisDto,
-    MeetingSearchResultDto, RawAudioRetentionPolicy, StorageLocationDto,
-};
-use curiosity_audio::{
-    ArtifactManifest, CaptureCapability, CaptureError, CapturePermission, MacosDesktopWavRecording,
-    MacosMicrophoneWavRecording, ScreenCaptureKitSystemAudioAdapter, StreamKind,
-    SystemAudioAdapterStatus,
+    ExportFormat, MeetingAnalysisDto, MeetingSearchResultDto, RawAudioRetentionPolicy,
 };
 #[cfg(any(test, debug_assertions))]
 use curiosity_audio::{ManualSmokeCheck, ManualSmokeResult, ManualSmokeStatus};
+use curiosity_audio::{ScreenCaptureKitSystemAudioAdapter, StreamKind, SystemAudioAdapterStatus};
 #[cfg(any(test, debug_assertions))]
 use curiosity_domain::TranscriptSegment;
 use curiosity_domain::{
@@ -51,9 +90,7 @@ use curiosity_transcription::{
     WhisperTranscriptionRequest,
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tauri::Manager;
-use url::Url;
 
 fn main() {
     let builder = tauri::Builder::default()
@@ -1680,16 +1717,6 @@ fn cancel_summary_job_for_app_root(
     desktop_snapshot_for_app_root_with_state(app_root, &snapshot_state)
 }
 
-fn export_root_for_settings(app_root: &Path, settings: &AppSettings) -> PathBuf {
-    settings
-        .export_directory
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| app_root.join("exports"))
-}
-
 #[cfg(any(test, debug_assertions))]
 const DEV_FIXTURE_MEETING_ID: &str = "dev-fixture-meeting";
 #[cfg(any(test, debug_assertions))]
@@ -2183,156 +2210,6 @@ struct ActiveDesktopRecording {
     recorder: Box<dyn ActiveMicrophoneRecording>,
 }
 
-struct StartedMicrophoneRecording {
-    sample_rate_hz: u32,
-    streams: Vec<StreamKind>,
-    recorder: Box<dyn ActiveMicrophoneRecording>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MicrophoneStartFailure {
-    permission_state: AppPermissionState,
-    message: String,
-    recovery_action: String,
-}
-
-impl MicrophoneStartFailure {
-    fn persistence(message: impl Into<String>) -> Self {
-        Self {
-            permission_state: AppPermissionState::MicrophoneUnavailable,
-            message: message.into(),
-            recovery_action: "Check local storage permissions and retry microphone recording."
-                .to_string(),
-        }
-    }
-
-    #[cfg(test)]
-    fn permission_denied(message: impl Into<String>) -> Self {
-        Self {
-            permission_state: AppPermissionState::MicrophoneDenied,
-            message: message.into(),
-            recovery_action:
-                "Open System Settings; go to Privacy & Security, then Microphone; allow Curiosity Transcripts and retry recording."
-                    .to_string(),
-        }
-    }
-
-    fn from_capture_error(error: CaptureError) -> Self {
-        match error {
-            CaptureError::PermissionDenied(error) => {
-                let permission_state = match error.permission {
-                    CapturePermission::Microphone => AppPermissionState::MicrophoneDenied,
-                    CapturePermission::SystemAudioScreenRecording => {
-                        AppPermissionState::SystemAudioDenied
-                    }
-                };
-                let guidance = error.recovery_guidance();
-                Self {
-                    permission_state,
-                    message: error.to_string(),
-                    recovery_action: guidance.steps.join("; "),
-                }
-            }
-            CaptureError::Unavailable(error) => {
-                let permission_state = match error.capability {
-                    CaptureCapability::Microphone => AppPermissionState::MicrophoneUnavailable,
-                    CaptureCapability::SystemAudio => AppPermissionState::SystemAudioUnavailable,
-                };
-                let guidance = error.recovery_guidance();
-                Self {
-                    permission_state,
-                    message: error.to_string(),
-                    recovery_action: guidance.steps.join("; "),
-                }
-            }
-            CaptureError::Configuration(error) => Self {
-                permission_state: AppPermissionState::MicrophoneUnavailable,
-                message: error.to_string(),
-                recovery_action: "Check the microphone capture configuration and retry recording."
-                    .to_string(),
-            },
-            CaptureError::Recording(error) => Self {
-                permission_state: AppPermissionState::MicrophoneUnavailable,
-                message: error.to_string(),
-                recovery_action:
-                    "Check local storage and microphone availability, then retry recording."
-                        .to_string(),
-            },
-        }
-    }
-}
-
-trait MicrophoneRecorderFactory {
-    fn start(
-        &self,
-        audio_root: &Path,
-        recording_id: &str,
-        started_at_ms: u64,
-    ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure>;
-}
-
-trait ActiveMicrophoneRecording: Send {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String>;
-}
-
-struct RealMicrophoneRecorderFactory;
-
-impl MicrophoneRecorderFactory for RealMicrophoneRecorderFactory {
-    fn start(
-        &self,
-        audio_root: &Path,
-        recording_id: &str,
-        started_at_ms: u64,
-    ) -> Result<StartedMicrophoneRecording, MicrophoneStartFailure> {
-        match MacosDesktopWavRecording::start(audio_root, recording_id, started_at_ms) {
-            Ok(recorder) => {
-                let sample_rate_hz = recorder.sample_rate_hz();
-                Ok(StartedMicrophoneRecording {
-                    sample_rate_hz,
-                    streams: vec![StreamKind::Microphone, StreamKind::SystemAudio],
-                    recorder: Box::new(recorder),
-                })
-            }
-            Err(error) if can_fallback_to_microphone_recording(&error) => {
-                let recorder =
-                    MacosMicrophoneWavRecording::start(audio_root, recording_id, started_at_ms)
-                        .map_err(MicrophoneStartFailure::from_capture_error)?;
-                let sample_rate_hz = recorder.sample_rate_hz();
-                Ok(StartedMicrophoneRecording {
-                    sample_rate_hz,
-                    streams: vec![StreamKind::Microphone],
-                    recorder: Box::new(recorder),
-                })
-            }
-            Err(error) => Err(MicrophoneStartFailure::from_capture_error(error)),
-        }
-    }
-}
-
-fn can_fallback_to_microphone_recording(error: &CaptureError) -> bool {
-    matches!(
-        error,
-        CaptureError::Unavailable(unavailable)
-            if unavailable.capability == CaptureCapability::SystemAudio
-    ) || matches!(
-        error,
-        CaptureError::PermissionDenied(permission)
-            if permission.permission == CapturePermission::SystemAudioScreenRecording
-    )
-}
-
-impl ActiveMicrophoneRecording for MacosDesktopWavRecording {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
-        (*self).stop(ended_at_ms).map_err(|error| error.to_string())
-    }
-}
-
-impl ActiveMicrophoneRecording for MacosMicrophoneWavRecording {
-    fn stop(self: Box<Self>, ended_at_ms: u64) -> Result<ArtifactManifest, String> {
-        (*self).stop(ended_at_ms).map_err(|error| error.to_string())
-    }
-}
-
 #[cfg(test)]
 fn import_audio_file_for_app_root(
     app_root: &Path,
@@ -2473,128 +2350,6 @@ fn import_audio_file_recording_for_app_root(
         raw_audio_retention_policy_view(raw_audio_retention_policy),
         "Imported local WAV into private app storage.",
     ))
-}
-
-fn validate_import_source_path(source_path: &str) -> Result<PathBuf, String> {
-    let trimmed = source_path.trim();
-    if trimmed.is_empty() {
-        return Err("WAV source path is required.".to_string());
-    }
-    let path = PathBuf::from(trimmed);
-    if !path.exists() {
-        return Err("WAV source file does not exist.".to_string());
-    }
-    let metadata = path
-        .metadata()
-        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
-    if !metadata.is_file() {
-        return Err("WAV source path must be a file.".to_string());
-    }
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| !extension.eq_ignore_ascii_case("wav"))
-        .unwrap_or(true)
-    {
-        return Err("WAV source file must have a .wav extension.".to_string());
-    }
-    Ok(path)
-}
-
-fn validate_wav_header(path: &Path) -> Result<u32, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("WAV source file is not readable: {error}"))?;
-    let file_len = file
-        .metadata()
-        .map_err(|error| format!("WAV source file is not readable: {error}"))?
-        .len();
-    let mut riff_header = [0_u8; 12];
-    file.read_exact(&mut riff_header)
-        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-    if &riff_header[0..4] != b"RIFF" || &riff_header[8..12] != b"WAVE" {
-        return Err("WAV source file has an unsupported WAV header.".to_string());
-    }
-
-    let mut sample_rate_hz = None;
-    let mut has_data_chunk = false;
-    loop {
-        let mut chunk_header = [0_u8; 8];
-        match file.read_exact(&mut chunk_header) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(_) => return Err("WAV source file has an unsupported WAV header.".to_string()),
-        }
-        let chunk_size = u32::from_le_bytes([
-            chunk_header[4],
-            chunk_header[5],
-            chunk_header[6],
-            chunk_header[7],
-        ]) as u64;
-        ensure_wav_chunk_payload_available(&mut file, chunk_size, file_len)?;
-        match &chunk_header[0..4] {
-            b"fmt " => {
-                if chunk_size < 16 {
-                    return Err("WAV source file has an unsupported WAV header.".to_string());
-                }
-                let mut fmt = [0_u8; 16];
-                file.read_exact(&mut fmt)
-                    .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-                let audio_format = u16::from_le_bytes([fmt[0], fmt[1]]);
-                let sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
-                let bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
-                if !matches!(audio_format, 1 | 3) || sample_rate == 0 || bits_per_sample == 0 {
-                    return Err("WAV source file has an unsupported WAV header.".to_string());
-                }
-                sample_rate_hz = Some(sample_rate);
-                seek_wav_chunk_remainder(&mut file, chunk_size - 16)?;
-            }
-            b"data" => {
-                if chunk_size == 0 {
-                    return Err("WAV source file has an unsupported WAV header.".to_string());
-                }
-                has_data_chunk = true;
-                seek_wav_chunk_remainder(&mut file, chunk_size)?;
-            }
-            _ => seek_wav_chunk_remainder(&mut file, chunk_size)?,
-        }
-        if chunk_size % 2 == 1 {
-            file.seek(SeekFrom::Current(1))
-                .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-        }
-    }
-
-    match (sample_rate_hz, has_data_chunk) {
-        (Some(sample_rate), true) => Ok(sample_rate),
-        _ => Err("WAV source file has an unsupported WAV header.".to_string()),
-    }
-}
-
-fn ensure_wav_chunk_payload_available(
-    file: &mut std::fs::File,
-    chunk_size: u64,
-    file_len: u64,
-) -> Result<(), String> {
-    let payload_start = file
-        .stream_position()
-        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-    let padded_size = chunk_size
-        .checked_add(chunk_size % 2)
-        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
-    let payload_end = payload_start
-        .checked_add(padded_size)
-        .ok_or_else(|| "WAV source file has an unsupported WAV header.".to_string())?;
-    if payload_end > file_len {
-        return Err("WAV source file has an unsupported WAV header.".to_string());
-    }
-    Ok(())
-}
-
-fn seek_wav_chunk_remainder(file: &mut std::fs::File, bytes: u64) -> Result<(), String> {
-    let offset = i64::try_from(bytes)
-        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-    file.seek(SeekFrom::Current(offset))
-        .map_err(|_| "WAV source file has an unsupported WAV header.".to_string())?;
-    Ok(())
 }
 
 fn cleanup_imported_private_copy(
@@ -2883,12 +2638,6 @@ fn cancel_active_microphone_recording(
     )
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct CompletedAudioManifestMapping {
-    completed_artifacts: Vec<CompletedAudioArtifact>,
-    completed_streams: Vec<StreamKind>,
-}
-
 fn recording_stop_permission_state(message: &str) -> AppPermissionState {
     if message.to_ascii_lowercase().contains("system audio") {
         AppPermissionState::SystemAudioUnavailable
@@ -2946,67 +2695,6 @@ fn complete_active_microphone_recording(
         active.raw_audio_retention_policy,
         recovery_action,
     ))
-}
-
-fn completed_audio_artifacts_from_manifest(
-    app_root: &Path,
-    meeting_id: &str,
-    recording_id: &str,
-    streams: &[StreamKind],
-    manifest: &ArtifactManifest,
-) -> Result<CompletedAudioManifestMapping, String> {
-    let mut completed_artifacts = Vec::new();
-    let mut completed_streams = Vec::new();
-    for artifact in &manifest.artifacts {
-        if !streams.contains(&artifact.stream) {
-            return Err(format!(
-                "{} artifact was not part of the active recording",
-                stream_label(artifact.stream)
-            ));
-        }
-        let relative_path =
-            relative_private_artifact_path(app_root, &artifact.path, artifact.stream)?;
-        let expected_path =
-            artifact_relative_path_for_stream(meeting_id, recording_id, artifact.stream);
-        if relative_path != expected_path {
-            return Err(format!(
-                "{} artifact path mismatch: expected {expected_path}, got {relative_path}",
-                stream_label(artifact.stream)
-            ));
-        }
-        completed_streams.push(artifact.stream);
-        completed_artifacts.push(CompletedAudioArtifact {
-            artifact_id: artifact_id_for_stream(recording_id, artifact.stream),
-            sha256: artifact.sha256.clone(),
-        });
-    }
-    Ok(CompletedAudioManifestMapping {
-        completed_artifacts,
-        completed_streams,
-    })
-}
-
-fn relative_private_artifact_path(
-    app_root: &Path,
-    path: &Path,
-    stream: StreamKind,
-) -> Result<String, String> {
-    let relative_path = path.strip_prefix(app_root).map_err(|_| {
-        format!(
-            "{} artifact was written outside private app storage",
-            stream_label(stream)
-        )
-    })?;
-    if relative_path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(format!(
-            "{} artifact was written outside private app storage",
-            stream_label(stream)
-        ));
-    }
-    Ok(relative_path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
@@ -3556,18 +3244,6 @@ fn whisper_transcription_compatibility_evidence(
     })
 }
 
-fn file_modified_at_ms(metadata: &std::fs::Metadata) -> Option<u64> {
-    u64::try_from(
-        metadata
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis(),
-    )
-    .ok()
-}
-
 fn cleanup_raw_audio_retention_after_transcription(
     store: &Store,
     meeting_id: &str,
@@ -3730,204 +3406,6 @@ fn analysis_failed(
     }
 }
 
-fn recording_snapshot(
-    app_root: &Path,
-    command_state: &DesktopCommandSnapshotState,
-) -> CommandRecordingDto {
-    if let Some(active) = &command_state.active_recording {
-        return recording_dto_with_retention(
-            &active.meeting_id,
-            Some(active.recording_id.clone()),
-            CommandRecordingState::Recording,
-            AppPermissionState::Ready,
-            microphone_storage_path(&active.meeting_id),
-            active.raw_audio_retention_policy,
-            "Recording locally to private app storage",
-        );
-    }
-    if let Some(recording) = &command_state.last_recording {
-        return recording.clone();
-    }
-    recording_dto(
-        "",
-        None,
-        CommandRecordingState::Idle,
-        AppPermissionState::Ready,
-        app_root.display().to_string(),
-        "Start a desktop recording to create private microphone and system audio WAV artifacts.",
-    )
-}
-
-fn microphone_capture_state(command_state: &DesktopCommandSnapshotState) -> DesktopPermissionState {
-    if command_state.active_recording.is_some() {
-        return DesktopPermissionState::Ready;
-    }
-    if let Some(recording) = &command_state.last_recording {
-        return match recording.permission_state {
-            AppPermissionState::Ready => DesktopPermissionState::Ready,
-            AppPermissionState::MicrophoneDenied => DesktopPermissionState::MicrophoneDenied,
-            AppPermissionState::MicrophoneUnavailable => {
-                DesktopPermissionState::MicrophoneUnavailable
-            }
-            AppPermissionState::SystemAudioDenied | AppPermissionState::SystemAudioUnavailable => {
-                DesktopPermissionState::Ready
-            }
-        };
-    }
-    DesktopPermissionState::Ready
-}
-
-fn meetings_have_system_audio_transcript(meetings: &[MeetingView]) -> bool {
-    meetings.iter().any(|meeting| {
-        meeting
-            .segments
-            .iter()
-            .any(|segment| segment.source_channel == "System")
-    })
-}
-
-fn system_audio_capture_state(
-    command_state: &DesktopCommandSnapshotState,
-    has_system_audio_transcript: bool,
-) -> DesktopPermissionState {
-    if command_state
-        .active_recording
-        .as_ref()
-        .map(|recording| recording.captures_system_audio)
-        .unwrap_or(false)
-    {
-        return DesktopPermissionState::Ready;
-    }
-    if let Some(recording) = &command_state.last_recording {
-        match recording.permission_state {
-            AppPermissionState::SystemAudioDenied => {
-                return DesktopPermissionState::SystemAudioDenied
-            }
-            AppPermissionState::SystemAudioUnavailable => {
-                return DesktopPermissionState::SystemAudioUnavailable;
-            }
-            AppPermissionState::Ready => return DesktopPermissionState::Ready,
-            AppPermissionState::MicrophoneDenied | AppPermissionState::MicrophoneUnavailable => {}
-        }
-    }
-    if has_system_audio_transcript {
-        return DesktopPermissionState::Ready;
-    }
-    #[cfg(test)]
-    {
-        DesktopPermissionState::SystemAudioUnavailable
-    }
-    #[cfg(not(test))]
-    match ScreenCaptureKitSystemAudioAdapter::status() {
-        SystemAudioAdapterStatus::Available => DesktopPermissionState::Ready,
-        SystemAudioAdapterStatus::PermissionDenied(_) => DesktopPermissionState::SystemAudioDenied,
-        SystemAudioAdapterStatus::Unavailable(_) => DesktopPermissionState::SystemAudioUnavailable,
-    }
-}
-
-fn start_failure_recording_dto(
-    app_root: &Path,
-    error: &MicrophoneStartFailure,
-) -> CommandRecordingDto {
-    recording_dto(
-        "",
-        None,
-        CommandRecordingState::Interrupted,
-        error.permission_state,
-        app_root.display().to_string(),
-        &format!(
-            "Desktop recording could not start: {} {}",
-            error.message, error.recovery_action
-        ),
-    )
-}
-
-fn recording_dto(
-    meeting_id: &str,
-    recording_id: Option<String>,
-    state: CommandRecordingState,
-    permission_state: AppPermissionState,
-    storage_path: String,
-    recovery_action: &str,
-) -> CommandRecordingDto {
-    recording_dto_with_retention(
-        meeting_id,
-        recording_id,
-        state,
-        permission_state,
-        storage_path,
-        RawAudioRetentionPolicy::Retain,
-        recovery_action,
-    )
-}
-
-fn recording_dto_with_retention(
-    meeting_id: &str,
-    recording_id: Option<String>,
-    state: CommandRecordingState,
-    permission_state: AppPermissionState,
-    storage_path: String,
-    raw_audio_retention: RawAudioRetentionPolicy,
-    recovery_action: &str,
-) -> CommandRecordingDto {
-    CommandRecordingDto {
-        meeting_id: meeting_id.to_string(),
-        recording_id,
-        state,
-        permission_state,
-        storage_location: StorageLocationDto {
-            app_private_path: storage_path,
-        },
-        raw_audio_retention,
-        recoverable: false,
-        recovery_action: recovery_action.to_string(),
-    }
-}
-
-fn artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}")
-}
-
-fn system_audio_artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}-system")
-}
-
-fn imported_artifact_id(recording_id: &str) -> String {
-    format!("artifact-{recording_id}-imported")
-}
-
-fn artifact_id_for_stream(recording_id: &str, stream: StreamKind) -> String {
-    match stream {
-        StreamKind::Microphone => artifact_id(recording_id),
-        StreamKind::SystemAudio => system_audio_artifact_id(recording_id),
-    }
-}
-
-fn stream_label(stream: StreamKind) -> &'static str {
-    match stream {
-        StreamKind::Microphone => "microphone",
-        StreamKind::SystemAudio => "system audio",
-    }
-}
-
-fn recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
-    let has_microphone = streams.contains(&StreamKind::Microphone);
-    let has_system_audio = streams.contains(&StreamKind::SystemAudio);
-    match (has_microphone, has_system_audio) {
-        (true, true) => RecordingSource::Mixed,
-        (false, true) => RecordingSource::System,
-        _ => RecordingSource::Microphone,
-    }
-}
-
-fn required_recording_source_for_streams(streams: &[StreamKind]) -> RecordingSource {
-    if streams.contains(&StreamKind::Microphone) {
-        RecordingSource::Microphone
-    } else {
-        recording_source_for_streams(streams)
-    }
-}
-
 fn audio_artifacts_for_streams(
     meeting_id: &str,
     recording_id: &str,
@@ -3952,70 +3430,6 @@ fn audio_artifacts_for_streams(
             ),
         })
         .collect()
-}
-
-fn microphone_storage_path(meeting_id: &str) -> String {
-    format!("meetings/{meeting_id}/audio")
-}
-
-fn microphone_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/raw-mic.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn system_audio_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/raw-system.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn imported_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/imported.wav",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn imported_temp_artifact_relative_path(meeting_id: &str, recording_id: &str) -> String {
-    format!(
-        "{}/{recording_id}/imported.wav.tmp",
-        microphone_storage_path(meeting_id)
-    )
-}
-
-fn artifact_relative_path_for_stream(
-    meeting_id: &str,
-    recording_id: &str,
-    stream: StreamKind,
-) -> String {
-    match stream {
-        StreamKind::Microphone => microphone_artifact_relative_path(meeting_id, recording_id),
-        StreamKind::SystemAudio => system_audio_artifact_relative_path(meeting_id, recording_id),
-    }
-}
-
-fn model_status_from_settings(settings: &AppSettings) -> ModelStatus {
-    let configured_path = resolved_whisper_model_path(settings);
-    let path = PathBuf::from(configured_path.trim());
-    let kind = if configured_path.trim().is_empty() || !path.is_file() {
-        "missing"
-    } else if !is_supported_whisper_model_file_path(&path) {
-        "unsupported"
-    } else if whisper_path_test_evidence_proves_current_readiness(
-        &configured_path,
-        &settings.whisper_path_test_evidence,
-    ) {
-        "ready"
-    } else {
-        "untested"
-    };
-    ModelStatus {
-        kind: kind.to_string(),
-        configured_path,
-    }
 }
 
 fn setup_guidance_from_settings(settings: &AppSettings) -> FirstRunSetupGuidanceView {
@@ -4066,97 +3480,6 @@ fn model_setup_options() -> ModelSetupOptionsView {
             automatic_pulls: false,
             candidates,
         },
-    }
-}
-
-fn whisper_setup_guidance_from_settings(settings: &AppSettings) -> WhisperSetupGuidanceView {
-    let configured_path = resolved_whisper_model_path(settings);
-    let last_path_test = matching_whisper_path_test_evidence(settings, &configured_path);
-    let last_successful_transcription =
-        matching_whisper_transcription_compatibility_evidence(settings, &configured_path);
-    if configured_path.trim().is_empty() {
-        return WhisperSetupGuidanceView {
-            state: "MissingPath".to_string(),
-            configured_path,
-            message: "No Whisper model path is configured.".to_string(),
-            setup_guidance:
-                "Enter a local Whisper model path in Settings, save it, then use Test path."
-                    .to_string(),
-            compatibility_note: "Readability does not prove model compatibility.".to_string(),
-            last_path_test,
-            last_successful_transcription,
-        };
-    }
-
-    let path = PathBuf::from(configured_path.trim());
-    let unreadable = |message: String, setup_guidance: &str| WhisperSetupGuidanceView {
-        state: "UnreadablePath".to_string(),
-        configured_path: configured_path.clone(),
-        message,
-        setup_guidance: setup_guidance.to_string(),
-        compatibility_note: "Readability does not prove model compatibility.".to_string(),
-        last_path_test: last_path_test.clone(),
-        last_successful_transcription: last_successful_transcription.clone(),
-    };
-
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return unreadable(
-                format!("Whisper model path does not exist or cannot be inspected: {error}"),
-                "Check the saved path, choose a readable local Whisper model file, then use Test path.",
-            );
-        }
-    };
-    if !metadata.is_file() {
-        return unreadable(
-            "Whisper model path must point to a file.".to_string(),
-            "Choose a readable local Whisper model file, not a directory, then use Test path.",
-        );
-    }
-    if !is_supported_whisper_model_file_path(&path) {
-        return WhisperSetupGuidanceView {
-            state: "UnsupportedFile".to_string(),
-            configured_path,
-            message: "Whisper model path must use a supported .bin or .gguf file.".to_string(),
-            setup_guidance:
-                "Choose an existing whisper.cpp-compatible .bin or .gguf Whisper model file."
-                    .to_string(),
-            compatibility_note: "Test path only accepts .bin and .gguf model files.".to_string(),
-            last_path_test,
-            last_successful_transcription,
-        };
-    }
-    if let Err(error) = std::fs::File::open(&path) {
-        return unreadable(
-            format!("Whisper model path is not readable: {error}"),
-            "Check file permissions, choose a readable local Whisper model file, then use Test path.",
-        );
-    }
-
-    let (message, compatibility_note) = if last_successful_transcription.is_some() {
-        (
-            "Whisper model path is readable and has completed transcription before.".to_string(),
-            "Last successful transcription is historical evidence for this local path, not a background compatibility check."
-                .to_string(),
-        )
-    } else {
-        (
-            "Whisper model path is readable; compatibility is not verified.".to_string(),
-            "Readability does not prove model compatibility.".to_string(),
-        )
-    };
-
-    WhisperSetupGuidanceView {
-        state: "ReadablePath".to_string(),
-        configured_path,
-        message,
-        setup_guidance:
-            "Use Test path for file evidence, then transcribe a sample to verify compatibility."
-                .to_string(),
-        compatibility_note,
-        last_path_test,
-        last_successful_transcription,
     }
 }
 
@@ -4290,85 +3613,6 @@ fn ollama_setup_guidance_from_last_test(
     )
 }
 
-fn matching_whisper_path_test_evidence(
-    settings: &AppSettings,
-    configured_path: &str,
-) -> Option<WhisperPathTestEvidence> {
-    let configured_path = configured_path.trim();
-    settings
-        .whisper_path_test_evidence
-        .as_ref()
-        .filter(|evidence| evidence.tested_path == configured_path)
-        .filter(|evidence| {
-            evidence.state != "Valid"
-                || whisper_path_test_evidence_matches_current_file(configured_path, evidence)
-        })
-        .cloned()
-}
-
-fn matching_whisper_transcription_compatibility_evidence(
-    settings: &AppSettings,
-    configured_path: &str,
-) -> Option<WhisperTranscriptionCompatibilityEvidence> {
-    let configured_path = configured_path.trim();
-    if !is_supported_whisper_model_file_path(Path::new(configured_path)) {
-        return None;
-    }
-    settings
-        .whisper_transcription_compatibility_evidence
-        .as_ref()
-        .filter(|evidence| evidence.model_path == configured_path)
-        .filter(|evidence| {
-            whisper_transcription_compatibility_evidence_matches_current_file(
-                configured_path,
-                evidence,
-            )
-        })
-        .cloned()
-}
-
-fn whisper_path_test_evidence_proves_current_readiness(
-    configured_path: &str,
-    evidence: &Option<WhisperPathTestEvidence>,
-) -> bool {
-    let configured_path = configured_path.trim();
-    evidence
-        .as_ref()
-        .filter(|evidence| evidence.tested_path == configured_path)
-        .filter(|evidence| evidence.state == "Valid")
-        .map(|evidence| whisper_path_test_evidence_matches_current_file(configured_path, evidence))
-        .unwrap_or(false)
-}
-
-fn whisper_transcription_compatibility_evidence_matches_current_file(
-    configured_path: &str,
-    evidence: &WhisperTranscriptionCompatibilityEvidence,
-) -> bool {
-    std::fs::metadata(configured_path.trim())
-        .map(|metadata| {
-            metadata.is_file()
-                && metadata.len() == evidence.file_size_bytes
-                && file_modified_at_ms(&metadata) == Some(evidence.modified_at_ms)
-        })
-        .unwrap_or(false)
-}
-
-fn whisper_path_test_evidence_matches_current_file(
-    configured_path: &str,
-    evidence: &WhisperPathTestEvidence,
-) -> bool {
-    let path = PathBuf::from(configured_path.trim());
-    if !is_supported_whisper_model_file_path(&path) {
-        return false;
-    }
-    let Some(expected_size) = evidence.file_size_bytes else {
-        return false;
-    };
-    std::fs::metadata(&path)
-        .map(|metadata| metadata.is_file() && metadata.len() == expected_size)
-        .unwrap_or(false)
-}
-
 fn matching_ollama_connection_test_evidence(
     settings: &AppSettings,
 ) -> Option<OllamaConnectionTestEvidence> {
@@ -4379,23 +3623,6 @@ fn matching_ollama_connection_test_evidence(
         .as_ref()
         .filter(|evidence| evidence.base_url == base_url && evidence.requested_model == model)
         .cloned()
-}
-
-fn resolved_whisper_model_path(settings: &AppSettings) -> String {
-    let saved_path = settings.whisper_model_path.trim();
-    if saved_path.is_empty() {
-        std::env::var("CURIOSITY_WHISPER_MODEL").unwrap_or_default()
-    } else {
-        saved_path.to_string()
-    }
-}
-
-fn model_name_for_path(model_path: &str) -> String {
-    PathBuf::from(model_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("local-whisper")
-        .to_string()
 }
 
 fn app_settings_view(settings: AppSettings) -> AppSettingsView {
@@ -4419,89 +3646,6 @@ fn raw_audio_retention_policy_view(
             RawAudioRetentionPolicy::DeleteAfterTranscription
         }
     }
-}
-
-fn test_whisper_model_path_value(path: &str) -> WhisperModelPathTestView {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return WhisperModelPathTestView::invalid(
-            "No Whisper model path is configured.",
-            "Enter a local Whisper model path, or set CURIOSITY_WHISPER_MODEL before launching the app.",
-        );
-    }
-    let path = PathBuf::from(trimmed);
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return WhisperModelPathTestView::invalid(
-                format!("Whisper model path does not exist or cannot be inspected: {error}"),
-                "Check the path and choose a readable local Whisper model file.",
-            );
-        }
-    };
-    if !metadata.is_file() {
-        return WhisperModelPathTestView::invalid(
-            "Whisper model path must point to a file.",
-            "Choose a readable local Whisper model file, not a directory.",
-        );
-    }
-    if !is_supported_whisper_model_file_path(&path) {
-        return WhisperModelPathTestView::invalid(
-            "Whisper model path must use a supported .bin or .gguf file.",
-            "Choose an existing whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
-        );
-    }
-    if metadata.len() == 0 {
-        return WhisperModelPathTestView::invalid(
-            "Whisper model path points to an empty file.",
-            "Choose a non-empty whisper.cpp-compatible .bin or .gguf model file, then run Test path.",
-        );
-    }
-    match sha256_for_readable_file(&path) {
-        Ok(sha256) => WhisperModelPathTestView {
-            state: "Valid".to_string(),
-            message: "Whisper model path is readable; compatibility is not verified by this test."
-                .to_string(),
-            setup_guidance:
-                "Record this file size and SHA-256, then run the real Whisper smoke or transcribe a sample to verify compatibility."
-                    .to_string(),
-            file_size_bytes: Some(metadata.len()),
-            sha256: Some(sha256),
-        },
-        Err(error) => WhisperModelPathTestView::invalid(
-            format!("Whisper model path is not readable: {error}"),
-            "Check file permissions and choose a readable local Whisper model file.",
-        ),
-    }
-}
-
-const SUPPORTED_WHISPER_MODEL_EXTENSIONS: [&str; 2] = ["bin", "gguf"];
-
-fn is_supported_whisper_model_file_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            SUPPORTED_WHISPER_MODEL_EXTENSIONS
-                .iter()
-                .any(|supported_extension| extension.eq_ignore_ascii_case(supported_extension))
-        })
-        .unwrap_or(false)
-}
-
-fn sha256_for_readable_file(path: &Path) -> Result<String, std::io::Error> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-
-    loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Clone)]
@@ -4552,317 +3696,6 @@ where
                 )
             })
     }
-}
-
-trait OllamaHttpTransport {
-    fn post_json(
-        &self,
-        url: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value, OllamaHttpError>;
-    fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError>;
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum OllamaHttpError {
-    Unavailable(String),
-    Http { status: u16, body: String },
-    MalformedResponse(String),
-}
-
-impl std::fmt::Display for OllamaHttpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unavailable(message) | Self::MalformedResponse(message) => write!(f, "{message}"),
-            Self::Http { status, body } => write!(f, "Ollama returned HTTP {status}: {body}"),
-        }
-    }
-}
-
-impl From<OllamaHttpError> for AnalysisClientError {
-    fn from(error: OllamaHttpError) -> Self {
-        match error {
-            OllamaHttpError::Unavailable(message) => Self::Unavailable(message),
-            OllamaHttpError::Http { .. } | OllamaHttpError::MalformedResponse(_) => {
-                Self::Transport(error.to_string())
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct UreqOllamaHttpTransport;
-
-impl OllamaHttpTransport for UreqOllamaHttpTransport {
-    fn post_json(
-        &self,
-        url: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value, OllamaHttpError> {
-        ollama_ureq_agent()
-            .post(url)
-            .send_json(body)
-            .map_err(ollama_http_error_from_ureq)?
-            .into_json()
-            .map_err(|error| {
-                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
-            })
-    }
-
-    fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError> {
-        ollama_ureq_agent()
-            .get(url)
-            .call()
-            .map_err(ollama_http_error_from_ureq)?
-            .into_json()
-            .map_err(|error| {
-                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
-            })
-    }
-}
-
-fn ollama_ureq_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_write(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(120))
-        .build()
-}
-
-fn ollama_http_error_from_ureq(error: ureq::Error) -> OllamaHttpError {
-    match error {
-        ureq::Error::Status(code, response) => {
-            let status_text = response.status_text().to_string();
-            let body = response.into_string().unwrap_or_else(|error| {
-                format!("{status_text}; read response body failed: {error}")
-            });
-            let body = body.trim();
-            OllamaHttpError::Http {
-                status: code,
-                body: if body.is_empty() {
-                    status_text
-                } else {
-                    body.to_string()
-                },
-            }
-        }
-        ureq::Error::Transport(error) => OllamaHttpError::Unavailable(error.to_string()),
-    }
-}
-
-fn test_ollama_connection_value<T>(
-    base_url: &str,
-    model_name: &str,
-    transport: &T,
-) -> OllamaConnectionTestView
-where
-    T: OllamaHttpTransport,
-{
-    if let Err(error) = validate_local_ollama_model(model_name) {
-        return OllamaConnectionTestView::unavailable(
-            error.to_string(),
-            "Choose a local Ollama model tag such as qwen3.6:27b or gemma4:31b.",
-        );
-    }
-    let selected_model_tag = canonical_local_ollama_model_tag(model_name);
-    let url = match local_ollama_endpoint(base_url, "/api/tags") {
-        Ok(url) => url,
-        Err(error) => {
-            return OllamaConnectionTestView::unavailable(
-                error.to_string(),
-                "Use a local Ollama base URL such as http://127.0.0.1:11434.",
-            )
-            .with_selected_local_model_tag(selected_model_tag);
-        }
-    };
-    let response = match transport.get_json(&url) {
-        Ok(response) => response,
-        Err(error) => {
-            return OllamaConnectionTestView::unavailable(
-                format!("Ollama is unavailable: {error}"),
-                "Start Ollama with `ollama serve`, then retry.",
-            )
-            .with_selected_local_model_tag(selected_model_tag);
-        }
-    };
-    let installed_models = installed_ollama_model_names(&response);
-    let matched_model = installed_models
-        .iter()
-        .find(|installed_model| ollama_model_matches_request(installed_model, model_name))
-        .cloned();
-    if let Some(installed_model) = matched_model {
-        OllamaConnectionTestView {
-            state: "Available".to_string(),
-            message: format!("Ollama is reachable and {installed_model} is installed."),
-            setup_guidance: String::new(),
-            selected_local_model_tag: Some(selected_model_tag),
-            installed_local_models: Some(installed_models),
-            pull_command: None,
-        }
-    } else {
-        let pull_command = format!("ollama pull {selected_model_tag}");
-        let installed_hint = if installed_models.is_empty() {
-            " No local models were reported by Ollama.".to_string()
-        } else {
-            format!(" Installed local models: {}.", installed_models.join(", "))
-        };
-        let mut view = OllamaConnectionTestView::unavailable(
-            format!("Ollama is reachable, but {selected_model_tag} is not installed."),
-            format!(
-                "Install the selected model with `{pull_command}`, then retry.{installed_hint}"
-            ),
-        )
-        .with_selected_local_model_tag(selected_model_tag);
-        view.installed_local_models = Some(installed_models);
-        view.pull_command = Some(pull_command);
-        view
-    }
-}
-
-fn installed_ollama_model_names(response: &serde_json::Value) -> Vec<String> {
-    let mut names = response
-        .get("models")
-        .and_then(|models| models.as_array())
-        .into_iter()
-        .flatten()
-        .flat_map(|model| {
-            ["name", "model"].into_iter().filter_map(|field| {
-                model
-                    .get(field)
-                    .and_then(|name| name.as_str())
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_string)
-            })
-        })
-        .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    names
-}
-
-fn ollama_model_matches_request(installed_model: &str, requested_model: &str) -> bool {
-    let installed_model = normalized_ollama_model_name(installed_model);
-    requested_ollama_model_aliases(requested_model)
-        .iter()
-        .any(|alias| alias == &installed_model)
-}
-
-fn requested_ollama_model_aliases(requested_model: &str) -> Vec<String> {
-    let trimmed = requested_model.trim();
-    let mut aliases = Vec::new();
-    push_unique_alias(&mut aliases, normalized_ollama_model_name(trimmed));
-    if !trimmed.contains(':') {
-        push_unique_alias(
-            &mut aliases,
-            normalized_ollama_model_name(&format!("{trimmed}:latest")),
-        );
-    }
-    push_unique_alias(
-        &mut aliases,
-        normalized_ollama_model_name(&canonical_local_ollama_model_tag(trimmed)),
-    );
-    aliases
-}
-
-fn push_unique_alias(aliases: &mut Vec<String>, alias: String) {
-    if !alias.is_empty() && !aliases.contains(&alias) {
-        aliases.push(alias);
-    }
-}
-
-fn canonical_local_ollama_model_tag(model_name: &str) -> String {
-    let trimmed = model_name.trim();
-    let normalized = normalized_ollama_model_name(trimmed);
-    recommended_analysis_model_presets()
-        .iter()
-        .find(|preset| {
-            preset.provider_kind == AnalysisProviderKind::OllamaLocal
-                && (normalized_ollama_model_name(preset.model_tag) == normalized
-                    || normalized_ollama_model_name(preset.id) == normalized
-                    || normalized_ollama_model_name(preset.display_name) == normalized)
-        })
-        .map(|preset| preset.model_tag.to_string())
-        .unwrap_or_else(|| trimmed.to_ascii_lowercase())
-}
-
-fn normalized_ollama_model_name(model_name: &str) -> String {
-    model_name
-        .trim()
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace())
-        .flat_map(|ch| ch.to_lowercase())
-        .collect()
-}
-
-fn validate_local_ollama_model(model_name: &str) -> Result<(), AnalysisClientError> {
-    let trimmed = model_name.trim();
-    if trimmed.is_empty() {
-        return Err(AnalysisClientError::Transport(
-            "Choose a local Ollama model before requesting analysis.".to_string(),
-        ));
-    }
-    let normalized = normalized_ollama_model_name(trimmed);
-    let is_hosted = normalized.ends_with(":cloud")
-        || recommended_analysis_model_presets().iter().any(|preset| {
-            preset.provider_kind != AnalysisProviderKind::OllamaLocal
-                && (normalized_ollama_model_name(preset.model_tag) == normalized
-                    || normalized_ollama_model_name(preset.id) == normalized
-                    || normalized_ollama_model_name(preset.display_name) == normalized)
-        });
-    if is_hosted {
-        return Err(AnalysisClientError::Transport(
-            "hosted or cloud model tags cannot use the local Ollama privacy path.".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn local_ollama_endpoint(base_url: &str, path: &str) -> Result<String, AnalysisClientError> {
-    let base_url = base_url.trim();
-    let mut url = Url::parse(base_url).map_err(|error| {
-        AnalysisClientError::Transport(format!("Ollama base URL is invalid: {error}"))
-    })?;
-    let local_url_error =
-        "Ollama base URL must be a local loopback http(s) URL without credentials, query, or fragment.";
-    if has_explicit_url_userinfo(base_url)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
-    }
-    let is_loopback = match url.host_str() {
-        Some("localhost") => true,
-        Some(host) => host
-            .parse::<IpAddr>()
-            .map(|address| address.is_loopback())
-            .unwrap_or(false),
-        None => false,
-    };
-    if !is_loopback {
-        return Err(AnalysisClientError::Transport(local_url_error.to_string()));
-    }
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return Err(AnalysisClientError::Transport(local_url_error.to_string())),
-    }
-    url.set_path(path);
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url.to_string())
-}
-
-fn has_explicit_url_userinfo(url: &str) -> bool {
-    let Some(authority_start) = url.find("://").map(|index| index + 3) else {
-        return false;
-    };
-    let authority_end = url[authority_start..]
-        .find(['/', '?', '#'])
-        .map(|index| authority_start + index)
-        .unwrap_or(url.len());
-    url[authority_start..authority_end].contains('@')
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -4977,28 +3810,9 @@ struct CommandSurfaceState {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelStatus {
-    kind: String,
-    configured_path: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct FirstRunSetupGuidanceView {
     whisper: WhisperSetupGuidanceView,
     ollama: OllamaSetupGuidanceView,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WhisperSetupGuidanceView {
-    state: String,
-    configured_path: String,
-    message: String,
-    setup_guidance: String,
-    compatibility_note: String,
-    last_path_test: Option<WhisperPathTestEvidence>,
-    last_successful_transcription: Option<WhisperTranscriptionCompatibilityEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -5062,75 +3876,6 @@ struct AppSettingsView {
     ollama_model: String,
     export_directory: Option<String>,
     raw_audio_retention_policy: RawAudioRetentionPolicy,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WhisperModelPathTestView {
-    state: String,
-    message: String,
-    setup_guidance: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    file_size_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sha256: Option<String>,
-}
-
-impl WhisperModelPathTestView {
-    fn invalid(message: impl Into<String>, setup_guidance: impl Into<String>) -> Self {
-        Self {
-            state: "Invalid".to_string(),
-            message: message.into(),
-            setup_guidance: setup_guidance.into(),
-            file_size_bytes: None,
-            sha256: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OllamaConnectionTestView {
-    state: String,
-    message: String,
-    setup_guidance: String,
-    selected_local_model_tag: Option<String>,
-    installed_local_models: Option<Vec<String>>,
-    pull_command: Option<String>,
-}
-
-impl OllamaConnectionTestView {
-    fn unavailable(message: impl Into<String>, setup_guidance: impl Into<String>) -> Self {
-        Self {
-            state: "Unavailable".to_string(),
-            message: message.into(),
-            setup_guidance: setup_guidance.into(),
-            selected_local_model_tag: None,
-            installed_local_models: None,
-            pull_command: None,
-        }
-    }
-
-    fn with_selected_local_model_tag(mut self, model_tag: String) -> Self {
-        self.selected_local_model_tag = Some(model_tag);
-        self
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CaptureStatus {
-    microphone: DesktopPermissionState,
-    system_audio: DesktopPermissionState,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-enum DesktopPermissionState {
-    Ready,
-    MicrophoneDenied,
-    MicrophoneUnavailable,
-    SystemAudioDenied,
-    SystemAudioUnavailable,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -5278,125 +4023,6 @@ struct MeetingPrivacy {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExportCommandState {
-    state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meeting_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<ExportFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-impl Default for ExportCommandState {
-    fn default() -> Self {
-        Self {
-            state: "idle".to_string(),
-            meeting_id: None,
-            format: None,
-            path: None,
-            message: None,
-        }
-    }
-}
-
-impl ExportCommandState {
-    fn exported(exported: ExportedMeetingDto) -> Self {
-        Self {
-            state: "exported".to_string(),
-            meeting_id: Some(exported.meeting_id),
-            format: Some(exported.format),
-            path: Some(exported.path),
-            message: None,
-        }
-    }
-
-    fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {
-        Self {
-            state: "failed".to_string(),
-            meeting_id: Some(meeting_id.to_string()),
-            format: Some(format),
-            path: None,
-            message: Some(message),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteCommandState {
-    state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meeting_id: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    deleted_private_artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    skipped_private_artifacts: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    remaining_exports: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-impl Default for DeleteCommandState {
-    fn default() -> Self {
-        Self {
-            state: "idle".to_string(),
-            meeting_id: None,
-            deleted_private_artifacts: Vec::new(),
-            skipped_private_artifacts: Vec::new(),
-            remaining_exports: Vec::new(),
-            message: None,
-        }
-    }
-}
-
-impl DeleteCommandState {
-    fn deleted(deleted: DeletedMeetingDto) -> Self {
-        Self {
-            state: "deleted".to_string(),
-            meeting_id: Some(deleted.meeting_id),
-            deleted_private_artifacts: deleted.deleted_private_artifacts,
-            skipped_private_artifacts: deleted.skipped_private_artifacts,
-            remaining_exports: deleted.remaining_exports,
-            message: None,
-        }
-    }
-
-    fn failed(meeting_id: &str, message: String) -> Self {
-        Self {
-            state: "failed".to_string(),
-            meeting_id: Some(meeting_id.to_string()),
-            deleted_private_artifacts: Vec::new(),
-            skipped_private_artifacts: Vec::new(),
-            remaining_exports: Vec::new(),
-            message: Some(message),
-        }
-    }
-}
-
-fn delete_command_state_from_pending_finalization(
-    report: PendingDeleteFinalizationReport,
-) -> DeleteCommandState {
-    DeleteCommandState::deleted(DeletedMeetingDto {
-        meeting_id: report.meeting_id,
-        deleted_private_artifacts: paths_to_strings(report.deleted_private_artifacts),
-        skipped_private_artifacts: paths_to_strings(report.skipped_private_artifacts),
-        remaining_exports: paths_to_strings(report.exported_files_outside_app_control),
-    })
-}
-
-fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
-    paths
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect()
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct AnalysisDisclosureState {
     provider: String,
     model_name: String,
@@ -5427,8 +4053,9 @@ struct CaptureProbeStatus {
 mod tests {
     use super::*;
     use curiosity_audio::{
-        ArtifactManifest, AudioArtifactMetadata, CapturePermissionError, CaptureUnavailable,
-        DeviceIdentity, ManifestStatus, RecordingMetadata, StreamKind,
+        ArtifactManifest, AudioArtifactMetadata, CaptureError, CapturePermission,
+        CapturePermissionError, CaptureUnavailable, DeviceIdentity, ManifestStatus,
+        RecordingMetadata, StreamKind,
     };
     use curiosity_domain::{
         AnalysisCitation, ArtifactKind, AudioArtifact, Meeting, MeetingAnalysis, ModelRun,

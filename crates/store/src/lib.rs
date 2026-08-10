@@ -9,34 +9,34 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use curiosity_domain::{
     ArtifactKind, AudioArtifact, JobKind, JobStatus, Meeting, MeetingAnalysis, MeetingStatus,
-    ModelRun, ProcessingJob, RawAudioRetentionPolicy, RecordingSession, RecordingSource,
-    RecordingStatus, SourceChannel, TranscriptSegment, TranscriptState, TranscriptVersion,
+    ModelRun, RawAudioRetentionPolicy, RecordingSession, RecordingSource, RecordingStatus,
+    SourceChannel, TranscriptSegment, TranscriptState, TranscriptVersion,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod artifact_manifest;
+mod processing_jobs;
+mod settings;
+mod transcription_audio;
+
+use artifact_manifest::{manifest_paths, manifest_update_temp_path, recoverable_artifact_entries};
+pub use artifact_manifest::{ArtifactManifest, RecoverableArtifact, RepairStatus, WriteStatus};
+pub use settings::{
+    AppSettings, OllamaConnectionTestEvidence, WhisperPathTestEvidence,
+    WhisperTranscriptionCompatibilityEvidence, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL,
+};
+pub use transcription_audio::TranscriptionAudioArtifact;
+
 /// Result type for operations at the persistence boundary.
 pub type StoreResult<T> = Result<T, StoreError>;
 
-pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
-pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:27b";
-
 const SCHEMA_VERSION: u32 = 5;
 const PENDING_SHA_PREFIX: &str = "sha256:pending";
-const SETTING_WHISPER_MODEL_PATH: &str = "whisper_model_path";
-const SETTING_OLLAMA_BASE_URL: &str = "ollama_base_url";
-const SETTING_OLLAMA_MODEL: &str = "ollama_model";
-const SETTING_EXPORT_DIRECTORY: &str = "export_directory";
-const SETTING_RAW_AUDIO_RETENTION_POLICY: &str = "raw_audio_retention_policy";
-const SETTING_WHISPER_PATH_TEST_EVIDENCE: &str = "whisper_path_test_evidence";
-const SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE: &str =
-    "whisper_transcription_compatibility_evidence";
-const SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE: &str = "ollama_connection_test_evidence";
 
 /// Typed store failure for storage, path safety, recovery, and invariant errors.
 #[derive(Debug)]
@@ -152,94 +152,6 @@ pub struct Store {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AppSettings {
-    pub whisper_model_path: String,
-    pub ollama_base_url: String,
-    pub ollama_model: String,
-    pub export_directory: Option<String>,
-    pub raw_audio_retention_policy: RawAudioRetentionPolicy,
-    pub whisper_path_test_evidence: Option<WhisperPathTestEvidence>,
-    pub whisper_transcription_compatibility_evidence:
-        Option<WhisperTranscriptionCompatibilityEvidence>,
-    pub ollama_connection_test_evidence: Option<OllamaConnectionTestEvidence>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WhisperPathTestEvidence {
-    pub tested_path: String,
-    pub tested_at_ms: u64,
-    pub state: String,
-    pub file_size_bytes: Option<u64>,
-    pub sha256: Option<String>,
-    pub failure_detail: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WhisperTranscriptionCompatibilityEvidence {
-    pub model_path: String,
-    pub used_at_ms: u64,
-    pub provider: String,
-    pub model_name: String,
-    pub meeting_id: String,
-    pub model_run_id: String,
-    pub transcript_version_id: String,
-    pub segment_count: u64,
-    pub file_size_bytes: u64,
-    pub modified_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OllamaConnectionTestEvidence {
-    pub base_url: String,
-    pub requested_model: String,
-    pub tested_at_ms: u64,
-    pub state: String,
-    pub selected_local_model_tag: Option<String>,
-    pub installed_local_models: Option<Vec<String>>,
-    pub pull_command: Option<String>,
-    pub failure_detail: Option<String>,
-}
-
-impl WhisperPathTestEvidence {
-    fn is_valid_snapshot_evidence(&self) -> bool {
-        match self.state.as_str() {
-            "Valid" => {
-                matches!(self.file_size_bytes, Some(size) if size > 0)
-                    && self.sha256.as_deref().map(is_lower_hex_sha256) == Some(true)
-            }
-            "Invalid" => self
-                .sha256
-                .as_deref()
-                .map(is_lower_hex_sha256)
-                .unwrap_or(true),
-            _ => false,
-        }
-    }
-}
-
-impl WhisperTranscriptionCompatibilityEvidence {
-    fn is_valid_snapshot_evidence(&self) -> bool {
-        !self.model_path.trim().is_empty()
-            && !self.provider.trim().is_empty()
-            && !self.model_name.trim().is_empty()
-            && !self.meeting_id.trim().is_empty()
-            && !self.model_run_id.trim().is_empty()
-            && !self.transcript_version_id.trim().is_empty()
-            && self.segment_count > 0
-            && self.file_size_bytes > 0
-    }
-}
-
-impl OllamaConnectionTestEvidence {
-    fn is_valid_snapshot_evidence(&self) -> bool {
-        matches!(self.state.as_str(), "Available" | "Unavailable")
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeetingSummary {
     pub meeting_id: String,
     pub title: String,
@@ -273,15 +185,6 @@ pub struct MeetingSearchResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TranscriptionAudioArtifact {
-    pub artifact_id: String,
-    pub recording_session_id: String,
-    pub kind: String,
-    pub path: String,
-    pub sha256: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletedAudioArtifact {
     pub artifact_id: String,
     pub sha256: String,
@@ -300,19 +203,6 @@ struct RawAudioRetentionCleanupPlan {
     path: PathBuf,
     existed_at_preflight: bool,
 }
-
-type ProcessingJobRow = (
-    String,
-    String,
-    String,
-    String,
-    u32,
-    Option<String>,
-    Option<u64>,
-    Option<u64>,
-    bool,
-    Option<String>,
-);
 
 impl Store {
     pub fn open(db_path: impl AsRef<Path>, app_root: impl Into<PathBuf>) -> StoreResult<Self> {
@@ -658,394 +548,6 @@ impl Store {
         Ok(artifact.id.clone())
     }
 
-    pub fn insert_processing_job(&self, job: &ProcessingJob) -> StoreResult<()> {
-        self.conn.execute(
-            "
-            INSERT INTO processing_jobs (
-                id, meeting_id, kind, status, attempts, last_error,
-                started_at_ms, finished_at_ms, cancel_requested, idempotency_key
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ",
-            params![
-                job.id,
-                job.meeting_id,
-                enum_name(job.kind),
-                enum_name(job.status),
-                job.attempts,
-                job.last_error,
-                job.started_at_ms,
-                job.finished_at_ms,
-                job.cancel_requested,
-                job.idempotency_key
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn request_processing_job_cancel(&self, job_id: &str) -> StoreResult<()> {
-        self.conn.execute(
-            "
-            UPDATE processing_jobs
-            SET cancel_requested = 1
-            WHERE id = ?1
-              AND status = 'Running'
-            ",
-            params![job_id],
-        )?;
-        if self.conn.changes() == 0 {
-            let status = self
-                .conn
-                .query_row(
-                    "SELECT status FROM processing_jobs WHERE id = ?1",
-                    params![job_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            let Some(status) = status else {
-                return Err(format!("processing job not found: {job_id}").into());
-            };
-            let status = parse_job_status(&status)?;
-            if status == JobStatus::Running {
-                return Ok(());
-            }
-            return Err(format!("processing job is not running: {job_id}").into());
-        }
-        Ok(())
-    }
-
-    pub fn complete_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
-        self.finish_processing_job(job_id, JobStatus::Succeeded, finished_at_ms, None)
-    }
-
-    pub fn cancel_processing_job(&self, job_id: &str, finished_at_ms: u64) -> StoreResult<()> {
-        self.finish_processing_job(job_id, JobStatus::Canceled, finished_at_ms, None)
-    }
-
-    pub fn fail_processing_job(
-        &self,
-        job_id: &str,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<()> {
-        self.finish_processing_job(job_id, JobStatus::Failed, finished_at_ms, Some(last_error))
-    }
-
-    pub fn recover_processing_job(
-        &self,
-        job_id: &str,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<()> {
-        self.finish_processing_job(
-            job_id,
-            JobStatus::Recovery,
-            finished_at_ms,
-            Some(last_error),
-        )
-    }
-
-    fn finish_processing_job(
-        &self,
-        job_id: &str,
-        status: JobStatus,
-        finished_at_ms: u64,
-        last_error: Option<&str>,
-    ) -> StoreResult<()> {
-        self.conn.execute(
-            "
-            UPDATE processing_jobs
-            SET status = ?2,
-                finished_at_ms = ?3,
-                last_error = ?4,
-                cancel_requested = 0
-            WHERE id = ?1
-              AND status = 'Running'
-            ",
-            params![job_id, enum_name(status), finished_at_ms, last_error],
-        )?;
-        if self.conn.changes() == 0 {
-            let current_status = self
-                .conn
-                .query_row(
-                    "SELECT status FROM processing_jobs WHERE id = ?1",
-                    params![job_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            let Some(current_status) = current_status else {
-                return Err(format!("processing job not found: {job_id}").into());
-            };
-            let current_status = parse_job_status(&current_status)?;
-            if current_status == JobStatus::Running {
-                return Err(format!("processing job was not updated: {job_id}").into());
-            }
-            return Err(format!("processing job is not running: {job_id}").into());
-        }
-        Ok(())
-    }
-
-    pub fn active_transcription_job_for_meeting(
-        &self,
-        meeting_id: &str,
-    ) -> StoreResult<Option<ProcessingJob>> {
-        self.active_processing_job_for_meeting(meeting_id, JobKind::Transcribe)
-    }
-
-    pub fn active_summary_job_for_meeting(
-        &self,
-        meeting_id: &str,
-    ) -> StoreResult<Option<ProcessingJob>> {
-        self.active_processing_job_for_meeting(meeting_id, JobKind::Summarize)
-    }
-
-    fn active_processing_job_for_meeting(
-        &self,
-        meeting_id: &str,
-        kind: JobKind,
-    ) -> StoreResult<Option<ProcessingJob>> {
-        self.processing_job_for_query(
-            "
-            SELECT
-                id,
-                meeting_id,
-                kind,
-                status,
-                attempts,
-                last_error,
-                started_at_ms,
-                finished_at_ms,
-                cancel_requested,
-                idempotency_key
-            FROM processing_jobs
-            WHERE meeting_id = ?1
-              AND kind = ?2
-              AND status = 'Running'
-            ORDER BY started_at_ms DESC, id DESC
-            LIMIT 1
-            ",
-            params![meeting_id, enum_name(kind)],
-        )
-    }
-
-    pub fn recover_active_transcription_jobs(
-        &self,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<Vec<ProcessingJob>> {
-        self.recover_active_processing_jobs(JobKind::Transcribe, finished_at_ms, last_error)
-    }
-
-    pub fn recover_active_summary_jobs(
-        &self,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<Vec<ProcessingJob>> {
-        self.recover_active_processing_jobs(JobKind::Summarize, finished_at_ms, last_error)
-    }
-
-    fn recover_active_processing_jobs(
-        &self,
-        kind: JobKind,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<Vec<ProcessingJob>> {
-        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let result =
-            self.recover_active_processing_jobs_in_transaction(kind, finished_at_ms, last_error);
-        match result {
-            Ok(jobs) => {
-                if let Err(err) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(err.into());
-                }
-                Ok(jobs)
-            }
-            Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(err)
-            }
-        }
-    }
-
-    fn recover_active_processing_jobs_in_transaction(
-        &self,
-        kind: JobKind,
-        finished_at_ms: u64,
-        last_error: &str,
-    ) -> StoreResult<Vec<ProcessingJob>> {
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT processing_jobs.id
-            FROM processing_jobs
-            JOIN meetings
-              ON meetings.id = processing_jobs.meeting_id
-            WHERE processing_jobs.kind = ?1
-              AND processing_jobs.status = 'Running'
-              AND meetings.status != 'Deleted'
-              AND meetings.deleted_at_ms IS NULL
-            ORDER BY processing_jobs.started_at_ms DESC, processing_jobs.id DESC
-            ",
-        )?;
-        let job_ids = stmt
-            .query_map(params![enum_name(kind)], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(stmt);
-
-        let mut jobs = Vec::with_capacity(job_ids.len());
-        for job_id in job_ids {
-            self.recover_processing_job(&job_id, finished_at_ms, last_error)?;
-            jobs.push(self.processing_job(&job_id)?);
-        }
-        Ok(jobs)
-    }
-
-    pub fn app_settings(&self) -> StoreResult<AppSettings> {
-        let export_directory = self
-            .setting_value(SETTING_EXPORT_DIRECTORY)?
-            .filter(|value| !value.trim().is_empty());
-        Ok(AppSettings {
-            whisper_model_path: self
-                .setting_value(SETTING_WHISPER_MODEL_PATH)?
-                .unwrap_or_default(),
-            ollama_base_url: self
-                .setting_value(SETTING_OLLAMA_BASE_URL)?
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_OLLAMA_BASE_URL.to_string()),
-            ollama_model: self
-                .setting_value(SETTING_OLLAMA_MODEL)?
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string()),
-            export_directory,
-            raw_audio_retention_policy: parse_raw_audio_retention_policy(
-                self.setting_value(SETTING_RAW_AUDIO_RETENTION_POLICY)?
-                    .filter(|value| !value.trim().is_empty())
-                    .as_deref()
-                    .unwrap_or("Retain"),
-            )?,
-            whisper_path_test_evidence: self.optional_setting_json(
-                SETTING_WHISPER_PATH_TEST_EVIDENCE,
-                WhisperPathTestEvidence::is_valid_snapshot_evidence,
-            )?,
-            whisper_transcription_compatibility_evidence: self.optional_setting_json(
-                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
-                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
-            )?,
-            ollama_connection_test_evidence: self.optional_setting_json(
-                SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
-                OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
-            )?,
-        })
-    }
-
-    pub fn save_whisper_model_path(&self, whisper_model_path: &str) -> StoreResult<AppSettings> {
-        let whisper_model_path = whisper_model_path.trim();
-        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let result = (|| {
-            self.upsert_setting(SETTING_WHISPER_MODEL_PATH, whisper_model_path)?;
-            self.clear_setting_when_json::<WhisperPathTestEvidence, _>(
-                SETTING_WHISPER_PATH_TEST_EVIDENCE,
-                WhisperPathTestEvidence::is_valid_snapshot_evidence,
-                |evidence| evidence.tested_path != whisper_model_path,
-            )?;
-            self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
-                SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
-                WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
-                |evidence| evidence.model_path != whisper_model_path,
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                if let Err(err) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(err.into());
-                }
-                self.app_settings()
-            }
-            Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(err)
-            }
-        }
-    }
-
-    pub fn save_analysis_settings(
-        &self,
-        ollama_base_url: &str,
-        ollama_model: &str,
-    ) -> StoreResult<AppSettings> {
-        let ollama_base_url = default_if_blank(ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
-        let ollama_model = default_if_blank(ollama_model, DEFAULT_OLLAMA_MODEL);
-        self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let result = (|| {
-            self.upsert_setting(SETTING_OLLAMA_BASE_URL, ollama_base_url)?;
-            self.upsert_setting(SETTING_OLLAMA_MODEL, ollama_model)?;
-            self.clear_setting_when_json::<OllamaConnectionTestEvidence, _>(
-                SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE,
-                OllamaConnectionTestEvidence::is_valid_snapshot_evidence,
-                |evidence| {
-                    evidence.base_url != ollama_base_url || evidence.requested_model != ollama_model
-                },
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                if let Err(err) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(err.into());
-                }
-                self.app_settings()
-            }
-            Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(err)
-            }
-        }
-    }
-
-    pub fn save_whisper_path_test_evidence(
-        &self,
-        evidence: &WhisperPathTestEvidence,
-    ) -> StoreResult<AppSettings> {
-        if !evidence.is_valid_snapshot_evidence() {
-            return Err("invalid Whisper path test evidence".into());
-        }
-        let value = serde_json::to_string(evidence)?;
-        self.upsert_setting(SETTING_WHISPER_PATH_TEST_EVIDENCE, &value)?;
-        self.app_settings()
-    }
-
-    pub fn save_whisper_transcription_compatibility_evidence(
-        &self,
-        evidence: &WhisperTranscriptionCompatibilityEvidence,
-    ) -> StoreResult<AppSettings> {
-        if !evidence.is_valid_snapshot_evidence() {
-            return Err("invalid Whisper transcription compatibility evidence".into());
-        }
-        let value = serde_json::to_string(evidence)?;
-        self.upsert_setting(SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE, &value)?;
-        self.app_settings()
-    }
-
-    pub fn save_ollama_connection_test_evidence(
-        &self,
-        evidence: &OllamaConnectionTestEvidence,
-    ) -> StoreResult<AppSettings> {
-        if !evidence.is_valid_snapshot_evidence() {
-            return Err("invalid Ollama connection test evidence".into());
-        }
-        let value = serde_json::to_string(evidence)?;
-        self.upsert_setting(SETTING_OLLAMA_CONNECTION_TEST_EVIDENCE, &value)?;
-        self.app_settings()
-    }
-
-    pub fn save_raw_audio_retention_policy(&self, policy: &str) -> StoreResult<AppSettings> {
-        let policy = parse_raw_audio_retention_policy(policy.trim())?;
-        self.upsert_setting(SETTING_RAW_AUDIO_RETENTION_POLICY, enum_name(policy))?;
-        self.app_settings()
-    }
-
     pub fn count(&self, table: &str) -> StoreResult<u64> {
         let allowed = [
             "meetings",
@@ -1242,87 +744,6 @@ impl Store {
             return Err(format!("audio artifact not found: {artifact_id}").into());
         }
         Ok(())
-    }
-
-    pub fn completed_wav_artifact_for_transcription(
-        &self,
-        meeting_id: &str,
-    ) -> StoreResult<Option<TranscriptionAudioArtifact>> {
-        Ok(self
-            .completed_wav_artifacts_for_transcription(meeting_id)?
-            .into_iter()
-            .next())
-    }
-
-    pub fn completed_wav_artifacts_for_transcription(
-        &self,
-        meeting_id: &str,
-    ) -> StoreResult<Vec<TranscriptionAudioArtifact>> {
-        let meeting_path_prefix = format!("meetings/{meeting_id}/");
-        let mut stmt = self.conn.prepare(
-            "
-            SELECT
-                audio_artifacts.id,
-                audio_artifacts.recording_session_id,
-                audio_artifacts.kind,
-                audio_artifacts.path,
-                audio_artifacts.sha256,
-                recording_sessions.source
-            FROM audio_artifacts
-            JOIN recording_sessions
-              ON recording_sessions.id = audio_artifacts.recording_session_id
-            WHERE recording_sessions.meeting_id = ?1
-              AND audio_artifacts.retained = 1
-              AND audio_artifacts.write_status = 'Complete'
-              AND audio_artifacts.tombstoned = 0
-              AND recording_sessions.status IN ('Complete', 'Recovered')
-              AND lower(audio_artifacts.path) LIKE '%.wav'
-            ORDER BY recording_sessions.started_at_ms DESC,
-                     audio_artifacts.id ASC
-            ",
-        )?;
-        let artifacts = stmt
-            .query_map(params![meeting_id], |row| {
-                Ok((
-                    TranscriptionAudioArtifact {
-                        artifact_id: row.get(0)?,
-                        recording_session_id: row.get(1)?,
-                        kind: row.get(2)?,
-                        path: row.get(3)?,
-                        sha256: row.get(4)?,
-                    },
-                    row.get::<_, String>(5)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut artifacts = artifacts
-            .into_iter()
-            .filter(|(artifact, _source)| {
-                artifact.path.starts_with(&meeting_path_prefix)
-                    && self.private_app_path(&artifact.path).is_some()
-            })
-            .collect::<Vec<_>>();
-        let Some((first_artifact, recording_source)) = artifacts.first() else {
-            return Ok(Vec::new());
-        };
-        let recording_session_id = first_artifact.recording_session_id.clone();
-        let recording_source = recording_source.clone();
-        artifacts
-            .retain(|(artifact, _source)| artifact.recording_session_id == recording_session_id);
-        let mut artifacts = artifacts
-            .into_iter()
-            .map(|(artifact, _source)| artifact)
-            .collect::<Vec<_>>();
-        if !transcription_artifacts_satisfy_recording_source(&recording_source, &artifacts) {
-            return Ok(Vec::new());
-        }
-        artifacts.sort_by_key(|artifact| {
-            (
-                transcription_artifact_kind_rank(&artifact.kind),
-                artifact.artifact_id.clone(),
-            )
-        });
-        Ok(artifacts)
     }
 
     pub fn meeting_status(&self, meeting_id: &str) -> StoreResult<String> {
@@ -1826,91 +1247,6 @@ impl Store {
             |row| row.get(0),
         )?;
         parse_repair_status(&status)
-    }
-
-    pub fn job_status(&self, job_id: &str) -> StoreResult<JobStatus> {
-        let status: String = self.conn.query_row(
-            "SELECT status FROM processing_jobs WHERE id = ?1",
-            params![job_id],
-            |row| row.get(0),
-        )?;
-        parse_job_status(&status)
-    }
-
-    pub fn processing_job(&self, job_id: &str) -> StoreResult<ProcessingJob> {
-        self.processing_job_for_query(
-            "
-            SELECT
-                id,
-                meeting_id,
-                kind,
-                status,
-                attempts,
-                last_error,
-                started_at_ms,
-                finished_at_ms,
-                cancel_requested,
-                idempotency_key
-            FROM processing_jobs
-            WHERE id = ?1
-            ",
-            params![job_id],
-        )?
-        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.into())
-    }
-
-    fn processing_job_for_query<P>(
-        &self,
-        sql: &str,
-        params: P,
-    ) -> StoreResult<Option<ProcessingJob>>
-    where
-        P: rusqlite::Params,
-    {
-        let (
-            id,
-            meeting_id,
-            kind,
-            status,
-            attempts,
-            last_error,
-            started_at_ms,
-            finished_at_ms,
-            cancel_requested,
-            idempotency_key,
-        ): ProcessingJobRow = match self
-            .conn
-            .query_row(sql, params, |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
-                ))
-            })
-            .optional()?
-        {
-            Some(job) => job,
-            None => return Ok(None),
-        };
-        Ok(Some(ProcessingJob {
-            id,
-            meeting_id,
-            kind: parse_job_kind(&kind)?,
-            status: parse_job_status(&status)?,
-            attempts,
-            last_error,
-            started_at_ms,
-            finished_at_ms,
-            cancel_requested,
-            idempotency_key,
-        }))
     }
 
     pub fn record_exported_file(&self, meeting_id: &str, path: &Path) -> StoreResult<()> {
@@ -3071,11 +2407,7 @@ impl Store {
             "DELETE FROM meeting_search WHERE meeting_id = ?1",
             params![meeting_id],
         )?;
-        self.clear_setting_when_json::<WhisperTranscriptionCompatibilityEvidence, _>(
-            SETTING_WHISPER_TRANSCRIPTION_COMPATIBILITY_EVIDENCE,
-            WhisperTranscriptionCompatibilityEvidence::is_valid_snapshot_evidence,
-            |evidence| evidence.meeting_id == meeting_id,
-        )?;
+        self.clear_whisper_transcription_compatibility_evidence_for_meeting(meeting_id)?;
         Ok(())
     }
 
@@ -3265,72 +2597,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    fn setting_value(&self, key: &str) -> StoreResult<Option<String>> {
-        self.conn
-            .query_row(
-                "SELECT value FROM app_settings WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    fn optional_setting_json<T, F>(&self, key: &str, is_valid: F) -> StoreResult<Option<T>>
-    where
-        T: for<'de> Deserialize<'de>,
-        F: Fn(&T) -> bool,
-    {
-        let Some(value) = self.setting_value(key)? else {
-            return Ok(None);
-        };
-        match serde_json::from_str(&value) {
-            Ok(value) if is_valid(&value) => Ok(Some(value)),
-            Ok(_) => Ok(None),
-            Err(_) => Ok(None),
-        }
-    }
-
-    fn clear_setting_when_json<T, F>(
-        &self,
-        key: &str,
-        is_valid: F,
-        should_clear: impl FnOnce(&T) -> bool,
-    ) -> StoreResult<()>
-    where
-        T: for<'de> Deserialize<'de>,
-        F: Fn(&T) -> bool,
-    {
-        let Some(value) = self.setting_value(key)? else {
-            return Ok(());
-        };
-        match serde_json::from_str::<T>(&value) {
-            Ok(value) if !is_valid(&value) => self.delete_setting(key)?,
-            Ok(value) if should_clear(&value) => self.delete_setting(key)?,
-            Ok(_) => {}
-            Err(_) => self.delete_setting(key)?,
-        }
-        Ok(())
-    }
-
-    fn upsert_setting(&self, key: &str, value: &str) -> StoreResult<()> {
-        self.conn.execute(
-            "
-            INSERT INTO app_settings (key, value)
-            VALUES (?1, ?2)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            params![key, value],
-        )?;
-        Ok(())
-    }
-
-    fn delete_setting(&self, key: &str) -> StoreResult<()> {
-        self.conn
-            .execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
-        Ok(())
-    }
-
     fn private_app_path(&self, path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         if path.is_absolute()
@@ -3493,126 +2759,6 @@ pub struct TranscriptSegmentEditExport {
     pub edited_at_ms: u64,
     pub previous_text: String,
     pub corrected_text: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WriteStatus {
-    Writing,
-    Complete,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RepairStatus {
-    NotNeeded,
-    Recoverable,
-    Recovered,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArtifactManifest {
-    pub meeting_id: String,
-    #[serde(default)]
-    pub meeting_title: Option<String>,
-    pub session_id: String,
-    pub artifact_id: String,
-    pub path: String,
-    pub sha256: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<RecoverableArtifact>,
-    pub write_status: WriteStatus,
-    pub recovery_status: RepairStatus,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RecoverableArtifact {
-    pub artifact_id: String,
-    pub path: String,
-    pub sha256: String,
-}
-
-impl ArtifactManifest {
-    pub fn new(
-        meeting_id: impl ToString,
-        session_id: impl ToString,
-        artifact_id: impl ToString,
-        path: impl ToString,
-        sha256: impl ToString,
-    ) -> Self {
-        Self {
-            meeting_id: meeting_id.to_string(),
-            meeting_title: None,
-            session_id: session_id.to_string(),
-            artifact_id: artifact_id.to_string(),
-            path: path.to_string(),
-            sha256: sha256.to_string(),
-            artifacts: Vec::new(),
-            write_status: WriteStatus::Writing,
-            recovery_status: RepairStatus::NotNeeded,
-        }
-    }
-
-    pub fn mark_interrupted_recoverable(mut self) -> Self {
-        self.recovery_status = RepairStatus::Recoverable;
-        self
-    }
-
-    pub fn write(&self, path: impl AsRef<Path>) -> StoreResult<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temp_path = path.with_extension("json.tmp");
-        fs::write(&temp_path, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(temp_path, path)?;
-        Ok(())
-    }
-
-    pub fn read(path: impl AsRef<Path>) -> StoreResult<Self> {
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
-    }
-}
-
-fn recoverable_artifact_entries(manifest: &ArtifactManifest) -> Vec<ArtifactManifest> {
-    if manifest.artifacts.is_empty() {
-        return vec![manifest.clone()];
-    }
-    manifest
-        .artifacts
-        .iter()
-        .map(|artifact| {
-            let mut entry = manifest.clone();
-            entry.artifact_id = artifact.artifact_id.clone();
-            entry.path = artifact.path.clone();
-            entry.sha256 = artifact.sha256.clone();
-            entry.artifacts = Vec::new();
-            entry
-        })
-        .collect()
-}
-
-fn manifest_paths(root: &Path) -> StoreResult<Vec<PathBuf>> {
-    let meetings = root.join("meetings");
-    match fs::symlink_metadata(&meetings) {
-        Ok(metadata) if metadata.file_type().is_dir() => {}
-        Ok(_) => return Ok(Vec::new()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err.into()),
-    }
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(meetings)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let path = entry.path().join("manifest.json");
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => paths.push(path),
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-    Ok(paths)
 }
 
 trait StoreEnum {
@@ -3834,14 +2980,6 @@ fn is_safe_meeting_id(meeting_id: &str) -> bool {
         && components.next().is_none()
 }
 
-fn manifest_update_temp_path(path: &Path) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    path.with_extension(format!("json.rename-tmp-{}-{nonce}", std::process::id(),))
-}
-
 fn fts_query(query: &str) -> StoreResult<String> {
     let tokens = query
         .split(|character: char| !character.is_alphanumeric())
@@ -4031,27 +3169,6 @@ fn parse_source_channel(channel: &str) -> Result<SourceChannel, String> {
         "Imported" => Ok(SourceChannel::Imported),
         other => Err(format!("unknown source channel: {other}")),
     }
-}
-
-fn transcription_artifact_kind_rank(kind: &str) -> u8 {
-    match kind {
-        "RawMic" => 0,
-        "RawSystem" => 1,
-        "Mixed" => 2,
-        "Imported" => 3,
-        _ => 4,
-    }
-}
-
-fn transcription_artifacts_satisfy_recording_source(
-    recording_source: &str,
-    artifacts: &[TranscriptionAudioArtifact],
-) -> bool {
-    let kinds = artifacts
-        .iter()
-        .map(|artifact| artifact.kind.as_str())
-        .collect::<Vec<_>>();
-    artifact_kinds_satisfy_recording_source(recording_source, &kinds)
 }
 
 fn artifact_kinds_satisfy_recording_source(recording_source: &str, kinds: &[&str]) -> bool {
