@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState } from "react";
 
 import packageInfo from "../package.json";
@@ -29,6 +28,8 @@ import { MeetingDetailActions } from "./desktopMeetingDetailActions";
 import { MeetingTranscriptSection } from "./desktopMeetingTranscriptSection";
 import { DesktopCommandOutcomes } from "./desktopCommandOutcomes";
 import { DesktopCalendarContext } from "./desktopCalendarContext";
+import { defaultAppFilePicker, defaultClipboardWriter } from "./desktopAppIo";
+import type { AppClipboardWriter, AppFilePicker } from "./desktopAppIo";
 import { DesktopModelReadiness } from "./desktopModelReadiness";
 import { DesktopModelSetupOptions } from "./desktopModelSetupOptions";
 import { DesktopSettingsEngineStack } from "./desktopSettingsEngineStack";
@@ -60,6 +61,11 @@ import {
   whisperSetupTone,
 } from "./desktopWorkspaceState";
 import type { PendingCommand, SettingsFormState } from "./desktopWorkspaceState";
+import { useDesktopTheme } from "./desktopTheme";
+import { deriveRecordingButtonTitles } from "./desktopRecordingButtonTitles";
+import { deriveSettingsButtonTitles } from "./desktopSettingsButtonTitles";
+import { deriveMeetingActionTitles } from "./desktopMeetingActionTitles";
+import { deriveTranscriptionButtonTitles } from "./desktopTranscriptionButtonTitles";
 
 import "./styles.css";
 
@@ -70,74 +76,6 @@ interface AppProps {
   commandFacade?: DesktopCommandFacade;
   filePicker?: Partial<AppFilePicker>;
   clipboardWriter?: AppClipboardWriter;
-}
-
-interface AppFilePicker {
-  chooseImportWavPath(): Promise<string | null>;
-  chooseWhisperModelPath(): Promise<string | null>;
-}
-
-interface AppClipboardWriter {
-  writeText(text: string): Promise<void>;
-}
-
-type ThemeMode = "dark" | "light";
-
-const defaultAppFilePicker: AppFilePicker = {
-  chooseImportWavPath: chooseNativeImportWavPath,
-  chooseWhisperModelPath: chooseNativeWhisperModelPath,
-};
-
-const defaultClipboardWriter: AppClipboardWriter = {
-  async writeText(text: string) {
-    const writeText = globalThis.navigator?.clipboard?.writeText;
-    if (!writeText) {
-      throw new Error("Clipboard API unavailable.");
-    }
-    await writeText.call(globalThis.navigator.clipboard, text);
-  },
-};
-
-async function chooseNativeImportWavPath(): Promise<string | null> {
-  const selected: string | string[] | null = await open({
-    title: "Choose WAV audio file",
-    multiple: false,
-    directory: false,
-    fileAccessMode: "scoped",
-    filters: [
-      {
-        name: "WAV audio",
-        extensions: ["wav"],
-      },
-    ],
-  });
-
-  if (Array.isArray(selected)) {
-    return typeof selected[0] === "string" ? selected[0] : null;
-  }
-
-  return selected;
-}
-
-async function chooseNativeWhisperModelPath(): Promise<string | null> {
-  const selected: string | string[] | null = await open({
-    title: "Choose Whisper model file",
-    multiple: false,
-    directory: false,
-    fileAccessMode: "scoped",
-    filters: [
-      {
-        name: "Whisper model",
-        extensions: ["bin", "gguf"],
-      },
-    ],
-  });
-
-  if (Array.isArray(selected)) {
-    return typeof selected[0] === "string" ? selected[0] : null;
-  }
-
-  return selected;
 }
 
 export default function App({ snapshot, commandFacade, filePicker, clipboardWriter }: AppProps) {
@@ -158,7 +96,7 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>("json");
-  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const { theme, isLightTheme, themeButtonLabel, toggleTheme } = useDesktopTheme();
 
   useEffect(() => {
     if (snapshot) {
@@ -873,112 +811,49 @@ export default function App({ snapshot, commandFacade, filePicker, clipboardWrit
 
   const busyCommandTitle = "A desktop command is already running.";
   const retryDeleteTitle = commandBusy ? busyCommandTitle : "Retry deletion for the failed meeting.";
-  const startButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-      : commandBusy
-        ? busyCommandTitle
-        : isRecordingActive
-          ? "Stop the active recording before starting another one."
-        : "Start desktop recording.";
-  const stopButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-      : commandBusy
-        ? busyCommandTitle
-        : isRecordingActive
-        ? "Stop desktop recording."
-        : "No active desktop recording to stop.";
-  const importButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop the active recording before importing audio."
-        : importWavPath.trim()
-          ? "Import the WAV file into private app storage."
-          : "Enter a local WAV source path before importing.";
-  const chooseWavButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : isRecordingActive
-        ? "Stop the active recording before choosing audio."
-        : "Choose a local WAV source file.";
-  const chooseWhisperModelButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : "Choose a local Whisper model file.";
-  const testWhisperButtonTitle = commandSurfaceReady ? "Test the configured Whisper path." : commandUnavailableTitle;
-  const saveWhisperButtonTitle = commandSurfaceReady ? "Save the configured Whisper path." : commandUnavailableTitle;
-  const testOllamaButtonTitle = commandSurfaceReady
-    ? "Test the configured local Ollama server and model."
-    : commandUnavailableTitle;
-  const saveAnalysisButtonTitle = commandSurfaceReady ? "Save local analysis settings." : commandUnavailableTitle;
-  const saveRetentionButtonTitle = commandSurfaceReady
-    ? "Save default raw-audio retention."
-    : commandUnavailableTitle;
-  const transcribeButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !selectedMeeting
-        ? "Select a meeting before transcription."
-        : currentSnapshot.model.kind === "missing"
-          ? "Choose a local Whisper model file before transcription."
-          : currentSnapshot.model.kind === "unsupported"
-            ? "Choose a supported .bin or .gguf Whisper model file before transcription."
-          : currentSnapshot.model.kind === "untested"
-            ? "Run Test path for the saved Whisper model file before transcription."
-            : "Transcribe the selected meeting with the configured local Whisper model.";
-  const retryTranscriptionButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !whisperModelReady
-        ? transcribeButtonTitle
-        : "Retry transcription for the selected meeting.";
-  const renameButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeeting
-        ? "Rename the selected meeting."
-        : "Select a meeting before renaming.";
-  const exportButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeeting
-        ? `Export the selected meeting as ${exportFormatLabel(selectedExportFormat)}.`
-        : "Select a meeting before exporting.";
+  const { startButtonTitle, stopButtonTitle, importButtonTitle, chooseWavButtonTitle } =
+    deriveRecordingButtonTitles({
+      commandSurfaceReady,
+      commandUnavailableTitle,
+      commandBusy,
+      busyCommandTitle,
+      isRecordingActive,
+      importWavPath,
+    });
+  const {
+    chooseWhisperModelButtonTitle,
+    testWhisperButtonTitle,
+    saveWhisperButtonTitle,
+    testOllamaButtonTitle,
+    saveAnalysisButtonTitle,
+    saveRetentionButtonTitle,
+  } = deriveSettingsButtonTitles({
+    commandSurfaceReady,
+    commandUnavailableTitle,
+    commandBusy,
+    busyCommandTitle,
+  });
+  const { transcribeButtonTitle, retryTranscriptionButtonTitle } = deriveTranscriptionButtonTitles({
+    commandSurfaceReady,
+    commandUnavailableTitle,
+    commandBusy,
+    busyCommandTitle,
+    selectedMeeting,
+    modelKind: currentSnapshot.model.kind,
+    whisperModelReady,
+  });
   const selectedExportFormatLabel = exportFormatLabel(selectedExportFormat);
-  const deleteButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : selectedMeetingHasActiveDeleteBlockingJob
-        ? "Cancel or wait for the active transcription or summary job before deleting private data."
-      : selectedMeeting
-        ? "Delete app-private data for the selected meeting."
-        : "Select a meeting before deleting private data.";
-  const summaryButtonTitle = !commandSurfaceReady
-    ? commandUnavailableTitle
-    : commandBusy
-      ? busyCommandTitle
-      : !selectedMeeting
-        ? "Select a meeting before requesting a summary."
-        : selectedMeeting.segments.length === 0
-          ? "Generate a transcript before requesting a summary."
-          : ollamaSummaryBlockGuidance
-            ? ollamaSummaryBlockGuidance
-          : "Generate a local Ollama summary for the selected meeting.";
-  const isLightTheme = theme === "light";
-  const themeButtonLabel = isLightTheme ? "Switch to dark mode" : "Switch to light mode";
-
-  function toggleTheme() {
-    setTheme((current) => (current === "dark" ? "light" : "dark"));
-  }
-
+  const { renameButtonTitle, exportButtonTitle, deleteButtonTitle, summaryButtonTitle } =
+    deriveMeetingActionTitles({
+      commandSurfaceReady,
+      commandUnavailableTitle,
+      commandBusy,
+      busyCommandTitle,
+      selectedMeeting,
+      selectedExportFormatLabel,
+      selectedMeetingHasActiveDeleteBlockingJob,
+      ollamaSummaryBlockGuidance,
+    });
   const recordingControls = (
     <RecordingControls
       recording={recording}

@@ -20,10 +20,10 @@ curiosity-store = { path = "../../../crates/store" }
 curiosity-transcription = { path = "../../../crates/transcription" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10.8"
+sha2 = "0.11.0"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.1"
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
 url = "2"
 
 [build-dependencies]

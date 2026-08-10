@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install actionlint
         env:
@@ -31,7 +31,7 @@ jobs:
         run: actionlint -color=false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -156,7 +156,7 @@ jobs:
         run: node scripts/check-supply-chain-artifacts.js
 
       - name: Upload supply-chain artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: supply-chain-artifacts
           path: release-artifacts/supply-chain
@@ -177,7 +177,7 @@ jobs:
         run: node scripts/check-desktop-command-view-contract.js --check-artifact release-artifacts/contracts/desktop-command-view-contract.receipt.json
 
       - name: Upload desktop command/view contract artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-command-view-contract-artifact
           path: release-artifacts/contracts
@@ -191,7 +191,7 @@ jobs:
         run: node scripts/check-coverage-artifacts.js
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-artifacts
           path: release-artifacts/coverage
@@ -206,7 +206,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust
         run: |
