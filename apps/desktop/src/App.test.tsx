@@ -3323,6 +3323,7 @@ describe("desktop workspace shell", () => {
       finishTranscriptionCancellation = () => resolve(snapshot);
     });
     const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => snapshot,
       cancelTranscription: async (args) => {
         calls.push({ method: "cancelTranscription", args });
         return pendingTranscriptionCancellation;
