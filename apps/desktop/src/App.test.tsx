@@ -3623,6 +3623,7 @@ describe("desktop workspace shell", () => {
       finishTranscription = () => resolve(snapshot);
     });
     const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => snapshot,
       transcribeMeeting: async () => {
         calls.push("transcribeMeeting");
         return pendingTranscription;
