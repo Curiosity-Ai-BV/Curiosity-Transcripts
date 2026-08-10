@@ -160,10 +160,12 @@ jobs:
           NODE
           node scripts/check-release-provenance-artifact.js "$provenance_path"
 
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "asset_path=$release_asset" >> "$GITHUB_OUTPUT"
-          echo "checksum_path=$release_asset.sha256" >> "$GITHUB_OUTPUT"
-          echo "provenance_path=$provenance_path" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "asset_path=$release_asset"
+            echo "checksum_path=$release_asset.sha256"
+            echo "provenance_path=$provenance_path"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub Release
         env:
@@ -191,7 +193,7 @@ jobs:
             echo "- Skipped smoke checks are not passes. Record the build, machine, macOS version, model paths, and any skipped microphone, ScreenCaptureKit, Whisper, Ollama, offline, export, delete, or uninstall item before treating this release as ready."
             echo "- Start from docs/release-candidate-smoke-evidence.template.json, then validate filled manual evidence with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json. This workflow does not validate filled manual evidence automatically."
             echo "- This workflow leaves this GitHub Release as a draft until filled manual smoke evidence validates with node scripts/check-release-smoke-evidence.js path/to/filled-evidence.json."
-            echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'
+            echo "- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit \"\$RELEASE_TAG\" --draft=false."
             echo
             echo "Release governance sign-off:"
             echo "- Start from docs/release-governance-signoff.template.json, then validate filled governance evidence with node scripts/check-release-governance-signoff.js path/to/filled-signoff.json before manual publish."

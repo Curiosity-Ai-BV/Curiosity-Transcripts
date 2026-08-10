@@ -754,7 +754,7 @@ impl MacosDesktopWavRecording {
             .default_input_config()
             .map_err(|error| microphone_error_from_message(error.to_string()))?;
         let sample_format = supported_config.sample_format();
-        let stream_config: cpal::StreamConfig = supported_config.clone().into();
+        let stream_config: cpal::StreamConfig = supported_config.into();
         let mic_sample_rate_hz = stream_config.sample_rate;
         let mic_channel_count = stream_config.channels;
         let (mic_sample_tx, mic_sample_rx) = mpsc::sync_channel::<MicrophoneWriterMessage>(32);
@@ -1250,7 +1250,7 @@ impl MacosMicrophoneWavRecording {
             .default_input_config()
             .map_err(|error| microphone_error_from_message(error.to_string()))?;
         let sample_format = supported_config.sample_format();
-        let stream_config: cpal::StreamConfig = supported_config.clone().into();
+        let stream_config: cpal::StreamConfig = supported_config.into();
         let sample_rate_hz = stream_config.sample_rate;
         let channel_count = stream_config.channels;
         let (sample_tx, sample_rx) = mpsc::sync_channel::<MicrophoneWriterMessage>(32);
@@ -1439,7 +1439,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[i8], _| {
                     send_mic_samples(
                         &tx,
@@ -1455,7 +1455,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[i16], _| {
                     send_mic_samples(&tx, &errors, data.to_vec());
                 },
@@ -1467,7 +1467,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[i32], _| {
                     send_mic_samples(
                         &tx,
@@ -1483,7 +1483,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[i64], _| {
                     send_mic_samples(
                         &tx,
@@ -1499,7 +1499,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[u8], _| {
                     send_mic_samples(
                         &tx,
@@ -1517,7 +1517,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[u16], _| {
                     send_mic_samples(
                         &tx,
@@ -1535,7 +1535,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[u32], _| {
                     send_mic_samples(
                         &tx,
@@ -1553,7 +1553,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[u64], _| {
                     send_mic_samples(
                         &tx,
@@ -1573,7 +1573,7 @@ fn build_macos_input_stream(
             let tx = sample_tx.clone();
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[f32], _| {
                     send_mic_samples(
                         &tx,
@@ -1589,7 +1589,7 @@ fn build_macos_input_stream(
             let tx = sample_tx;
             let errors = std::sync::Arc::clone(&stream_errors);
             device.build_input_stream(
-                stream_config,
+                *stream_config,
                 move |data: &[f64], _| {
                     send_mic_samples(
                         &tx,
@@ -1628,7 +1628,7 @@ fn send_mic_samples(
 #[cfg(target_os = "macos")]
 fn cpal_error_handler(
     errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-) -> impl FnMut(cpal::StreamError) + Send + 'static {
+) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
         if let Ok(mut errors) = errors.lock() {
             errors.push(error.to_string());
@@ -1675,6 +1675,24 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+pub(crate) fn frame_end_time_ms(frame: &AudioFrame) -> u64 {
+    if frame.channel_count == 0 || frame.sample_rate_hz == 0 || frame.pcm_i16.is_empty() {
+        return frame.start_time_ms;
+    }
+    let audio_frames = frame.pcm_i16.len() as u64 / frame.channel_count as u64;
+    let duration_ms = audio_frames
+        .saturating_mul(1_000)
+        .div_ceil(frame.sample_rate_hz as u64);
+    frame.start_time_ms.saturating_add(duration_ms)
+}
+
+pub(crate) fn samples_to_ms_ceil(samples: usize, sample_rate_hz: u32) -> u64 {
+    if samples == 0 || sample_rate_hz == 0 {
+        return 0;
+    }
+    ((samples as u64) * 1_000).div_ceil(sample_rate_hz as u64)
 }
 
 #[cfg(test)]
@@ -1858,22 +1876,4 @@ mod tests {
             })
         ));
     }
-}
-
-pub(crate) fn frame_end_time_ms(frame: &AudioFrame) -> u64 {
-    if frame.channel_count == 0 || frame.sample_rate_hz == 0 || frame.pcm_i16.is_empty() {
-        return frame.start_time_ms;
-    }
-    let audio_frames = frame.pcm_i16.len() as u64 / frame.channel_count as u64;
-    let duration_ms = audio_frames
-        .saturating_mul(1_000)
-        .div_ceil(frame.sample_rate_hz as u64);
-    frame.start_time_ms.saturating_add(duration_ms)
-}
-
-pub(crate) fn samples_to_ms_ceil(samples: usize, sample_rate_hz: u32) -> u64 {
-    if samples == 0 || sample_rate_hz == 0 {
-        return 0;
-    }
-    ((samples as u64) * 1_000).div_ceil(sample_rate_hz as u64)
 }

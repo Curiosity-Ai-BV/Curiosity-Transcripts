@@ -14,6 +14,7 @@ use objc2_event_kit::{
 use objc2_foundation::{NSDate, NSError, NSString};
 
 const APPLE_CALENDAR_LOOKAHEAD_HOURS: u64 = 24;
+#[cfg(any(target_os = "macos", test))]
 const APPLE_CALENDAR_MAX_EVENTS: usize = 20;
 
 #[derive(Clone, Debug, Serialize)]
@@ -45,6 +46,7 @@ pub(crate) struct CalendarContextEventView {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) enum AppleCalendarAuthorizationStatus {
     NotDetermined,
     FullAccess,
@@ -56,12 +58,14 @@ pub(crate) enum AppleCalendarAuthorizationStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(target_os = "macos", test))]
 enum AppleCalendarAccessRequestApi {
     FullAccess,
     LegacyEventAccess,
 }
 
 #[derive(Clone, Debug)]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) struct CalendarContextEventDraft {
     pub(crate) event: CalendarContextEventView,
     pub(crate) has_stable_identifier: bool,
@@ -79,6 +83,7 @@ pub(crate) fn request_apple_calendar_access_context() -> CalendarContextView {
     calendar_context_from_authorization(request_apple_calendar_full_access())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn apple_calendar_access_request_api_for_availability(
     full_access_api_available: bool,
 ) -> AppleCalendarAccessRequestApi {
@@ -167,6 +172,7 @@ fn calendar_context_from_authorization(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn finalize_calendar_context_events(
     mut drafts: Vec<CalendarContextEventDraft>,
 ) -> Vec<CalendarContextEventView> {
@@ -222,6 +228,7 @@ pub(crate) fn finalize_calendar_context_events(
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn calendar_event_intervals_overlap(
     starts_at_ms: u64,
     ends_at_ms: u64,
@@ -231,6 +238,7 @@ fn calendar_event_intervals_overlap(
     starts_at_ms < other_ends_at_ms && other_starts_at_ms < ends_at_ms
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn calendar_event_safety_note(draft: &CalendarContextEventDraft) -> String {
     let event = &draft.event;
     if !draft.has_stable_identifier {
@@ -264,6 +272,7 @@ fn calendar_event_safety_note(draft: &CalendarContextEventDraft) -> String {
     "Ready for manual attachment. Calendar events never start recordings automatically.".to_string()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn calendar_event_can_attach(draft: &CalendarContextEventDraft) -> bool {
     let event = &draft.event;
     draft.has_stable_identifier

@@ -84,52 +84,62 @@ impl OllamaHttpTransport for UreqOllamaHttpTransport {
         ollama_ureq_agent()
             .post(url)
             .send_json(body)
-            .map_err(ollama_http_error_from_ureq)?
-            .into_json()
-            .map_err(|error| {
-                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
-            })
+            .map_err(ollama_http_error_from_ureq)
+            .and_then(ollama_json_from_ureq_response)
     }
 
     fn get_json(&self, url: &str) -> Result<serde_json::Value, OllamaHttpError> {
         ollama_ureq_agent()
             .get(url)
             .call()
-            .map_err(ollama_http_error_from_ureq)?
-            .into_json()
-            .map_err(|error| {
-                OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
-            })
+            .map_err(ollama_http_error_from_ureq)
+            .and_then(ollama_json_from_ureq_response)
     }
 }
 
 fn ollama_ureq_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_write(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(120))
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_send_request(Some(Duration::from_secs(30)))
+        .timeout_send_body(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(120)))
+        .timeout_recv_body(Some(Duration::from_secs(120)))
         .build()
+        .into()
 }
 
 fn ollama_http_error_from_ureq(error: ureq::Error) -> OllamaHttpError {
-    match error {
-        ureq::Error::Status(code, response) => {
-            let status_text = response.status_text().to_string();
-            let body = response.into_string().unwrap_or_else(|error| {
-                format!("{status_text}; read response body failed: {error}")
-            });
-            let body = body.trim();
-            OllamaHttpError::Http {
-                status: code,
-                body: if body.is_empty() {
-                    status_text
-                } else {
-                    body.to_string()
-                },
-            }
-        }
-        ureq::Error::Transport(error) => OllamaHttpError::Unavailable(error.to_string()),
+    OllamaHttpError::Unavailable(error.to_string())
+}
+
+fn ollama_json_from_ureq_response(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<serde_json::Value, OllamaHttpError> {
+    let status = response.status();
+    if !status.is_success() {
+        let status_text = status
+            .canonical_reason()
+            .unwrap_or("unknown HTTP status")
+            .to_string();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .unwrap_or_else(|error| format!("{status_text}; read response body failed: {error}"));
+        let body = body.trim();
+        return Err(OllamaHttpError::Http {
+            status: status.as_u16(),
+            body: if body.is_empty() {
+                status_text
+            } else {
+                body.to_string()
+            },
+        });
     }
+
+    response.body_mut().read_json().map_err(|error| {
+        OllamaHttpError::MalformedResponse(format!("parse Ollama response JSON: {error}"))
+    })
 }
 
 pub(super) fn test_ollama_connection_value<T>(
@@ -348,4 +358,25 @@ fn has_explicit_url_userinfo(url: &str) -> bool {
         .map(|index| authority_start + index)
         .unwrap_or(url.len());
     url[authority_start..authority_end].contains('@')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ureq_response_parser_preserves_http_error_status_and_body() {
+        let response = ureq::http::Response::builder()
+            .status(500)
+            .body(ureq::Body::builder().data(r#"{"error":"tags unavailable"}"#))
+            .expect("response");
+
+        assert_eq!(
+            ollama_json_from_ureq_response(response),
+            Err(OllamaHttpError::Http {
+                status: 500,
+                body: r#"{"error":"tags unavailable"}"#.to_string(),
+            })
+        );
+    }
 }

@@ -3332,7 +3332,9 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={commandFacade} />);
 
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
-    await user.click(screen.getByRole("button", { name: "Cancel summary" }));
+    const cancelSummary = screen.getByRole("button", { name: "Cancel summary" });
+    await waitFor(() => expect(cancelSummary).toBeEnabled());
+    await user.click(cancelSummary);
 
     expect(calls).toEqual([
       {

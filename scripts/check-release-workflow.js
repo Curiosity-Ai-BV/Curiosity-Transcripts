@@ -88,7 +88,7 @@ const requiredWorkflowText = [
   "This workflow does not validate filled manual evidence automatically",
   "leaves this GitHub Release as a draft until filled manual smoke evidence validates",
   "Publishing requires an explicit manual release action",
-  'gh release edit "$RELEASE_TAG" --draft=false',
+  'gh release edit \\"\\$RELEASE_TAG\\" --draft=false',
   "Record the build, machine, macOS version, model paths",
   "Release governance sign-off:",
   "docs/release-governance-signoff.template.json",
@@ -110,7 +110,7 @@ const requiredWorkflowText = [
   'gh release create "$RELEASE_TAG" --draft \\',
   "PROVENANCE_PATH:",
   "${{ steps.stage_assets.outputs.provenance_path }}",
-  'echo "provenance_path=$provenance_path" >> "$GITHUB_OUTPUT"',
+  'echo "provenance_path=$provenance_path"',
   "gh release upload",
   '"$PROVENANCE_PATH"',
   "--clobber",
@@ -538,7 +538,7 @@ const releaseWorkflowOrdering = [
   ],
   [
     'node scripts/check-release-provenance-artifact.js "$provenance_path"',
-    'echo "version=$version" >> "$GITHUB_OUTPUT"',
+    'echo "version=$version"',
     "release provenance manifest must be machine-validated before exposing release asset outputs",
   ],
 ];
@@ -590,7 +590,8 @@ const workflowLines = workflow.split(/\r?\n/);
 for (let index = 0; index < workflowLines.length; index += 1) {
   const trimmed = workflowLines[index].trim();
   const allowedReleaseNoteLine =
-    trimmed === `echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'`;
+    trimmed ===
+    'echo "- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit \\"\\$RELEASE_TAG\\" --draft=false."';
   if (!trimmed.includes("gh release") || allowedReleaseNoteLine) {
     continue;
   }

@@ -659,8 +659,8 @@ if (!hasLine(generateContract, /^\s*run:\s*node scripts\/check-desktop-command-v
 if (!hasLine(validateContract, /^\s*run:\s*node scripts\/check-desktop-command-view-contract\.js --check-artifact release-artifacts\/contracts\/desktop-command-view-contract\.receipt\.json\s*$/)) {
   fail("Validate desktop command/view contract artifact step must validate the generated receipt artifact");
 }
-if (!hasLine(uploadContract, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
-  fail("Upload desktop command/view contract artifact step must use actions/upload-artifact@v4");
+if (!hasLine(uploadContract, /^\s*uses:\s*actions\/upload-artifact@v7\s*$/)) {
+  fail("Upload desktop command/view contract artifact step must use actions/upload-artifact@v7");
 }
 if (!hasLine(uploadContract, /^\s*name:\s*desktop-command-view-contract-artifact\s*$/)) {
   fail("Upload desktop command/view contract artifact step must name the artifact desktop-command-view-contract-artifact");
@@ -671,8 +671,8 @@ if (!hasLine(uploadContract, /^\s*path:\s*release-artifacts\/contracts\s*$/)) {
 if (!hasLine(uploadContract, /^\s*if-no-files-found:\s*error\s*$/)) {
   fail("Upload desktop command/view contract artifact step must fail when contract artifacts are missing");
 }
-if (!hasLine(uploadCoverage, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
-  fail("Upload coverage artifacts step must use actions/upload-artifact@v4");
+if (!hasLine(uploadCoverage, /^\s*uses:\s*actions\/upload-artifact@v7\s*$/)) {
+  fail("Upload coverage artifacts step must use actions/upload-artifact@v7");
 }
 if (!hasLine(uploadCoverage, /^\s*name:\s*coverage-artifacts\s*$/)) {
   fail("Upload coverage artifacts step must name the artifact coverage-artifacts");
@@ -803,8 +803,8 @@ if (!hasLine(generate, /^\s*run:\s*node scripts\/generate-supply-chain-artifacts
 if (!hasLine(checkSupplyChain, /^\s*run:\s*node scripts\/check-supply-chain-artifacts\.js\s*$/)) {
   fail("Check supply-chain artifacts step must run node scripts/check-supply-chain-artifacts.js");
 }
-if (!hasLine(upload, /^\s*uses:\s*actions\/upload-artifact@v4\s*$/)) {
-  fail("Upload supply-chain artifacts step must use actions/upload-artifact@v4");
+if (!hasLine(upload, /^\s*uses:\s*actions\/upload-artifact@v7\s*$/)) {
+  fail("Upload supply-chain artifacts step must use actions/upload-artifact@v7");
 }
 if (!hasLine(upload, /^\s*name:\s*supply-chain-artifacts\s*$/)) {
   fail("Upload supply-chain artifacts step must name the artifact supply-chain-artifacts");
@@ -903,7 +903,7 @@ jobs:
             build-mode: none
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -957,7 +957,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -1076,7 +1076,7 @@ require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-
 require_text .github/workflows/release.yml 'Curiosity-Transcripts-\$\{version\}-macos-aarch64\.provenance\.json' 'versioned macOS DMG release provenance manifest asset name'
 require_text .github/workflows/release.yml 'hdiutil verify "\$release_asset"' 'release asset hdiutil verification before upload'
 require_text .github/workflows/release.yml 'hdiutil attach "\$release_asset" -readonly -nobrowse' 'release asset read-only attach verification before upload'
-require_text .github/workflows/release.yml 'echo "provenance_path=\$provenance_path" >> "\$GITHUB_OUTPUT"' 'release provenance manifest staging output'
+require_text .github/workflows/release.yml 'echo "provenance_path=\$provenance_path"' 'release provenance manifest staging output'
 require_text .github/workflows/release.yml 'RELEASE_REF_NAME: \$\{\{ github\.ref_name \}\}' 'release provenance ref name environment wiring'
 require_text .github/workflows/release.yml 'RELEASE_GIT_SHA: \$\{\{ github\.sha \}\}' 'release provenance git SHA environment wiring'
 require_text .github/workflows/release.yml 'RELEASE_GIT_REF: \$\{\{ github\.ref \}\}' 'release provenance git ref environment wiring'
@@ -1095,7 +1095,7 @@ require_text .github/workflows/release.yml 'docs/release-candidate-smoke-evidenc
 require_text .github/workflows/release.yml 'node scripts/check-release-smoke-evidence\.js path/to/filled-evidence\.json' 'release notes filled smoke evidence validator command'
 require_text .github/workflows/release.yml 'This workflow does not validate filled manual evidence automatically' 'release notes filled smoke evidence manual-validation boundary'
 require_text .github/workflows/release.yml 'leaves this GitHub Release as a draft until filled manual smoke evidence validates' 'release notes draft-until-smoke-evidence boundary'
-require_text .github/workflows/release.yml 'gh release edit "\$RELEASE_TAG" --draft=false' 'release notes explicit manual publish command'
+require_text .github/workflows/release.yml 'gh release edit \\"\\\$RELEASE_TAG\\" --draft=false' 'release notes explicit manual publish command'
 require_text .github/workflows/release.yml 'Publishing requires an explicit manual release action' 'release notes explicit manual publish boundary'
 require_text .github/workflows/release.yml 'Release governance sign-off' 'release notes governance sign-off heading'
 require_text .github/workflows/release.yml 'docs/release-governance-signoff\.template\.json' 'release notes governance sign-off template pointer'
@@ -1115,7 +1115,8 @@ const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
 for (let index = 0; index < lines.length; index += 1) {
   const trimmed = lines[index].trim();
   const allowedReleaseNoteLine =
-    trimmed === `echo '- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit "$RELEASE_TAG" --draft=false.'`;
+    trimmed ===
+    'echo "- Publishing requires an explicit manual release action after evidence passes, for example: gh release edit \\"\\$RELEASE_TAG\\" --draft=false."';
   if (!trimmed.includes("gh release") || allowedReleaseNoteLine) {
     continue;
   }
