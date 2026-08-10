@@ -36,7 +36,7 @@
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.10",
-    "jsdom": "^26.1.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.4",
     "vitest": "^3.2.4"
