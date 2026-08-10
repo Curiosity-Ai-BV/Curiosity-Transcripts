@@ -741,7 +741,14 @@ fn bundled_source_artifact_sha256(requests: &[WhisperTranscriptionRequest]) -> S
         hasher.update(request.source_artifact_sha256.as_bytes());
         hasher.update([0]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!(
+        "sha256:{}",
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 fn source_channel_name(source_channel: SourceChannel) -> &'static str {

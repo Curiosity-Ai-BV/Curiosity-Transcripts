@@ -191,18 +191,27 @@ const artifacts = [
           {
             label: "desktop raw audio retention policy view",
             startAnchor: "fn raw_audio_retention_policy_view(",
-            endAnchor: "fn test_whisper_model_path_value(",
+            endAnchor: "#[derive(Clone)]\nstruct LocalOllamaTextClient<T> {",
           },
+        ],
+      },
+      {
+        expected: "apps/desktop/src-tauri/src/command_outcomes.rs",
+        alternatives: ["src/command_outcomes.rs"],
+        requiredLineSpans: [
           {
             label: "desktop exported command state DTO",
-            startAnchor: "impl ExportCommandState {\n    fn exported(",
+            startAnchor:
+              "impl ExportCommandState {\n    pub(crate) fn exported(",
             endAnchor:
-              "    fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {",
+              "    pub(crate) fn failed(meeting_id: &str, format: ExportFormat, message: String) -> Self {",
           },
           {
             label: "desktop deleted command state DTO",
-            startAnchor: "impl DeleteCommandState {\n    fn deleted(",
-            endAnchor: "    fn failed(meeting_id: &str, message: String) -> Self {",
+            startAnchor:
+              "impl DeleteCommandState {\n    pub(crate) fn deleted(",
+            endAnchor:
+              "    pub(crate) fn failed(meeting_id: &str, message: String) -> Self {",
           },
         ],
       },

@@ -16,5 +16,9 @@ pub(super) fn sha256_for_readable_file(path: &Path) -> Result<String, std::io::E
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }

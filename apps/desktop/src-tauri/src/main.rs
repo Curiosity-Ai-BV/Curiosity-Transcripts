@@ -25,9 +25,11 @@ use crate::command_outcomes::{
 };
 use crate::file_hashing::sha256_for_readable_file;
 use crate::import_audio_validation::{validate_import_source_path, validate_wav_header};
+#[cfg(test)]
+use crate::local_ollama::OllamaHttpError;
 use crate::local_ollama::{
     canonical_local_ollama_model_tag, local_ollama_endpoint, test_ollama_connection_value,
-    validate_local_ollama_model, OllamaConnectionTestView, OllamaHttpError, OllamaHttpTransport,
+    validate_local_ollama_model, OllamaConnectionTestView, OllamaHttpTransport,
     UreqOllamaHttpTransport,
 };
 use crate::recording_artifact_paths::{
@@ -4074,6 +4076,13 @@ mod tests {
     static TEST_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     #[test]
     fn empty_desktop_snapshot_serializes_frontend_shape() {
         let _guard = ENV_LOCK.lock().expect("env lock");
@@ -4331,7 +4340,7 @@ mod tests {
         let model_bytes = b"not a real model";
         fs::write(&model_path, model_bytes).expect("model file");
         let model_path = model_path.to_string_lossy().to_string();
-        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
+        let expected_sha256 = sha256_hex(model_bytes);
 
         let whisper_result =
             test_whisper_model_path_for_app_root(&root, model_path.clone(), 1_700_000_001_000)
@@ -5125,7 +5134,7 @@ mod tests {
         let model_path = root.join("fixture-whisper.bin");
         let model_bytes = b"not a real model";
         fs::write(&model_path, model_bytes).expect("model file");
-        let expected_sha256 = format!("{:x}", Sha256::digest(model_bytes));
+        let expected_sha256 = sha256_hex(model_bytes);
 
         let result = test_whisper_model_path_value(model_path.to_string_lossy().as_ref());
         let json = serde_json::to_value(&result).expect("serialize result");
@@ -5297,7 +5306,7 @@ mod tests {
                 tested_at_ms: 1_700_000_001_000,
                 state: "Valid".to_string(),
                 file_size_bytes: Some(unsupported_bytes.len() as u64),
-                sha256: Some(format!("{:x}", Sha256::digest(unsupported_bytes))),
+                sha256: Some(sha256_hex(unsupported_bytes)),
                 failure_detail: None,
             })
             .expect("persist legacy valid evidence");
@@ -5711,7 +5720,7 @@ mod tests {
         assert_eq!(store.count("transcript_segments").expect("segments"), 2);
         assert_eq!(artifact.artifact_id, "dev-fixture-artifact");
         assert_eq!(
-            format!("{:x}", Sha256::digest(dev_fixture_wav_bytes())),
+            sha256_hex(&dev_fixture_wav_bytes()),
             DEV_FIXTURE_AUDIO_SHA256
         );
         assert_eq!(artifact.sha256, DEV_FIXTURE_AUDIO_SHA256);
@@ -7337,7 +7346,7 @@ mod tests {
                     tested_at_ms: 1_700_000_001_000,
                     state: "Valid".to_string(),
                     file_size_bytes: Some(model_bytes.len() as u64),
-                    sha256: Some(format!("{:x}", Sha256::digest(model_bytes))),
+                    sha256: Some(sha256_hex(model_bytes)),
                     failure_detail: None,
                 })
                 .expect("legacy path-test evidence");

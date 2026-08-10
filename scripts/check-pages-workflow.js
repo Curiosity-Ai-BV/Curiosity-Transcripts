@@ -68,15 +68,15 @@ const requiredText = [
   'node scripts/check-release-provenance-artifact.js "$provenance_path"',
   "Curiosity-Transcripts-latest.dmg.sha256",
   "Curiosity-Transcripts-latest.provenance.json",
-  "actions/upload-artifact@v4",
-  "actions/download-artifact@v4",
+  "actions/upload-artifact@v7",
+  "actions/download-artifact@v8",
   "downloads/Curiosity-Transcripts-latest.dmg",
   "downloads/Curiosity-Transcripts-latest.dmg.sha256",
   "downloads/Curiosity-Transcripts-latest.provenance.json",
   "shasum -a 256 -c Curiosity-Transcripts-latest.dmg.sha256",
-  "actions/configure-pages@v5",
+  "actions/configure-pages@v6",
   "actions/upload-pages-artifact@v3",
-  "actions/deploy-pages@v4",
+  "actions/deploy-pages@v5",
   "pages: write",
   "id-token: write",
   "github-pages",
@@ -259,7 +259,7 @@ function stepBlocksBeforeCheckout(lines, range) {
   }
 
   const checkoutLine = lines.findIndex(
-    (line, index) => index >= range.start && index < range.end && line.includes("actions/checkout@v4"),
+    (line, index) => index >= range.start && index < range.end && line.includes("actions/checkout@v7"),
   );
   if (checkoutLine === -1) {
     console.error("::error file=.github/workflows/pages.yml::Missing checkout step in Pages DMG build job");
@@ -407,7 +407,7 @@ if (hasAdHocDmgBuildRunCommand(workflowText)) {
 const uploadArtifactStep = findStepBlockContaining(
   workflowLines,
   buildJobRange,
-  "uses: actions/upload-artifact@v4",
+  "uses: actions/upload-artifact@v7",
   "DMG upload artifact step",
 );
 for (const [text, description] of [
@@ -424,7 +424,7 @@ for (const [text, description] of [
 const downloadArtifactStep = findStepBlockContaining(
   workflowLines,
   buildPagesJobRange,
-  "uses: actions/download-artifact@v4",
+  "uses: actions/download-artifact@v8",
   "DMG download artifact step",
 );
 for (const [text, description] of [
@@ -477,7 +477,7 @@ const pagesWorkflowOrdering = [
   ],
   [
     'node scripts/check-release-provenance-artifact.js "$provenance_path"',
-    "uses: actions/upload-artifact@v4",
+    "uses: actions/upload-artifact@v7",
     "Pages latest provenance manifest must be machine-validated before artifact upload",
   ],
 ];
