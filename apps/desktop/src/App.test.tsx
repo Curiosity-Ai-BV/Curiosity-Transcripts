@@ -3300,6 +3300,7 @@ describe("desktop workspace shell", () => {
   it("cancels visible transcription and summary jobs through the typed command facade", async () => {
     const user = userEvent.setup();
     const calls: Array<{ method: string; args?: unknown }> = [];
+    let finishTranscriptionCancellation!: () => void;
     const snapshot = connectedSnapshot({
       transcriptionJob: {
         id: "transcription-circuit-review-1700000001000",
@@ -3318,10 +3319,14 @@ describe("desktop workspace shell", () => {
         startedAtMs: 1_700_000_002_000,
       },
     });
+    const pendingTranscriptionCancellation = new Promise<typeof snapshot>((resolve) => {
+      finishTranscriptionCancellation = () => resolve(snapshot);
+    });
     const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => snapshot,
       cancelTranscription: async (args) => {
         calls.push({ method: "cancelTranscription", args });
-        return snapshot;
+        return pendingTranscriptionCancellation;
       },
       cancelSummary: async (args) => {
         calls.push({ method: "cancelSummary", args });
@@ -3332,20 +3337,28 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={commandFacade} />);
 
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
-    const cancelSummary = screen.getByRole("button", { name: "Cancel summary" });
-    await waitFor(() => expect(cancelSummary).toBeEnabled());
-    await user.click(cancelSummary);
+    expect(screen.getByRole("button", { name: "Canceling transcription" })).toBeDisabled();
+    await act(async () => {
+      finishTranscriptionCancellation();
+      await pendingTranscriptionCancellation;
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Cancel summary" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel summary" }));
 
-    expect(calls).toEqual([
-      {
-        method: "cancelTranscription",
-        args: { jobId: "transcription-circuit-review-1700000001000" },
-      },
-      {
-        method: "cancelSummary",
-        args: { jobId: "summary-circuit-review-1700000002000" },
-      },
-    ]);
+    await waitFor(() =>
+      expect(calls).toEqual([
+        {
+          method: "cancelTranscription",
+          args: { jobId: "transcription-circuit-review-1700000001000" },
+        },
+        {
+          method: "cancelSummary",
+          args: { jobId: "summary-circuit-review-1700000002000" },
+        },
+      ]),
+    );
   });
 
   it("retries the selected meeting's recovered transcription job without a cancel control", async () => {
@@ -3610,6 +3623,7 @@ describe("desktop workspace shell", () => {
       finishTranscription = () => resolve(snapshot);
     });
     const commandFacade = fakeCommandFacade({
+      desktopSnapshot: async () => snapshot,
       transcribeMeeting: async () => {
         calls.push("transcribeMeeting");
         return pendingTranscription;
@@ -3630,15 +3644,23 @@ describe("desktop workspace shell", () => {
     render(<App snapshot={snapshot} commandFacade={commandFacade} />);
 
     await user.click(screen.getByRole("button", { name: "Transcribe" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Transcribing" })).toBeDisabled(),
+    );
     expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
 
-    expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]);
+    await waitFor(() => expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]));
+    await waitFor(() =>
+      expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument(),
+    );
     await act(async () => {
       finishTranscription();
       await pendingTranscription;
     });
-    expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument(),
+    );
     expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeDisabled();
   });
 
