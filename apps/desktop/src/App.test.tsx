@@ -3341,20 +3341,23 @@ describe("desktop workspace shell", () => {
       finishTranscriptionCancellation();
       await pendingTranscriptionCancellation;
     });
-    const cancelSummary = screen.getByRole("button", { name: "Cancel summary" });
-    await waitFor(() => expect(cancelSummary).toBeEnabled());
-    await user.click(cancelSummary);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Cancel summary" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel summary" }));
 
-    expect(calls).toEqual([
-      {
-        method: "cancelTranscription",
-        args: { jobId: "transcription-circuit-review-1700000001000" },
-      },
-      {
-        method: "cancelSummary",
-        args: { jobId: "summary-circuit-review-1700000002000" },
-      },
-    ]);
+    await waitFor(() =>
+      expect(calls).toEqual([
+        {
+          method: "cancelTranscription",
+          args: { jobId: "transcription-circuit-review-1700000001000" },
+        },
+        {
+          method: "cancelSummary",
+          args: { jobId: "summary-circuit-review-1700000002000" },
+        },
+      ]),
+    );
   });
 
   it("retries the selected meeting's recovered transcription job without a cancel control", async () => {
@@ -3646,11 +3649,16 @@ describe("desktop workspace shell", () => {
     await user.click(screen.getByRole("button", { name: "Cancel transcription" }));
 
     await waitFor(() => expect(calls).toEqual(["transcribeMeeting", "cancelTranscription"]));
+    await waitFor(() =>
+      expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument(),
+    );
     await act(async () => {
       finishTranscription();
       await pendingTranscription;
     });
-    expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText("Transcription cancel requested")).toBeInTheDocument(),
+    );
     expect(screen.getByRole("button", { name: "Cancel transcription" })).toBeDisabled();
   });
 
