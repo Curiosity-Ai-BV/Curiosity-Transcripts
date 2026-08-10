@@ -9,6 +9,10 @@ const artifacts = {
     path: path.join(root, "crates", "store", "src", "lib.rs"),
     label: "crates/store/src/lib.rs",
   },
+  storeSettings: {
+    path: path.join(root, "crates", "store", "src", "settings.rs"),
+    label: "crates/store/src/settings.rs",
+  },
   storeTests: {
     path: path.join(root, "crates", "store", "tests", "app_settings.rs"),
     label: "crates/store/tests/app_settings.rs",
@@ -61,6 +65,7 @@ const artifacts = {
 
 const checkedArtifacts = [
   artifacts.store,
+  artifacts.storeSettings,
   artifacts.storeTests,
   artifacts.appCrate,
   artifacts.main,
@@ -367,13 +372,13 @@ function runSelfTests() {
   expectArtifactChecked("crates/app/src/lib.rs");
   expectArtifactChecked("apps/desktop/src/desktopContract.ts");
 
-  const storeSource = readText(artifacts.store);
+  const storeSettingsSource = readText(artifacts.storeSettings);
   expectRejected(
     "apiKey persisted settings key",
     validateSourceSecretFields(
       mutateText(
         "apiKey persisted settings key",
-        storeSource,
+        storeSettingsSource,
         'const SETTING_OLLAMA_MODEL: &str = "ollama_model";',
         'const SETTING_OLLAMA_MODEL: &str = "apiKey";',
       ),
